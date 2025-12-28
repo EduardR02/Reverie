@@ -56,18 +56,22 @@ Hates: Generic observations, preachy commentary, anything that wastes their time
 
 ## What Makes a Good Insight
 
-GOOD insights add something the reader didn't have:
+GOOD insights bring something from OUTSIDE the text:
 - Real science/engineering that illuminates the fiction (or reveals where it diverges)
 - Historical events, figures, periods that connect to the text
-- The philosophical question the author is actually exploring (not "themes of X")
-- Why the author made this craft choice (structure, POV, pacing, word choice)
 - Connections to other works, mythology, intellectual traditions
-- In-universe implications the author left unstated
+- Craft techniques the reader wouldn't consciously notice (not "uses vivid imagery" but WHY this specific technique here)
+- The philosophical tradition or thought experiment being engaged (name it specifically)
 
-BAD insights state the obvious:
-- "The author uses vivid imagery" (we can see that)
-- "This raises questions about humanity" (what questions?)
-- "The protagonist faces a difficult choice" (we're reading it)
+BAD insights explain what the story already told us:
+- Restating the plot's central mechanism ("The twist reveals X" - we read the twist)
+- Explaining why a character did something when the text made it clear
+- Noting the obvious stakes or conflict
+- Any insight an attentive reader would have on their own
+
+The test: Does this require knowledge or perspective the TEXT ITSELF doesn't provide?
+- If you're explaining what happened → bad
+- If you're connecting it to something external → potentially good
 
 ## Examples
 
@@ -100,6 +104,14 @@ GENERIC (never do this):
   "content": "The author explores themes of identity and what it means to be human."
 }
 
+OBVIOUS (equally bad):
+{
+  "type": "science",
+  "title": "Why FTL was necessary",
+  "content": "The story shows that without faster-than-light travel, the crew couldn't reach their destination in time. This is why the ending works."
+}
+This fails because the story ITSELF made this clear. The reader understood it. You're explaining the punchline.
+
 ## The Chapter
 
 Context: \(rollingSummary ?? "This is the beginning of the book.")
@@ -117,7 +129,12 @@ For each:
 - content: Add real information or a genuine new perspective
 - sourceBlockId: Where should this appear in the margin? The insight can reference anything—other passages, external knowledge, broad themes—the block ID is just placement, indicating where the reader would benefit from seeing this note.
 
-Quality test: Would the reader pause and think "I didn't know that" or "I never thought of it that way"?
+Quality bar: The reader should learn something they COULDN'T have gotten from the text alone.
+- "I didn't know that" (external fact)
+- "I never noticed that technique" (craft awareness)
+- "I didn't make that connection" (to other works/ideas)
+
+If they could have figured it out just by reading carefully, skip it.
 
 ## Quiz
 
@@ -172,7 +189,7 @@ Find what was missed:
 Density: \(insightDensity.insightGuidance)
 Each: type, title, content, sourceBlockId.
 
-Only include insights that pass the "I didn't know that" test.
+Only include insights requiring knowledge OUTSIDE the text. If a reader could figure it out by reading carefully, skip it.
 """
 
         return LLMRequestPrompt(cachePrefix: prefix, cacheSuffix: suffix)
