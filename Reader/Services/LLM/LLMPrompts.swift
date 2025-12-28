@@ -59,9 +59,9 @@ Hates: Generic observations, preachy commentary, anything that wastes their time
 GOOD insights bring something from OUTSIDE the text:
 - Real science/engineering that illuminates the fiction (or reveals where it diverges)
 - Historical events, figures, periods that connect to the text
-- Connections to other works, mythology, intellectual traditions
-- Craft techniques the reader wouldn't consciously notice (not "uses vivid imagery" but WHY this specific technique here)
+- Connections to other works, authors, mythology, intellectual traditions
 - The philosophical tradition or thought experiment being engaged (name it specifically)
+- In-universe implications the author left unstated (fiction only)
 
 BAD insights explain what the story already told us:
 - Restating the plot's central mechanism ("The twist reveals X" - we read the twist)
@@ -88,13 +88,6 @@ EXCELLENT:
   "title": "Borges wrote this exact scenario",
   "content": "The Garden of Forking Paths explores the same premise—every decision spawns a universe. But where Borges treats it as metaphysical horror, this author frames it as liberation. The inversion is probably deliberate.",
   "sourceBlockId": 23
-}
-
-{
-  "type": "craft",
-  "title": "The nested structure mirrors the trap",
-  "content": "Notice how each scene is embedded inside another, like Russian dolls. The reader experiences the same claustrophobia as the character—we can't tell which layer is 'real' either.",
-  "sourceBlockId": 15
 }
 
 GENERIC (never do this):
@@ -124,14 +117,13 @@ Text (blocks numbered for margin placement):
 Generate insights. Density: \(insightDensity.insightGuidance)
 
 For each:
-- type: science | history | philosophy | craft | connection | world
+- type: science | history | philosophy | connection | world
 - title: Specific and intriguing
 - content: Add real information or a genuine new perspective
 - sourceBlockId: Where should this appear in the margin? The insight can reference anything—other passages, external knowledge, broad themes—the block ID is just placement, indicating where the reader would benefit from seeing this note.
 
 Quality bar: The reader should learn something they COULDN'T have gotten from the text alone.
 - "I didn't know that" (external fact)
-- "I never noticed that technique" (craft awareness)
 - "I didn't make that connection" (to other works/ideas)
 
 If they could have figured it out just by reading carefully, skip it.
@@ -182,7 +174,6 @@ Find what was missed:
 - Science/tech angles
 - Historical parallels
 - Philosophical questions
-- Craft choices
 - Connections to other works
 - World-building implications
 

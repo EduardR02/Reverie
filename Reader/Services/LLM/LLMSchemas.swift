@@ -52,7 +52,7 @@ enum SchemaLibrary {
         properties: [
             "type": JSONSchemaBuilder.string(
                 description: "Insight category.",
-                enumValues: ["science", "history", "philosophy", "craft", "connection", "world"]
+                enumValues: ["science", "history", "philosophy", "connection", "world"]
             ),
             "title": JSONSchemaBuilder.string(description: "Compelling title hinting at the discovery."),
             "content": JSONSchemaBuilder.string(description: "Substantive explanation with specifics."),

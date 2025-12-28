@@ -26,7 +26,6 @@ enum AnnotationType: String, Codable {
     case science       // Real science/tech behind concepts
     case history       // Historical events, figures, parallels
     case philosophy    // Questions being explored, thought experiments
-    case craft         // Author's technique, structure, pacing
     case connection    // Links to other works, mythology, traditions
     case world         // In-universe logic, unstated implications
 
@@ -35,7 +34,6 @@ enum AnnotationType: String, Codable {
         case .science: return "atom"
         case .history: return "clock.arrow.circlepath"
         case .philosophy: return "brain"
-        case .craft: return "hammer"
         case .connection: return "link"
         case .world: return "globe"
         }
@@ -46,7 +44,6 @@ enum AnnotationType: String, Codable {
         case .science: return "Science"
         case .history: return "History"
         case .philosophy: return "Philosophy"
-        case .craft: return "Craft"
         case .connection: return "Links"
         case .world: return "World"
         }
