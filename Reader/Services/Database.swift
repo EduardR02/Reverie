@@ -5,6 +5,7 @@ final class DatabaseService {
     static let shared = DatabaseService()
 
     private let dbQueue: DatabaseQueue
+    private let databaseFilename = "reader_v2.sqlite"  // Fresh schema with block-based referencing
 
     init() {
         let fileManager = FileManager.default
@@ -14,20 +15,17 @@ final class DatabaseService {
         // Create directory if needed
         try? fileManager.createDirectory(at: readerDir, withIntermediateDirectories: true)
 
-        let dbPath = readerDir.appendingPathComponent("reader.sqlite").path
+        let dbPath = readerDir.appendingPathComponent(databaseFilename).path
         dbQueue = try! DatabaseQueue(path: dbPath)
 
-        try! migrator.migrate(dbQueue)
+        try! createSchema()
     }
 
-    // MARK: - Migrations
+    // MARK: - Schema
 
-    private var migrator: DatabaseMigrator {
-        var migrator = DatabaseMigrator()
-
-        migrator.registerMigration("v1") { db in
-            // Books
-            try db.create(table: "books") { t in
+    private func createSchema() throws {
+        try dbQueue.write { db in
+            try db.create(table: "books", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("title", .text).notNull()
                 t.column("author", .text).notNull()
@@ -35,81 +33,70 @@ final class DatabaseService {
                 t.column("epubPath", .text).notNull()
                 t.column("progressPercent", .double).notNull().defaults(to: 0)
                 t.column("currentChapter", .integer).notNull().defaults(to: 0)
+                t.column("currentScrollPercent", .double).notNull().defaults(to: 0)
+                t.column("currentScrollOffset", .double).notNull().defaults(to: 0)
                 t.column("chapterCount", .integer).notNull().defaults(to: 0)
                 t.column("processedFully", .boolean).notNull().defaults(to: false)
                 t.column("createdAt", .datetime).notNull()
                 t.column("lastReadAt", .datetime)
+                t.column("classificationStatus", .text).notNull().defaults(to: "pending")
+                t.column("classificationError", .text)
             }
 
-            // Chapters
-            try db.create(table: "chapters") { t in
+            try db.create(table: "chapters", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("bookId", .integer).notNull().references("books", onDelete: .cascade)
                 t.column("index", .integer).notNull()
                 t.column("title", .text).notNull()
                 t.column("contentHTML", .text).notNull()
+                t.column("contentText", .text)  // Clean text with [N] block markers
+                t.column("blockCount", .integer).notNull().defaults(to: 0)
+                t.column("resourcePath", .text)
                 t.column("summary", .text)
                 t.column("rollingSummary", .text)
                 t.column("processed", .boolean).notNull().defaults(to: false)
                 t.column("wordCount", .integer).notNull().defaults(to: 0)
+                t.column("isGarbage", .boolean).notNull().defaults(to: false)
+                t.column("userOverride", .boolean).notNull().defaults(to: false)
             }
 
-            // Annotations
-            try db.create(table: "annotations") { t in
+            try db.create(table: "annotations", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("chapterId", .integer).notNull().references("chapters", onDelete: .cascade)
                 t.column("type", .text).notNull()
                 t.column("title", .text).notNull()
                 t.column("content", .text).notNull()
-                t.column("sourceQuote", .text).notNull()
-                t.column("sourceOffset", .integer).notNull()
-                t.column("webGrounded", .boolean).notNull().defaults(to: false)
-                t.column("sourceURL", .text)
+                t.column("sourceBlockId", .integer).notNull()  // Block number [N]
             }
 
-            // Quizzes
-            try db.create(table: "quizzes") { t in
+            try db.create(table: "quizzes", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("chapterId", .integer).notNull().references("chapters", onDelete: .cascade)
                 t.column("question", .text).notNull()
                 t.column("answer", .text).notNull()
-                t.column("sourceQuote", .text).notNull()
-                t.column("sourceOffset", .integer).notNull()
+                t.column("sourceBlockId", .integer).notNull()  // Block number [N]
                 t.column("userAnswered", .boolean).notNull().defaults(to: false)
                 t.column("userCorrect", .boolean)
             }
 
-            // Generated Images
-            try db.create(table: "generated_images") { t in
+            try db.create(table: "generated_images", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("chapterId", .integer).notNull().references("chapters", onDelete: .cascade)
                 t.column("prompt", .text).notNull()
                 t.column("imagePath", .text).notNull()
-                t.column("sourceOffset", .integer).notNull()
+                t.column("sourceBlockId", .integer).notNull()  // Block number [N]
                 t.column("createdAt", .datetime).notNull()
             }
-        }
 
-        migrator.registerMigration("v2") { db in
-            try db.alter(table: "books") { t in
-                t.add(column: "currentScrollPercent", .double).notNull().defaults(to: 0)
-                t.add(column: "currentScrollOffset", .double).notNull().defaults(to: 0)
-            }
-        }
-
-        migrator.registerMigration("v3") { db in
-            // Footnotes
-            try db.create(table: "footnotes") { t in
+            try db.create(table: "footnotes", ifNotExists: true) { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.column("chapterId", .integer).notNull().references("chapters", onDelete: .cascade)
                 t.column("marker", .text).notNull()
                 t.column("content", .text).notNull()
                 t.column("refId", .text).notNull()
-                t.column("sourceOffset", .integer).notNull()
+                t.column("sourceBlockId", .integer).notNull()  // Block number [N]
             }
         }
-
-        return migrator
     }
 
     // MARK: - Book Operations
@@ -156,7 +143,10 @@ final class DatabaseService {
 
     func fetchAnnotations(for chapter: Chapter) throws -> [Annotation] {
         try dbQueue.read { db in
-            try chapter.annotations.fetchAll(db)
+            try Annotation
+                .filter(Annotation.Columns.chapterId == chapter.id)
+                .order(Annotation.Columns.sourceBlockId)
+                .fetchAll(db)
         }
     }
 
@@ -173,7 +163,10 @@ final class DatabaseService {
 
     func fetchQuizzes(for chapter: Chapter) throws -> [Quiz] {
         try dbQueue.read { db in
-            try chapter.quizzes.fetchAll(db)
+            try Quiz
+                .filter(Quiz.Columns.chapterId == chapter.id)
+                .order(Quiz.Columns.sourceBlockId)
+                .fetchAll(db)
         }
     }
 
@@ -190,7 +183,10 @@ final class DatabaseService {
 
     func fetchImages(for chapter: Chapter) throws -> [GeneratedImage] {
         try dbQueue.read { db in
-            try chapter.images.fetchAll(db)
+            try GeneratedImage
+                .filter(GeneratedImage.Columns.chapterId == chapter.id)
+                .order(GeneratedImage.Columns.sourceBlockId)
+                .fetchAll(db)
         }
     }
 
@@ -218,7 +214,7 @@ final class DatabaseService {
         try dbQueue.read { db in
             try Footnote
                 .filter(Footnote.Columns.chapterId == chapter.id)
-                .order(Footnote.Columns.sourceOffset)
+                .order(Footnote.Columns.sourceBlockId)
                 .fetchAll(db)
         }
     }

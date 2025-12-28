@@ -1,6 +1,13 @@
 import Foundation
 import GRDB
 
+enum ClassificationStatus: String, Codable {
+    case pending      // Not yet attempted
+    case inProgress   // Currently classifying
+    case completed    // Successfully classified
+    case failed       // Failed, will retry on next open
+}
+
 struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     var id: Int64?
     var title: String
@@ -15,6 +22,8 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     var processedFully: Bool = false
     var createdAt: Date = Date()
     var lastReadAt: Date?
+    var classificationStatus: ClassificationStatus = .pending
+    var classificationError: String?  // Store error message for user display
 
     static let databaseTableName = "books"
 
@@ -59,5 +68,12 @@ extension Book {
         static let processedFully = Column(CodingKeys.processedFully)
         static let createdAt = Column(CodingKeys.createdAt)
         static let lastReadAt = Column(CodingKeys.lastReadAt)
+        static let classificationStatus = Column(CodingKeys.classificationStatus)
+        static let classificationError = Column(CodingKeys.classificationError)
+    }
+
+    /// Whether classification needs to run (pending or previously failed)
+    var needsClassification: Bool {
+        classificationStatus == .pending || classificationStatus == .failed
     }
 }

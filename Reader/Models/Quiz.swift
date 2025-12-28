@@ -6,8 +6,7 @@ struct Quiz: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     var chapterId: Int64
     var question: String
     var answer: String
-    var sourceQuote: String
-    var sourceOffset: Int
+    var sourceBlockId: Int  // Block number [N] containing the answer
     var userAnswered: Bool = false
     var userCorrect: Bool?
 
@@ -30,8 +29,7 @@ extension Quiz {
         static let chapterId = Column(CodingKeys.chapterId)
         static let question = Column(CodingKeys.question)
         static let answer = Column(CodingKeys.answer)
-        static let sourceQuote = Column(CodingKeys.sourceQuote)
-        static let sourceOffset = Column(CodingKeys.sourceOffset)
+        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
         static let userAnswered = Column(CodingKeys.userAnswered)
         static let userCorrect = Column(CodingKeys.userCorrect)
     }

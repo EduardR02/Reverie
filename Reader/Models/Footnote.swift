@@ -7,7 +7,7 @@ struct Footnote: Identifiable, Codable, FetchableRecord, MutablePersistableRecor
     var marker: String         // The footnote reference marker (e.g., "1", "*", "†")
     var content: String        // The footnote content text
     var refId: String          // The ID used in the EPUB for linking (e.g., "note1")
-    var sourceOffset: Int      // Position in chapter where the footnote reference appears
+    var sourceBlockId: Int     // Block number [N] containing the footnote reference
 
     static let databaseTableName = "footnotes"
 
@@ -29,6 +29,6 @@ extension Footnote {
         static let marker = Column(CodingKeys.marker)
         static let content = Column(CodingKeys.content)
         static let refId = Column(CodingKeys.refId)
-        static let sourceOffset = Column(CodingKeys.sourceOffset)
+        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
     }
 }

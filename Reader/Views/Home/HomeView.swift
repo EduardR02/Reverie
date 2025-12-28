@@ -314,6 +314,16 @@ struct HomeView: View {
             // Delete EPUB file
             try? FileManager.default.removeItem(atPath: book.epubPath)
 
+            // Delete extracted publication and images
+            if let bookId = book.id {
+                let publicationDir = LibraryPaths.publicationDirectory(for: bookId)
+                try? FileManager.default.removeItem(at: publicationDir)
+
+                let imagesDir = LibraryPaths.imagesDirectory
+                    .appendingPathComponent("\(bookId)", isDirectory: true)
+                try? FileManager.default.removeItem(at: imagesDir)
+            }
+
             // Reload books list
             Task {
                 await loadBooks()
@@ -369,8 +379,21 @@ struct HomeView: View {
                 throw ImportError.notValidEPUB
             }
 
+            try LibraryPaths.ensureDirectory(LibraryPaths.booksDirectory)
+            try LibraryPaths.ensureDirectory(LibraryPaths.coversDirectory)
+            try LibraryPaths.ensureDirectory(LibraryPaths.publicationsDirectory)
+
+            let tempExtractDir = LibraryPaths.publicationsDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            var didMoveExtract = false
+            defer {
+                if !didMoveExtract {
+                    try? FileManager.default.removeItem(at: tempExtractDir)
+                }
+            }
+
             let parser = EPUBParser()
-            let parsed = try await parser.parse(epubURL: url)
+            let parsed = try await parser.parse(epubURL: url, destinationURL: tempExtractDir)
 
             guard !parsed.chapters.isEmpty else {
                 throw ImportError.noChaptersFound
@@ -378,35 +401,19 @@ struct HomeView: View {
 
             // Copy EPUB to app storage
             let fileManager = FileManager.default
-            let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let booksDir = appSupport
-                .appendingPathComponent("Reader", isDirectory: true)
-                .appendingPathComponent("books", isDirectory: true)
+            let destURL = LibraryPaths.booksDirectory
+                .appendingPathComponent("\(UUID().uuidString).epub")
 
-            try fileManager.createDirectory(at: booksDir, withIntermediateDirectories: true)
-
-            let destURL = booksDir.appendingPathComponent("\(UUID().uuidString).epub")
-
-            // Remove existing file if present
             if fileManager.fileExists(atPath: destURL.path) {
                 try fileManager.removeItem(at: destURL)
             }
-
             try fileManager.copyItem(at: url, to: destURL)
-
-            // Save cover if exists
-            var coverPath: String?
-            if let coverData = parsed.coverData {
-                let coverURL = booksDir.appendingPathComponent("\(UUID().uuidString).jpg")
-                try coverData.write(to: coverURL)
-                coverPath = coverURL.path
-            }
 
             // Create book record
             var book = Book(
                 title: parsed.title,
                 author: parsed.author,
-                coverPath: coverPath,
+                coverPath: nil,
                 epubPath: destURL.path,
                 chapterCount: parsed.chapters.count
             )
@@ -416,6 +423,21 @@ struct HomeView: View {
                 throw ImportError.bookSaveFailed
             }
 
+            let finalExtractDir = LibraryPaths.publicationDirectory(for: bookId)
+            if fileManager.fileExists(atPath: finalExtractDir.path) {
+                try fileManager.removeItem(at: finalExtractDir)
+            }
+            try fileManager.moveItem(at: tempExtractDir, to: finalExtractDir)
+            didMoveExtract = true
+
+            if let cover = parsed.cover {
+                let fileExtension = coverFileExtension(for: cover)
+                let coverURL = LibraryPaths.coverURL(for: bookId, fileExtension: fileExtension)
+                try cover.data.write(to: coverURL)
+                book.coverPath = coverURL.path
+                try appState.database.saveBook(&book)
+            }
+
             // Save chapters and footnotes
             for parsedChapter in parsed.chapters {
                 var chapter = Chapter(
@@ -423,7 +445,8 @@ struct HomeView: View {
                     index: parsedChapter.index,
                     title: parsedChapter.title,
                     contentHTML: parsedChapter.htmlContent,
-                    wordCount: parsedChapter.htmlContent.split(separator: " ").count
+                    resourcePath: parsedChapter.resourcePath,
+                    wordCount: parsedChapter.wordCount
                 )
                 try appState.database.saveChapter(&chapter)
 
@@ -435,7 +458,7 @@ struct HomeView: View {
                             marker: parsed.marker,
                             content: parsed.content,
                             refId: parsed.refId,
-                            sourceOffset: parsed.sourceOffset
+                            sourceBlockId: parsed.sourceBlockId
                         )
                     }
                     if !footnotes.isEmpty {
@@ -472,6 +495,61 @@ struct HomeView: View {
         }
     }
 
+    private func coverFileExtension(for cover: EPUBParser.Cover) -> String {
+        if let mediaType = cover.mediaType?.lowercased() {
+            switch mediaType {
+            case "image/jpeg": return "jpg"
+            case "image/png": return "png"
+            case "image/gif": return "gif"
+            case "image/webp": return "webp"
+            case "image/bmp": return "bmp"
+            case "image/svg+xml": return "svg"
+            default: break
+            }
+        }
+
+        if isJpegData(cover.data) { return "jpg" }
+        if isPngData(cover.data) { return "png" }
+        if isGifData(cover.data) { return "gif" }
+        if isWebpData(cover.data) { return "webp" }
+        if isBmpData(cover.data) { return "bmp" }
+        if isSvgData(cover.data) { return "svg" }
+
+        return "jpg"
+    }
+
+    private func isJpegData(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(3))
+        return bytes.count == 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF
+    }
+
+    private func isPngData(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(8))
+        return bytes.count == 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47
+    }
+
+    private func isGifData(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(4))
+        return bytes.count == 4 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38
+    }
+
+    private func isWebpData(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(12))
+        return bytes.count == 12
+            && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
+            && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50
+    }
+
+    private func isBmpData(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(2))
+        return bytes.count == 2 && bytes[0] == 0x42 && bytes[1] == 0x4D
+    }
+
+    private func isSvgData(_ data: Data) -> Bool {
+        let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
+        return text?.range(of: "<svg", options: .caseInsensitive) != nil
+    }
+
     private func processFullBook(_ book: Book) async {
         isProcessingBook = true
         processingProgress = 0
@@ -487,46 +565,55 @@ struct HomeView: View {
                 processingChapter = chapter.title
                 processingProgress = Double(index) / Double(chapters.count)
 
+                // Parse chapter into blocks
+                let blockParser = ContentBlockParser()
+                let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
+
                 // Process chapter
                 let analysis = try await appState.llmService.analyzeChapter(
-                    content: chapter.contentHTML,
+                    contentWithBlocks: contentWithBlocks,
                     rollingSummary: rollingSummary,
                     settings: appState.settings
                 )
 
                 // Save annotations
                 for data in analysis.annotations {
-                    let type = AnnotationType(rawValue: data.type) ?? .insight
+                    let type = AnnotationType(rawValue: data.type) ?? .science
+                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
+                        ? data.sourceBlockId : 1
                     var annotation = Annotation(
                         chapterId: chapter.id!,
                         type: type,
                         title: data.title,
                         content: data.content,
-                        sourceQuote: data.sourceQuote,
-                        sourceOffset: chapter.contentHTML.range(of: data.sourceQuote)
-                            .map { chapter.contentHTML.distance(from: chapter.contentHTML.startIndex, to: $0.lowerBound) } ?? 0
+                        sourceBlockId: validBlockId
                     )
                     try appState.database.saveAnnotation(&annotation)
                 }
 
                 // Save quizzes
                 for data in analysis.quizQuestions {
+                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
+                        ? data.sourceBlockId : 1
                     var quiz = Quiz(
                         chapterId: chapter.id!,
                         question: data.question,
                         answer: data.answer,
-                        sourceQuote: data.sourceQuote,
-                        sourceOffset: chapter.contentHTML.range(of: data.sourceQuote)
-                            .map { chapter.contentHTML.distance(from: chapter.contentHTML.startIndex, to: $0.lowerBound) } ?? 0
+                        sourceBlockId: validBlockId
                     )
                     try appState.database.saveQuiz(&quiz)
                 }
+                if !analysis.quizQuestions.isEmpty {
+                    appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
+                }
 
-                // Update chapter
+                // Update chapter with block info
                 var updatedChapter = chapter
                 updatedChapter.processed = true
                 updatedChapter.summary = analysis.summary
                 updatedChapter.rollingSummary = rollingSummary
+                updatedChapter.contentText = contentWithBlocks
+                updatedChapter.blockCount = blocks.count
                 try appState.database.saveChapter(&updatedChapter)
 
                 // Build rolling summary for next chapter

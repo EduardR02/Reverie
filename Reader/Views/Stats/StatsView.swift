@@ -297,6 +297,15 @@ struct StatsView: View {
             // Quiz breakdown
             HStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("\(stats.quizzesGenerated)")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundColor(theme.iris)
+                    Text("Generated")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
                     Text("\(stats.quizzesAnswered)")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text)
@@ -514,7 +523,8 @@ struct ActivityGraph: View {
             // Weekday labels
             HStack(spacing: 4) {
                 VStack(alignment: .trailing, spacing: 2) {
-                    ForEach(["", "Mon", "", "Wed", "", "Fri", ""], id: \.self) { day in
+                    let dayLabels = ["", "Mon", "", "Wed", "", "Fri", ""]
+                    ForEach(Array(dayLabels.enumerated()), id: \.offset) { _, day in
                         Text(day)
                             .font(.system(size: 9))
                             .foregroundColor(theme.muted)

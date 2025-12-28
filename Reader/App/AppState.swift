@@ -122,35 +122,44 @@ enum DensityLevel: String, Codable, CaseIterable {
     case high = "High"
     case xhigh = "Extra High"
 
-    /// Returns a range guidance for the LLM - model decides within range
-    var annotationRange: (min: Int, max: Int) {
+    var insightGuidance: String {
         switch self {
-        case .minimal: return (1, 3)
-        case .low: return (3, 5)
-        case .medium: return (4, 8)
-        case .high: return (7, 12)
-        case .xhigh: return (10, 20)
+        case .minimal: return "Only the most essential insights. Skip minor points."
+        case .low: return "A few high-value insights. Avoid filler."
+        case .medium: return "A balanced set of meaningful insights."
+        case .high: return "Many insights covering most notable moments."
+        case .xhigh: return "Dense, near-exhaustive insights. Avoid redundancy."
         }
     }
 
-    var imageRange: (min: Int, max: Int) {
+    var imageGuidance: String {
         switch self {
-        case .minimal: return (0, 1)
-        case .low: return (1, 2)
-        case .medium: return (2, 4)
-        case .high: return (3, 6)
-        case .xhigh: return (5, 10)
+        case .minimal: return "Only the most visually striking moments."
+        case .low: return "A few strong illustration-worthy scenes."
+        case .medium: return "Balanced visual coverage of key scenes."
+        case .high: return "Many visual moments, but avoid filler."
+        case .xhigh: return "Very visual and rich. Capture nearly all strong scenes."
         }
     }
 
     var description: String {
-        let r = annotationRange
-        return "\(r.min)-\(r.max) insights"
+        switch self {
+        case .minimal: return "Only essentials"
+        case .low: return "Few highlights"
+        case .medium: return "Balanced"
+        case .high: return "Deep coverage"
+        case .xhigh: return "Exhaustive"
+        }
     }
 
     var imageDescription: String {
-        let r = imageRange
-        return "\(r.min)-\(r.max) images"
+        switch self {
+        case .minimal: return "Very selective"
+        case .low: return "Selective"
+        case .medium: return "Balanced"
+        case .high: return "Illustration-heavy"
+        case .xhigh: return "Maximal"
+        }
     }
 }
 
@@ -164,24 +173,28 @@ enum ReasoningLevel: String, Codable, CaseIterable {
     case high = "High"
     case xhigh = "Extra High"
 
-    /// Maps to Gemini 3 thinkingLevel (flash model has limited options)
+    /// Maps to Gemini 3 thinkingLevel (Flash supports minimal/low/medium/high; Pro supports low/high)
     func gemini3Level(isFlash: Bool) -> String {
-        switch self {
-        case .off: return "none"
-        case .minimal, .low: return isFlash ? "low" : "low"
-        case .medium: return "medium"
-        case .high: return "high"
-        case .xhigh: return isFlash ? "high" : "high"  // Flash doesn't support xhigh
+        let effort = apiEffort
+        if isFlash {
+            return effort == "xhigh" ? "high" : effort
         }
+        return (effort == "minimal" || effort == "low") ? "low" : "high"
     }
 
     /// Maps to OpenAI reasoning effort (GPT-5+)
     var openAIEffort: String {
+        apiEffort
+    }
+
+    private var apiEffort: String {
         switch self {
-        case .off: return "low"  // Minimum
-        case .minimal, .low: return "low"
+        case .off: return "minimal"
+        case .minimal: return "minimal"
+        case .low: return "low"
         case .medium: return "medium"
-        case .high, .xhigh: return "high"
+        case .high: return "high"
+        case .xhigh: return "xhigh"
         }
     }
 
@@ -224,6 +237,7 @@ struct ReadingStats: Codable {
     var tokensOutput: Int = 0
 
     // Quiz stats
+    var quizzesGenerated: Int = 0
     var quizzesAnswered: Int = 0
     var quizzesCorrect: Int = 0
 
@@ -286,6 +300,11 @@ struct ReadingStats: Codable {
         save()
     }
 
+    mutating func recordQuizGenerated(count: Int = 1) {
+        quizzesGenerated += count
+        save()
+    }
+
     mutating func recordInsight() {
         insightsGenerated += 1
         save()
@@ -341,9 +360,9 @@ struct UserSettings: Codable, Equatable {
     var imageModel: ImageModel = .nanoBanana
 
     // Reading
-    var fontSize: CGFloat = 18
+    var fontSize: CGFloat = 15
     var fontFamily: String = "SF Pro Text"
-    var lineSpacing: CGFloat = 1.6
+    var lineSpacing: CGFloat = 1.2
     var theme: String = "Rose Pine"
 
     // AI Features
@@ -360,6 +379,8 @@ struct UserSettings: Codable, Equatable {
 
     // Auto-scroll behavior
     var autoSwitchToQuiz: Bool = true
+    var autoSwitchInsightsAndFootnotes: Bool = true
+    var autoSwitchFromChatOnScroll: Bool = true
     var smartAutoScrollEnabled: Bool = true
     var showReadingSpeedFooter: Bool = true
 

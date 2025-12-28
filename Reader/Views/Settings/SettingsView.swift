@@ -181,7 +181,7 @@ struct SettingsView: View {
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("How many insights to generate per chapter")
+                    Text("Controls insight density; count adapts to chapter richness")
                         .font(.system(size: 13))
                         .foregroundColor(theme.muted)
 
@@ -299,6 +299,30 @@ struct SettingsView: View {
                     }
                     .tint(theme.rose)
 
+                    Toggle(isOn: $state.settings.autoSwitchInsightsAndFootnotes) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Auto-switch Notes & Insights")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(theme.text)
+                            Text("Follow your scroll position between insights and footnotes")
+                                .font(.system(size: 12))
+                                .foregroundColor(theme.muted)
+                        }
+                    }
+                    .tint(theme.rose)
+
+                    Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Return to Notes from Chat")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(theme.text)
+                            Text("Switch back to the relevant tab when you scroll the text")
+                                .font(.system(size: 12))
+                                .foregroundColor(theme.muted)
+                        }
+                    }
+                    .tint(theme.rose)
+
                     Divider()
                         .background(theme.overlay)
 
@@ -371,6 +395,10 @@ struct SettingsView: View {
                             Text("Image Density")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(theme.muted)
+
+                            Text("Controls illustration density; count adapts to chapter richness")
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.subtle)
 
                             HStack(spacing: 6) {
                                 ForEach(DensityLevel.allCases, id: \.self) { level in

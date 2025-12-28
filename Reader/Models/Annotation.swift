@@ -7,10 +7,7 @@ struct Annotation: Identifiable, Codable, FetchableRecord, MutablePersistableRec
     var type: AnnotationType
     var title: String
     var content: String
-    var sourceQuote: String
-    var sourceOffset: Int  // Character offset in chapter
-    var webGrounded: Bool = false
-    var sourceURL: String?
+    var sourceBlockId: Int  // Block number [N] this insight relates to
 
     static let databaseTableName = "annotations"
 
@@ -26,29 +23,32 @@ struct Annotation: Identifiable, Codable, FetchableRecord, MutablePersistableRec
 // MARK: - Annotation Type
 
 enum AnnotationType: String, Codable {
-    case insight      // Deep analysis, connections
-    case context      // Historical/real-world context
-    case trivia       // Interesting facts
-    case worldBuilding // In-universe lore
-    case character    // Character background
+    case science       // Real science/tech behind concepts
+    case history       // Historical events, figures, parallels
+    case philosophy    // Questions being explored, thought experiments
+    case craft         // Author's technique, structure, pacing
+    case connection    // Links to other works, mythology, traditions
+    case world         // In-universe logic, unstated implications
 
     var icon: String {
         switch self {
-        case .insight: return "lightbulb.fill"
-        case .context: return "globe"
-        case .trivia: return "star.fill"
-        case .worldBuilding: return "building.2.fill"
-        case .character: return "person.fill"
+        case .science: return "atom"
+        case .history: return "clock.arrow.circlepath"
+        case .philosophy: return "brain"
+        case .craft: return "hammer"
+        case .connection: return "link"
+        case .world: return "globe"
         }
     }
 
     var label: String {
         switch self {
-        case .insight: return "Insight"
-        case .context: return "Context"
-        case .trivia: return "Trivia"
-        case .worldBuilding: return "World"
-        case .character: return "Character"
+        case .science: return "Science"
+        case .history: return "History"
+        case .philosophy: return "Philosophy"
+        case .craft: return "Craft"
+        case .connection: return "Links"
+        case .world: return "World"
         }
     }
 }
@@ -62,9 +62,6 @@ extension Annotation {
         static let type = Column(CodingKeys.type)
         static let title = Column(CodingKeys.title)
         static let content = Column(CodingKeys.content)
-        static let sourceQuote = Column(CodingKeys.sourceQuote)
-        static let sourceOffset = Column(CodingKeys.sourceOffset)
-        static let webGrounded = Column(CodingKeys.webGrounded)
-        static let sourceURL = Column(CodingKeys.sourceURL)
+        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
     }
 }

@@ -7,30 +7,37 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		F001 /* ReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001; };
-		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002; };
-		F003 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = S003; };
-		F004 /* Chapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S004; };
-		F005 /* Annotation.swift in Sources */ = {isa = PBXBuildFile; fileRef = S005; };
-		F006 /* Quiz.swift in Sources */ = {isa = PBXBuildFile; fileRef = S006; };
-		F007 /* GeneratedImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = S007; };
-		F008 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = S008; };
-		F009 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = S009; };
-		F010 /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = S010; };
-		F011 /* ImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = S011; };
-		F012 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S012; };
-		F013 /* BookCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = S013; };
-		F014 /* ImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = S014; };
-		F015 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S015; };
-		F016 /* BookContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S016; };
-		F017 /* AIPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = S017; };
-		F018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S018; };
-		F019 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = S019; };
-		F020 /* RosePine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S020; };
-		F021 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = P001; };
-		F022 /* Footnote.swift in Sources */ = {isa = PBXBuildFile; fileRef = S022; };
-		F023 /* ReadingSpeedTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = S023; };
-		F024 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S024; };
+		F001 /* ReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReaderApp.swift */; };
+		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002 /* AppState.swift */; };
+		F003 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = S003 /* Book.swift */; };
+		F004 /* Chapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S004 /* Chapter.swift */; };
+		F005 /* Annotation.swift in Sources */ = {isa = PBXBuildFile; fileRef = S005 /* Annotation.swift */; };
+		F006 /* Quiz.swift in Sources */ = {isa = PBXBuildFile; fileRef = S006 /* Quiz.swift */; };
+		F007 /* GeneratedImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = S007 /* GeneratedImage.swift */; };
+		F008 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = S008 /* Database.swift */; };
+		F009 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = S009 /* EPUBParser.swift */; };
+		F010 /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = S010 /* LLMService.swift */; };
+		F011 /* ImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = S011 /* ImageService.swift */; };
+		F012 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S012 /* HomeView.swift */; };
+		F013 /* BookCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = S013 /* BookCard.swift */; };
+		F014 /* ImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = S014 /* ImportSheet.swift */; };
+		F015 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S015 /* ReaderView.swift */; };
+		F016 /* BookContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S016 /* BookContentView.swift */; };
+		F017 /* AIPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = S017 /* AIPanel.swift */; };
+		F018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S018 /* SettingsView.swift */; };
+		F019 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = S019 /* Theme.swift */; };
+		F020 /* RosePine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S020 /* RosePine.swift */; };
+		F021 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = P001 /* GRDB */; };
+		F022 /* Footnote.swift in Sources */ = {isa = PBXBuildFile; fileRef = S022 /* Footnote.swift */; };
+		F023 /* ReadingSpeedTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = S023 /* ReadingSpeedTracker.swift */; };
+		F024 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S024 /* StatsView.swift */; };
+		F025 /* ReaderMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = S025 /* ReaderMetrics.swift */; };
+		F026 /* LibraryPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = S026 /* LibraryPaths.swift */; };
+		F027 /* LLMStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = S027 /* LLMStream.swift */; };
+		F028 /* LLMSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = S028 /* LLMSchemas.swift */; };
+		F029 /* LLMProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = S029 /* LLMProviders.swift */; };
+		F030 /* LLMPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = S030 /* LLMPrompts.swift */; };
+		F031 /* ContentBlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = S031 /* ContentBlockParser.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -58,6 +65,13 @@
 		S022 /* Footnote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Footnote.swift; sourceTree = "<group>"; };
 		S023 /* ReadingSpeedTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingSpeedTracker.swift; sourceTree = "<group>"; };
 		S024 /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
+		S025 /* ReaderMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderMetrics.swift; sourceTree = "<group>"; };
+		S026 /* LibraryPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPaths.swift; sourceTree = "<group>"; };
+		S027 /* LLMStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMStream.swift; sourceTree = "<group>"; };
+		S028 /* LLMSchemas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMSchemas.swift; sourceTree = "<group>"; };
+		S029 /* LLMProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProviders.swift; sourceTree = "<group>"; };
+		S030 /* LLMPrompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMPrompts.swift; sourceTree = "<group>"; };
+		S031 /* ContentBlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentBlockParser.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,34 +86,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		ROOT = {
-			isa = PBXGroup;
-			children = (
-				READER /* Reader */,
-				PRODUCTS /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		PRODUCTS /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				PROD /* Reader.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		READER /* Reader */ = {
-			isa = PBXGroup;
-			children = (
-				APP /* App */,
-				MODELS /* Models */,
-				SERVICES /* Services */,
-				VIEWS /* Views */,
-				THEME /* Theme */,
-			);
-			path = Reader;
-			sourceTree = "<group>";
-		};
 		APP /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -122,16 +108,67 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
+		PRODUCTS /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				PROD /* Reader.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		READER /* Reader */ = {
+			isa = PBXGroup;
+			children = (
+				APP /* App */,
+				MODELS /* Models */,
+				SERVICES /* Services */,
+				VIEWS /* Views */,
+				THEME /* Theme */,
+			);
+			path = Reader;
+			sourceTree = "<group>";
+		};
+		ROOT = {
+			isa = PBXGroup;
+			children = (
+				READER /* Reader */,
+				PRODUCTS /* Products */,
+			);
+			sourceTree = "<group>";
+		};
 		SERVICES /* Services */ = {
 			isa = PBXGroup;
 			children = (
 				S008 /* Database.swift */,
 				S009 /* EPUBParser.swift */,
 				S010 /* LLMService.swift */,
+				SERVICES_LLM /* LLM */,
 				S011 /* ImageService.swift */,
+				S026 /* LibraryPaths.swift */,
 				S023 /* ReadingSpeedTracker.swift */,
+				S031 /* ContentBlockParser.swift */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		SERVICES_LLM /* LLM */ = {
+			isa = PBXGroup;
+			children = (
+				S027 /* LLMStream.swift */,
+				S028 /* LLMSchemas.swift */,
+				S029 /* LLMProviders.swift */,
+				S030 /* LLMPrompts.swift */,
+			);
+			path = LLM;
+			sourceTree = "<group>";
+		};
+		THEME /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				S019 /* Theme.swift */,
+				S020 /* RosePine.swift */,
+			);
+			path = Theme;
 			sourceTree = "<group>";
 		};
 		VIEWS /* Views */ = {
@@ -161,6 +198,7 @@
 				S015 /* ReaderView.swift */,
 				S016 /* BookContentView.swift */,
 				S017 /* AIPanel.swift */,
+				S025 /* ReaderMetrics.swift */,
 			);
 			path = Reader;
 			sourceTree = "<group>";
@@ -181,21 +219,12 @@
 			path = Stats;
 			sourceTree = "<group>";
 		};
-		THEME /* Theme */ = {
-			isa = PBXGroup;
-			children = (
-				S019 /* Theme.swift */,
-				S020 /* RosePine.swift */,
-			);
-			path = Theme;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
 		TARGET /* Reader */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = CFGLIST_TARGET;
+			buildConfigurationList = CFGLIST_TARGET /* Build configuration list for PBXNativeTarget "Reader" */;
 			buildPhases = (
 				SOURCES /* Sources */,
 				FRMWK /* Frameworks */,
@@ -220,9 +249,9 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 2600;
 			};
-			buildConfigurationList = CFGLIST_PROJECT;
+			buildConfigurationList = CFGLIST_PROJECT /* Build configuration list for PBXProject "Reader" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -258,6 +287,10 @@
 				F008 /* Database.swift in Sources */,
 				F009 /* EPUBParser.swift in Sources */,
 				F010 /* LLMService.swift in Sources */,
+				F027 /* LLMStream.swift in Sources */,
+				F028 /* LLMSchemas.swift in Sources */,
+				F029 /* LLMProviders.swift in Sources */,
+				F030 /* LLMPrompts.swift in Sources */,
 				F011 /* ImageService.swift in Sources */,
 				F012 /* HomeView.swift in Sources */,
 				F013 /* BookCard.swift in Sources */,
@@ -271,6 +304,9 @@
 				F022 /* Footnote.swift in Sources */,
 				F023 /* ReadingSpeedTracker.swift in Sources */,
 				F024 /* StatsView.swift in Sources */,
+				F025 /* ReaderMetrics.swift in Sources */,
+				F026 /* LibraryPaths.swift in Sources */,
+				F031 /* ContentBlockParser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -283,44 +319,53 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
 					"$(inherited)",
 				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
-		};
-		CFG_RELEASE_PROJECT /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				SDKROOT = macosx;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
 		};
 		CFG_DEBUG_TARGET /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -330,6 +375,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -347,6 +393,53 @@
 			};
 			name = Debug;
 		};
+		CFG_RELEASE_PROJECT /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		CFG_RELEASE_TARGET /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -355,6 +448,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;

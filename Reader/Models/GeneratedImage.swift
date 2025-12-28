@@ -6,7 +6,7 @@ struct GeneratedImage: Identifiable, Codable, FetchableRecord, MutablePersistabl
     var chapterId: Int64
     var prompt: String
     var imagePath: String
-    var sourceOffset: Int
+    var sourceBlockId: Int  // Block number [N] this image depicts
     var createdAt: Date = Date()
 
     static let databaseTableName = "generated_images"
@@ -34,7 +34,7 @@ extension GeneratedImage {
         static let chapterId = Column(CodingKeys.chapterId)
         static let prompt = Column(CodingKeys.prompt)
         static let imagePath = Column(CodingKeys.imagePath)
-        static let sourceOffset = Column(CodingKeys.sourceOffset)
+        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
         static let createdAt = Column(CodingKeys.createdAt)
     }
 }

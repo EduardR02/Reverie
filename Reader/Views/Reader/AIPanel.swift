@@ -7,14 +7,22 @@ struct AIPanel: View {
     let footnotes: [Footnote]
     let images: [GeneratedImage]
     let currentAnnotationId: Int64?
+    let currentFootnoteRefId: String?
     let isProcessing: Bool
     let isGeneratingMore: Bool
+    let isClassifying: Bool
+    let classificationError: String?
     let onScrollTo: (Int64) -> Void  // Scroll to annotation by ID
     let onScrollToQuote: (String) -> Void  // Scroll to quote text (for quizzes)
     let onScrollToFootnote: (String) -> Void  // Scroll to footnote reference by refId
+    let onScrollToBlockId: (Int) -> Void  // Scroll to block by ID (for images/quizzes)
     let onGenerateMoreInsights: () -> Void
     let onGenerateMoreQuestions: () -> Void
+    let onForceProcess: () -> Void  // Force process garbage chapter
+    let onRetryClassification: () -> Void  // Retry failed classification
     @Binding var externalTabSelection: Tab?  // External control for tab switching
+    @Binding var selectedTab: Tab
+    @Binding var pendingChatPrompt: String?
 
     // Reading speed tracking
     let scrollPercent: Double
@@ -23,18 +31,27 @@ struct AIPanel: View {
 
     @State private var highlightedFootnoteId: String?
     @State private var showedSpeedPromptForChapter: Int64?  // Track which chapter we showed prompt for
+    @State private var isPromptAnimating = false  // Prevent layout chaos during popup animation
+    @Binding var expandedImage: GeneratedImage?  // Image shown in fullscreen overlay (shown at ReaderView level)
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
 
-    @State private var selectedTab: Tab = .insights
     @State private var chatInput = ""
     @State private var chatMessages: [ChatMessage] = []
     @State private var isLoading = false
     @State private var expandedAnnotationId: Int64?
+    @State private var chatScrollViewHeight: CGFloat = 0
+    @State private var chatContentMetrics = ChatContentMetrics(height: 0, minY: 0)
+    @State private var chatAutoScrollEnabled = true
+    @State private var chatScrollTick = 0
+
+    private let chatScrollSpace = "chat-scroll"
+    private let chatBottomId = "chat-bottom"
 
     enum Tab: String, CaseIterable {
         case insights = "Insights"
+        case images = "Images"
         case quiz = "Quiz"
         case footnotes = "Notes"
         case chat = "Chat"
@@ -42,6 +59,7 @@ struct AIPanel: View {
         var icon: String {
             switch self {
             case .insights: return "lightbulb"
+            case .images: return "photo"
             case .quiz: return "checkmark.circle"
             case .footnotes: return "note.text"
             case .chat: return "bubble.left.and.bubble.right"
@@ -54,38 +72,75 @@ struct AIPanel: View {
             // Tab bar
             tabBar
 
-            // Content
-            switch selectedTab {
-            case .insights:
-                insightsTab
-            case .quiz:
-                quizTab
-            case .footnotes:
-                footnotesTab
-            case .chat:
-                chatTab
-            }
+            // Content with safe area inset for reading speed footer only
+            tabContent
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if showsSharedPanels && appState.settings.showReadingSpeedFooter {
+                        readingSpeedFooter
+                    }
+                }
         }
         .background(theme.surface)
         .onChange(of: currentAnnotationId) { _, newId in
             // Auto-expand the current annotation when scrolling through text
-            if let newId = newId, selectedTab == .insights {
+            // Skip during popup animation to prevent chaotic layout
+            if let newId = newId, selectedTab == .insights, !isPromptAnimating {
                 withAnimation(.easeOut(duration: 0.2)) {
                     expandedAnnotationId = newId
                 }
             }
         }
+        .onChange(of: currentFootnoteRefId) { _, newId in
+            highlightedFootnoteId = newId
+        }
         .onChange(of: externalTabSelection) { _, newTab in
             // External tab control (e.g., auto-switch to quiz at chapter end)
             if let tab = newTab {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    selectedTab = tab
+                if selectedTab != tab {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        selectedTab = tab
+                    }
                 }
                 // Reset external selection after applying
                 DispatchQueue.main.async {
                     externalTabSelection = nil
                 }
             }
+        }
+        .onChange(of: pendingChatPrompt) { _, newPrompt in
+            let trimmed = newPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                selectedTab = .chat
+            }
+            sendMessage(trimmed)
+            DispatchQueue.main.async {
+                pendingChatPrompt = nil
+            }
+        }
+    }
+
+    private var showsSharedPanels: Bool {
+        selectedTab != .chat
+    }
+
+    private var shouldShowSpeedPrompt: Bool {
+        scrollPercent > 0.9 && showedSpeedPromptForChapter != chapter?.id
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .insights:
+            insightsTab
+        case .images:
+            imagesTab
+        case .quiz:
+            quizTab
+        case .footnotes:
+            footnotesTab
+        case .chat:
+            chatTab
         }
     }
 
@@ -115,6 +170,14 @@ struct AIPanel: View {
                                 .padding(.vertical, 2)
                                 .background(selectedTab == tab ? theme.rose : theme.rose.opacity(0.2))
                                 .clipShape(Capsule())
+                        } else if tab == .images && !images.isEmpty {
+                            Text("\(images.count)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(selectedTab == tab ? theme.base : theme.iris)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(selectedTab == tab ? theme.iris : theme.iris.opacity(0.2))
+                                .clipShape(Capsule())
                         } else if tab == .quiz && !quizzes.isEmpty {
                             Text("\(quizzes.count)")
                                 .font(.system(size: 10, weight: .bold))
@@ -130,21 +193,20 @@ struct AIPanel: View {
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(selectedTab == tab ? theme.foam : theme.foam.opacity(0.2))
-                                .clipShape(Capsule())
+                            .clipShape(Capsule())
                         }
                     }
-                    .foregroundColor(selectedTab == tab ? theme.rose : theme.muted)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 8)
-                    .background(
-                        selectedTab == tab ? theme.overlay : Color.clear
-                    )
+                    .foregroundColor(selectedTab == tab ? theme.rose : theme.muted)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(selectedTab == tab ? theme.overlay : Color.clear)
             }
         }
-        .frame(height: 48)
+        .frame(height: ReaderMetrics.headerHeight)
         .background(theme.surface)
     }
 
@@ -154,12 +216,27 @@ struct AIPanel: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
+                    // Classification in progress
+                    if isClassifying {
+                        classifyingBanner
+                    }
+
+                    // Classification error banner
+                    if classificationError != nil {
+                        classificationErrorBanner
+                    }
+
+                    // Garbage chapter banner (show when chapter is garbage and not yet processed)
+                    if let chapter = chapter, chapter.shouldSkipAutoProcessing && !chapter.processed {
+                        garbageChapterBanner
+                    }
+
                     // Processing indicator
                     if isProcessing {
                         processingBanner(text: "Generating insights...")
                     }
 
-                    if annotations.isEmpty && !isProcessing {
+                    if annotations.isEmpty && !isProcessing && !isClassifying && (chapter?.shouldSkipAutoProcessing != true) {
                         emptyState(
                             icon: "lightbulb",
                             title: "No insights yet",
@@ -167,80 +244,102 @@ struct AIPanel: View {
                         )
                     } else if !annotations.isEmpty {
                         ForEach(annotations) { annotation in
-                            AnnotationCard(
-                                annotation: annotation,
-                                isExpanded: expandedAnnotationId == annotation.id,
-                                isCurrent: currentAnnotationId == annotation.id,
-                                onToggle: {
-                                    withAnimation(.easeOut(duration: 0.2)) {
-                                        if expandedAnnotationId == annotation.id {
-                                            expandedAnnotationId = nil
-                                        } else {
-                                            expandedAnnotationId = annotation.id
-                                            // Auto-scroll to passage when expanding
-                                            onScrollTo(annotation.id!)
+                            if let annotationId = annotation.id {
+                                AnnotationCard(
+                                    annotation: annotation,
+                                    isExpanded: expandedAnnotationId == annotationId,
+                                    isCurrent: currentAnnotationId == annotationId,
+                                    onToggle: {
+                                        withAnimation(.easeOut(duration: 0.2)) {
+                                            if expandedAnnotationId == annotationId {
+                                                expandedAnnotationId = nil
+                                            } else {
+                                                expandedAnnotationId = annotationId
+                                                // Auto-scroll to passage when expanding
+                                                onScrollTo(annotationId)
+                                            }
                                         }
+                                    },
+                                    onScrollTo: {
+                                        onScrollTo(annotationId)
                                     }
-                                },
-                                onScrollTo: {
-                                    onScrollTo(annotation.id!)
-                                }
-                            )
-                            .id(annotation.id)
+                                )
+                                .id(annotationId)
+                            }
                         }
+                    }
+
+                    // More insights button
+                    if !annotations.isEmpty && !isProcessing {
+                        Button {
+                            onGenerateMoreInsights()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isGeneratingMore {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                    Text("Generating...")
+                                } else {
+                                    Image(systemName: "plus.circle")
+                                    Text("More insights")
+                                }
+                            }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.rose)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 16)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isGeneratingMore)
+                    }
+
+                    // Chapter complete prompt (shows at 90% scroll)
+                    if shouldShowSpeedPrompt {
+                        chapterCompletePrompt
                     }
                 }
                 .padding(16)
             }
             .onChange(of: currentAnnotationId) { oldValue, newValue in
                 // Auto-scroll to current insight and expand it
-                if let id = newValue {
+                // Skip during popup animation to prevent chaotic layout
+                // Use .top anchor so insights near top of list can still be scrolled to
+                if let id = newValue, !isPromptAnimating {
                     withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(id, anchor: .center)
+                        proxy.scrollTo(id, anchor: .top)
                         expandedAnnotationId = id
                     }
                 }
             }
+        }
+    }
 
-                // More insights button
-                if !annotations.isEmpty && !isProcessing {
-                    Button {
-                        onGenerateMoreInsights()
-                    } label: {
-                        HStack(spacing: 6) {
-                            if isGeneratingMore {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text("Generating...")
-                            } else {
-                                Image(systemName: "plus.circle")
-                                Text("More insights")
-                            }
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(theme.rose)
-                        .padding(.vertical, 12)
-                        .padding(.horizontal, 16)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isGeneratingMore)
-                }
+    // MARK: - Images Tab
 
-                // Reading speed prompt (shows near chapter end)
-                if scrollPercent > 0.9 && showedSpeedPromptForChapter != chapter?.id {
-                    ReadingSpeedPrompt(
-                        chapterWPM: chapterWPM,
-                        averageWPM: appState.readingSpeedTracker.averageWPM,
-                        confidence: appState.readingSpeedTracker.confidence,
-                        onApplyAdjustment: { adjustment in
-                            onApplyAdjustment(adjustment)
-                            showedSpeedPromptForChapter = chapter?.id
-                        },
-                        onDismiss: {
-                            showedSpeedPromptForChapter = chapter?.id
-                        }
+    private var imagesTab: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                if images.isEmpty {
+                    emptyState(
+                        icon: "photo",
+                        title: "No images yet",
+                        subtitle: "Images will appear as they're generated"
                     )
+                } else {
+                    ForEach(images) { image in
+                        ImageCard(
+                            image: image,
+                            onScrollTo: {
+                                onScrollToBlockId(image.sourceBlockId)
+                            },
+                            onExpand: {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    expandedImage = image
+                                }
+                            }
+                        )
+                    }
                 }
             }
             .padding(16)
@@ -252,6 +351,11 @@ struct AIPanel: View {
     private var quizTab: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
+                // Compact reading speed prompt (at top of quiz)
+                if shouldShowSpeedPrompt {
+                    compactSpeedPrompt
+                }
+
                 // Processing indicator
                 if isProcessing {
                     processingBanner(text: "Generating questions...")
@@ -268,7 +372,7 @@ struct AIPanel: View {
                         QuizCard(
                             quiz: quiz,
                             onScrollTo: {
-                                onScrollToQuote(quiz.sourceQuote)
+                                onScrollToBlockId(quiz.sourceBlockId)
                             }
                         )
                     }
@@ -343,44 +447,88 @@ struct AIPanel: View {
                     }
                 }
             }
+            .onAppear {
+                if let id = highlightedFootnoteId {
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            proxy.scrollTo(id, anchor: .center)
+                        }
+                    }
+                }
+            }
         }
     }
 
     // MARK: - Chat Tab
 
     private var chatTab: some View {
-        VStack(spacing: 0) {
-            // Messages
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if chatMessages.isEmpty {
-                        emptyState(
-                            icon: "bubble.left.and.bubble.right",
-                            title: "Ask anything",
-                            subtitle: "I have the current chapter in context"
-                        )
-                    } else {
-                        ForEach(chatMessages) { message in
-                            ChatBubble(message: message)
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                // Messages
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if chatMessages.isEmpty {
+                            emptyState(
+                                icon: "bubble.left.and.bubble.right",
+                                title: "Ask anything",
+                                subtitle: "I have the current chapter in context"
+                            )
+                        } else {
+                            ForEach(chatMessages) { message in
+                                ChatBubble(message: message)
+                            }
                         }
+                        Color.clear.frame(height: 1).id(chatBottomId)
                     }
+                    .padding(16)
+                    .background(
+                        GeometryReader { geo in
+                            let metrics = ChatContentMetrics(
+                                height: geo.size.height,
+                                minY: geo.frame(in: .named(chatScrollSpace)).minY
+                            )
+                            Color.clear.preference(key: ChatContentMetricsKey.self, value: metrics)
+                        }
+                    )
                 }
-                .padding(16)
-            }
+                .coordinateSpace(name: chatScrollSpace)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: ChatScrollViewHeightKey.self, value: geo.size.height)
+                    }
+                )
+                .onPreferenceChange(ChatContentMetricsKey.self) { metrics in
+                    chatContentMetrics = metrics
+                    updateChatAutoScroll()
+                }
+                .onPreferenceChange(ChatScrollViewHeightKey.self) { height in
+                    chatScrollViewHeight = height
+                    updateChatAutoScroll()
+                }
 
-            // Input
-            chatInputBar
+                // Input
+                chatInputBar
+            }
+            .onChange(of: chatScrollTick) { _, _ in
+                guard chatAutoScrollEnabled else { return }
+                proxy.scrollTo(chatBottomId, anchor: .bottom)
+            }
+            .onChange(of: chatAutoScrollEnabled) { _, enabled in
+                if enabled {
+                    proxy.scrollTo(chatBottomId, anchor: .bottom)
+                }
+            }
         }
     }
 
     private var chatInputBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             TextField("Ask about this chapter...", text: $chatInput)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .foregroundColor(theme.text)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 6)
                 .background(theme.base)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .onSubmit {
@@ -399,8 +547,146 @@ struct AIPanel: View {
             .buttonStyle(.plain)
             .disabled(chatInput.isEmpty || isLoading)
         }
+        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
+        .frame(height: ReaderMetrics.footerHeight)
+        .background(theme.surface)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(theme.overlay)
+                .frame(height: 1)
+        }
+    }
+
+    // MARK: - Shared Panels
+
+    private var chapterCompletePrompt: some View {
+        ReadingSpeedPrompt(
+            chapterWPM: chapterWPM,
+            averageWPM: appState.readingSpeedTracker.averageWPM,
+            confidence: appState.readingSpeedTracker.confidence,
+            onApplyAdjustment: { adjustment in
+                onApplyAdjustment(adjustment)
+                showedSpeedPromptForChapter = chapter?.id
+            },
+            onDismiss: {
+                showedSpeedPromptForChapter = chapter?.id
+            }
+        )
+    }
+
+    /// Compact reading speed prompt for quiz tab
+    private var compactSpeedPrompt: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "speedometer")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(theme.iris)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Chapter Complete")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.text)
+
+                if let wpm = chapterWPM, wpm > 0 {
+                    Text("\(Int(wpm)) WPM this chapter")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                showedSpeedPromptForChapter = chapter?.id
+            } label: {
+                Text("OK")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.foam)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(theme.foam.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
         .padding(12)
-        .background(theme.overlay)
+        .background(theme.iris.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(theme.iris.opacity(0.2), lineWidth: 1)
+        }
+    }
+
+    private var readingSpeedFooter: some View {
+        HStack(spacing: 10) {
+            if appState.readingSpeedTracker.averageWPM > 0 {
+                let confidence = appState.readingSpeedTracker.confidence
+                HStack(spacing: 6) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 10))
+
+                    Text("\(appState.readingSpeedTracker.formattedAverageWPM) WPM")
+                        .font(.system(size: 11, weight: .medium))
+
+                    Text("•")
+                        .foregroundColor(theme.muted)
+
+                    Circle()
+                        .fill(confidence >= 0.8 ? theme.foam : theme.gold)
+                        .frame(width: 5, height: 5)
+
+                    Text(confidence >= 0.8 ? "Calibrated" : "Calibrating...")
+                        .font(.system(size: 10))
+                }
+                .foregroundColor(theme.iris)
+            } else {
+                // Placeholder when no data yet
+                HStack(spacing: 6) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 10))
+                    Text("Learning your pace...")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("•")
+                        .foregroundColor(theme.muted)
+                    Text("Finish a chapter to calibrate")
+                        .font(.system(size: 10))
+                }
+                .foregroundColor(theme.muted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+
+            Spacer()
+
+            // Lock/pause toggle (only show when we have data)
+            if appState.readingSpeedTracker.averageWPM > 0 {
+                Button {
+                    appState.readingSpeedTracker.toggleLock()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: appState.readingSpeedTracker.isLocked ? "lock.fill" : "lock.open")
+                            .font(.system(size: 10))
+                        Text(appState.readingSpeedTracker.isLocked ? "Locked" : "Tracking")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(appState.readingSpeedTracker.isLocked ? theme.rose : theme.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(appState.readingSpeedTracker.isLocked ? theme.rose.opacity(0.15) : theme.overlay)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(appState.readingSpeedTracker.isLocked ? "Reading speed is locked" : "Click to lock reading speed")
+            }
+        }
+        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
+        .frame(height: ReaderMetrics.footerHeight)
+        .background(theme.surface)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(theme.overlay)
+                .frame(height: 1)
+        }
     }
 
     // MARK: - Empty State
@@ -446,19 +732,129 @@ struct AIPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Banner shown for garbage chapters (front/back matter)
+    private var garbageChapterBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.badge.ellipsis")
+                    .font(.system(size: 16))
+                    .foregroundColor(theme.muted)
+
+                Text("Front/Back Matter")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.text)
+            }
+
+            Text("This chapter looks like front or back matter (copyright, acknowledgements, etc). AI generation was skipped.")
+                .font(.system(size: 12))
+                .foregroundColor(theme.muted)
+                .lineSpacing(3)
+
+            Button {
+                onForceProcess()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Process Anyway")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(theme.foam)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(theme.foam.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(theme.overlay.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Banner shown when classification failed
+    private var classificationErrorBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 16))
+                    .foregroundColor(theme.gold)
+
+                Text("Classification Failed")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.text)
+            }
+
+            if let error = classificationError {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.muted)
+                    .lineSpacing(3)
+            }
+
+            Text("Will retry automatically when you reopen this book.")
+                .font(.system(size: 11))
+                .foregroundColor(theme.subtle)
+
+            Button {
+                onRetryClassification()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Retry Now")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(theme.gold)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(theme.gold.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(theme.gold.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Banner shown while classifying chapters
+    private var classifyingBanner: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .scaleEffect(0.8)
+
+            Text("Classifying chapters...")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(theme.foam)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .background(theme.foam.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     // MARK: - Actions
 
-    private func sendMessage() {
-        guard !chatInput.isEmpty, let chapter = chapter else { return }
+    @MainActor
+    private func sendMessage(_ text: String? = nil) {
+        let rawInput = text ?? chatInput
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let chapter = chapter else { return }
 
-        let userMessage = ChatMessage(role: .user, content: chatInput)
+        let userMessage = ChatMessage(role: .user, content: trimmed)
         chatMessages.append(userMessage)
-        let query = chatInput
-        chatInput = ""
+        chatScrollTick += 1
+        let query = trimmed
+        if text == nil {
+            chatInput = ""
+        }
 
         // Add empty assistant message for streaming
-        var assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil)
+        let assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil)
         chatMessages.append(assistantMessage)
+        chatScrollTick += 1
         let messageIndex = chatMessages.count - 1
 
         isLoading = true
@@ -468,9 +864,18 @@ struct AIPanel: View {
                 var contentBuffer = ""
                 var thinkingBuffer = ""
 
+                // Get or generate clean text with block markers
+                let contentWithBlocks: String
+                if let cached = chapter.contentText {
+                    contentWithBlocks = cached
+                } else {
+                    let (_, text) = ContentBlockParser().parse(html: chapter.contentHTML)
+                    contentWithBlocks = text
+                }
+
                 let stream = appState.llmService.chatStreaming(
                     message: query,
-                    chapterContent: chapter.contentHTML,
+                    contentWithBlocks: contentWithBlocks,
                     rollingSummary: chapter.rollingSummary,
                     settings: appState.settings
                 )
@@ -478,23 +883,65 @@ struct AIPanel: View {
                 for try await chunk in stream {
                     if chunk.isThinking {
                         thinkingBuffer += chunk.text
-                        chatMessages[messageIndex].thinking = thinkingBuffer
+                        await MainActor.run {
+                            chatMessages[messageIndex].thinking = thinkingBuffer
+                            chatScrollTick += 1
+                        }
                     } else {
                         contentBuffer += chunk.text
-                        chatMessages[messageIndex].content = contentBuffer
+                        await MainActor.run {
+                            chatMessages[messageIndex].content = contentBuffer
+                            chatScrollTick += 1
+                        }
                     }
                 }
 
                 // Finalize message
                 if contentBuffer.isEmpty && !thinkingBuffer.isEmpty {
-                    chatMessages[messageIndex].content = "(Reasoning only - no response)"
+                    await MainActor.run {
+                        chatMessages[messageIndex].content = "(Reasoning only - no response)"
+                        chatScrollTick += 1
+                    }
+                } else if contentBuffer.isEmpty && thinkingBuffer.isEmpty {
+                    await MainActor.run {
+                        chatMessages[messageIndex].content = "No response returned. Try again."
+                        chatScrollTick += 1
+                    }
                 }
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                chatMessages[messageIndex].content = message
+                await MainActor.run {
+                    chatMessages[messageIndex].content = message
+                    chatScrollTick += 1
+                }
             }
 
-            isLoading = false
+            await MainActor.run {
+                isLoading = false
+            }
+        }
+    }
+
+    private func normalizedChapterText(_ html: String) -> String {
+        let stripped = html.replacingOccurrences(
+            of: "<[^>]+>",
+            with: " ",
+            options: .regularExpression
+        )
+        let condensed = stripped.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
+        return condensed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func updateChatAutoScroll() {
+        guard chatScrollViewHeight > 0 else { return }
+        let distanceToBottom = chatContentMetrics.height + chatContentMetrics.minY - chatScrollViewHeight
+        let shouldAutoScroll = distanceToBottom <= 20
+        if chatAutoScrollEnabled != shouldAutoScroll {
+            chatAutoScrollEnabled = shouldAutoScroll
         }
     }
 }
@@ -516,6 +963,27 @@ struct ChatMessage: Identifiable {
         self.role = role
         self.content = content
         self.thinking = thinking
+    }
+}
+
+private struct ChatContentMetrics: Equatable {
+    let height: CGFloat
+    let minY: CGFloat
+}
+
+private struct ChatContentMetricsKey: PreferenceKey {
+    static var defaultValue = ChatContentMetrics(height: 0, minY: 0)
+
+    static func reduce(value: inout ChatContentMetrics, nextValue: () -> ChatContentMetrics) {
+        value = nextValue()
+    }
+}
+
+private struct ChatScrollViewHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -643,20 +1111,6 @@ struct AnnotationCard: View {
                         .foregroundColor(theme.text)
                         .lineSpacing(4)
                         .textSelection(.enabled)
-
-                    // Source quote
-                    HStack(alignment: .top, spacing: 8) {
-                        Rectangle()
-                            .fill(theme.rose)
-                            .frame(width: 2)
-
-                        Text(annotation.sourceQuote)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(theme.subtle)
-                            .italic()
-                            .lineLimit(3)
-                            .textSelection(.enabled)
-                    }
 
                     // Jump to source
                     Button(action: onScrollTo) {
@@ -952,7 +1406,7 @@ struct ReadingSpeedPrompt: View {
 
                     // Subtle dismissal for browsing
                     Button(action: onDismiss) {
-                        Text("I was just skimming")
+                        Text("I was just browsing")
                             .font(.system(size: 11))
                             .foregroundColor(theme.muted)
                     }
@@ -1005,6 +1459,108 @@ struct ReadingSpeedPrompt: View {
         case .skippedInsights: return "+15%"
         case .readInsights: return "-10%"
         case .wasDistracted: return "-30%"
+        }
+    }
+}
+
+// MARK: - Image Card
+
+struct ImageCard: View {
+    let image: GeneratedImage
+    let onScrollTo: () -> Void
+    let onExpand: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Image preview - use .fit to show full image, never clip content
+            AsyncImage(url: image.imageURL) { phase in
+                switch phase {
+                case .success(let loadedImage):
+                    loadedImage
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 200)
+                        .frame(maxWidth: .infinity)
+                        .background(theme.overlay.opacity(0.3))
+                case .failure:
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 24))
+                        Text("Failed to load")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(theme.muted)
+                    .frame(height: 120)
+                    .frame(maxWidth: .infinity)
+                    .background(theme.overlay)
+                case .empty:
+                    ProgressView()
+                        .frame(height: 120)
+                        .frame(maxWidth: .infinity)
+                        .background(theme.overlay)
+                @unknown default:
+                    EmptyView()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                onExpand()
+            }
+            .onTapGesture(count: 1) {
+                onScrollTo()
+            }
+            .contextMenu {
+                Button {
+                    onExpand()
+                } label: {
+                    Label("View Full Size", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+
+                Button {
+                    onScrollTo()
+                } label: {
+                    Label("Go to Source", systemImage: "arrow.right.circle")
+                }
+            }
+
+            // Caption/prompt
+            VStack(alignment: .leading, spacing: 6) {
+                Text(image.prompt)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.text)
+                    .lineLimit(2)
+
+                HStack(spacing: 8) {
+                    Button(action: onScrollTo) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.right.circle")
+                            Text("Go to source")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(theme.iris)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Button(action: onExpand) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+        }
+        .background(theme.base)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(theme.overlay, lineWidth: 1)
         }
     }
 }

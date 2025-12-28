@@ -2,6 +2,7 @@
 
 # Xcode
 DerivedData/
+.derivedData/
 xcuserdata/
 *.xcuserstate
 *.app
@@ -9,10 +10,21 @@ build/
 
 # SwiftPM
 .build/
+.build-xcode/
 .swiftpm/
+.swiftpm-cache/
+.swiftpm-config/
+.swiftpm-security/
+
+# Local tooling
+.claude/
 
 # Local notes and scripts
 api_manager.js
+api_reference.md
 LLMProviders.js
 current-plan.md
 2025-12-27-im-thinking-of-making-an-ai-augmented-book-app-on.txt
+frontend-design-skill.md
+image_utils.js
+reboot.md
