@@ -39,7 +39,9 @@ Suggest scenes worth visualizing:
 - Moments with distinctive atmosphere
 - Spatial layouts that help understanding
 
-Each needs: prompt (vivid, include style/lighting/composition), sourceBlockId (place near this scene).
+Each needs:
+- excerpt: a verbatim excerpt from the chapter, long enough to capture the scene (2-6 sentences or more if needed). Use contiguous text only. No paraphrase, no added words, no [N] labels.
+- sourceBlockId: block number [N] where the excerpt starts (if it spans multiple blocks, use the first).
 Skip if nothing merits visualization.
 """
         } else {
@@ -317,6 +319,25 @@ Generate an image prompt for the scene around "\(word)":
 Single vivid prompt. Include setting, lighting, atmosphere, key elements, suggested style. Ground it in what the text describes.
 """
         return LLMRequestPrompt(text: prompt)
+    }
+
+    static func imagePromptFromExcerpt(_ excerpt: String, rewrite: Bool) -> String {
+        let header: String
+        if rewrite {
+            header = """
+Before generating, rewrite the excerpt into a concise, vivid image prompt for yourself. Then generate the image from that rewritten prompt. Do not add elements that aren’t described or clearly implied.
+"""
+        } else {
+            header = "Generate an image based strictly on this excerpt from a book. Do not add elements that aren’t described or clearly implied."
+        }
+        return """
+\(header)
+
+Excerpt:
+\"\"\"
+\(excerpt)
+\"\"\"
+"""
     }
 
     // MARK: - Chapter Classification

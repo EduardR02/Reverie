@@ -44,7 +44,7 @@ final class LLMService {
     }
 
     struct ImageSuggestion: Codable {
-        let prompt: String
+        let excerpt: String
         let sourceBlockId: Int
     }
 
@@ -59,6 +59,10 @@ final class LLMService {
 
     func explainWordChatPrompt(word: String, context: String) -> String {
         PromptLibrary.explainWordChatPrompt(word: word, context: context)
+    }
+
+    func imagePromptFromExcerpt(_ excerpt: String, rewrite: Bool = false) -> String {
+        PromptLibrary.imagePromptFromExcerpt(excerpt, rewrite: rewrite)
     }
 
     // MARK: - Analyze Chapter

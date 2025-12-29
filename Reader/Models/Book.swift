@@ -72,8 +72,10 @@ extension Book {
         static let classificationError = Column(CodingKeys.classificationError)
     }
 
-    /// Whether classification needs to run (pending or previously failed)
+    /// Whether classification needs to run (pending, failed, or stuck in-progress)
     var needsClassification: Bool {
-        classificationStatus == .pending || classificationStatus == .failed
+        classificationStatus == .pending
+            || classificationStatus == .failed
+            || classificationStatus == .inProgress
     }
 }

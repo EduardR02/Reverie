@@ -407,8 +407,7 @@ final class EPUBParser {
             }
 
             let bodyHTML = extractBodyInnerXML(from: document) ?? ""
-            let normalizedHTML = normalizeEmbeddedSVG(in: bodyHTML)
-            let footnotes = extractFootnotes(from: normalizedHTML)
+            let footnotes = extractFootnotes(from: bodyHTML)
 
             let chapterTitle = titleForChapter(
                 href: item.href,
@@ -422,7 +421,7 @@ final class EPUBParser {
 
             chapters.append(ParsedChapter(
                 title: chapterTitle,
-                htmlContent: normalizedHTML,
+                htmlContent: bodyHTML,
                 index: index,
                 footnotes: footnotes,
                 resourcePath: resourcePath,
@@ -502,41 +501,6 @@ final class EPUBParser {
         return nil
     }
 
-    private func normalizeEmbeddedSVG(in html: String) -> String {
-        guard html.range(of: "xlink:href", options: .caseInsensitive) != nil else {
-            return html
-        }
-
-        var result = html
-
-        if let svgRegex = try? NSRegularExpression(
-            pattern: "<svg(?![^>]*\\sxmlns:xlink=)",
-            options: [.caseInsensitive]
-        ) {
-            let range = NSRange(result.startIndex..., in: result)
-            result = svgRegex.stringByReplacingMatches(
-                in: result,
-                options: [],
-                range: range,
-                withTemplate: "<svg xmlns:xlink=\"http://www.w3.org/1999/xlink\""
-            )
-        }
-
-        if let imageRegex = try? NSRegularExpression(
-            pattern: "<([a-zA-Z0-9:_-]+)(?![^>]*\\shref=)([^>]*?)\\sxlink:href=(\"|')([^\"']+)(\"|')([^>]*)>",
-            options: [.caseInsensitive]
-        ) {
-            let range = NSRange(result.startIndex..., in: result)
-            result = imageRegex.stringByReplacingMatches(
-                in: result,
-                options: [],
-                range: range,
-                withTemplate: "<$1$2 xlink:href=\"$4\" href=\"$4\"$6>"
-            )
-        }
-
-        return result
-    }
 
     private func resolveRelativeURL(_ href: String, relativeTo baseDir: URL) -> URL {
         let decoded = href.removingPercentEncoding ?? href

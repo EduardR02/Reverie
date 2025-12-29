@@ -299,12 +299,12 @@ struct SettingsView: View {
                     }
                     .tint(theme.rose)
 
-                    Toggle(isOn: $state.settings.autoSwitchInsightsAndFootnotes) {
+                    Toggle(isOn: $state.settings.autoSwitchContextTabs) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Auto-switch Notes & Insights")
+                            Text("Auto-switch Insights, Images & Notes")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(theme.text)
-                            Text("Follow your scroll position between insights and footnotes")
+                            Text("Follow your scroll position across related tabs")
                                 .font(.system(size: 12))
                                 .foregroundColor(theme.muted)
                         }
@@ -313,7 +313,7 @@ struct SettingsView: View {
 
                     Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Return to Notes from Chat")
+                            Text("Return to Context Tabs from Chat")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(theme.text)
                             Text("Switch back to the relevant tab when you scroll the text")
@@ -362,6 +362,18 @@ struct SettingsView: View {
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(theme.text)
                             Text("Generate illustrations for scenes (uses Imagen API)")
+                                .font(.system(size: 12))
+                                .foregroundColor(theme.muted)
+                        }
+                    }
+                    .tint(theme.rose)
+
+                    Toggle(isOn: $state.settings.inlineAIImages) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Inline AI Images in Text")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(theme.text)
+                            Text("Show generated images inside the chapter, in addition to the Images tab")
                                 .font(.system(size: 12))
                                 .foregroundColor(theme.muted)
                         }
@@ -421,6 +433,20 @@ struct SettingsView: View {
                                 }
                             }
                         }
+
+                        Divider()
+
+                        Toggle(isOn: $state.settings.rewriteImageExcerpts) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Rewrite Excerpts into Image Prompts")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(theme.text)
+                                Text("Lets the image model paraphrase excerpts into a prompt before generating")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(theme.muted)
+                            }
+                        }
+                        .tint(theme.rose)
                     }
                 }
             }

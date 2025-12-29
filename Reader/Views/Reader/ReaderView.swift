@@ -23,6 +23,7 @@ struct ReaderView: View {
 
     // Scroll sync
     @State private var currentAnnotationId: Int64?
+    @State private var currentImageId: Int64?
     @State private var currentFootnoteRefId: String?
     @State private var scrollToAnnotationId: Int64?
     @State private var scrollToPercent: Double?
@@ -30,6 +31,7 @@ struct ReaderView: View {
     @State private var scrollToBlockId: Int?  // Block ID for scrolling
     @State private var scrollToQuote: String?
     @State private var pendingMarkerInjections: [MarkerInjection] = []
+    @State private var pendingImageMarkerInjections: [ImageMarkerInjection] = []
     @State private var scrollByAmount: Double?
     @State private var lastScrollPercent: Double = 0
     @State private var lastScrollOffset: Double = 0
@@ -45,6 +47,9 @@ struct ReaderView: View {
     @State private var hasAutoSwitchedToQuiz = false
     @State private var aiPanelSelectedTab: AIPanel.Tab = .insights
     @State private var pendingChatPrompt: String?
+    @State private var isChatInputFocused = false
+    @State private var lastAutoSwitchAt: TimeInterval = 0
+    @State private var suppressContextAutoSwitchUntil: TimeInterval = 0
 
     // Reading speed tracking
     @State private var chapterWPM: Double?
@@ -76,12 +81,15 @@ struct ReaderView: View {
                 footnotes: footnotes,
                 images: images,
                 currentAnnotationId: currentAnnotationId,
+                currentImageId: currentImageId,
                 currentFootnoteRefId: currentFootnoteRefId,
                 isProcessing: isProcessing,
                 isGeneratingMore: isGeneratingMore,
                 isClassifying: isClassifying,
                 classificationError: classificationError,
                 onScrollTo: { annotationId in
+                    suppressContextAutoSwitch()
+                    currentAnnotationId = annotationId
                     // Save current position for back navigation
                     savedScrollOffset = lastScrollOffset
                     showBackButton = true
@@ -91,10 +99,16 @@ struct ReaderView: View {
                     scrollToQuote = quote
                 },
                 onScrollToFootnote: { refId in
+                    suppressContextAutoSwitch()
+                    currentFootnoteRefId = refId
                     // Scroll to footnote reference in text
                     scrollToQuote = refId  // Will be handled by JS to find the footnote link
                 },
-                onScrollToBlockId: { blockId in
+                onScrollToBlockId: { blockId, imageId in
+                    suppressContextAutoSwitch()
+                    if let imageId = imageId {
+                        currentImageId = imageId
+                    }
                     // Save current position for back navigation
                     savedScrollOffset = lastScrollOffset
                     showBackButton = true
@@ -115,6 +129,7 @@ struct ReaderView: View {
                 externalTabSelection: $externalTabSelection,
                 selectedTab: $aiPanelSelectedTab,
                 pendingChatPrompt: $pendingChatPrompt,
+                isChatInputFocused: $isChatInputFocused,
                 scrollPercent: lastScrollPercent,
                 chapterWPM: chapterWPM,
                 onApplyAdjustment: { adjustment in
@@ -149,25 +164,47 @@ struct ReaderView: View {
             }
         }
         // Arrow key navigation
-        .onKeyPress(.upArrow) {
-            scrollByAmount = -200
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            scrollByAmount = 200
-            return .handled
-        }
-        .onKeyPress(.leftArrow) {
-            if appState.currentChapterIndex > 0 {
-                appState.currentChapterIndex -= 1
+        .onKeyPress { press in
+            guard !isChatInputFocused else { return .ignored }
+            switch press.key {
+            case .upArrow:
+                scrollByAmount = -200
+                return .handled
+            case .downArrow:
+                scrollByAmount = 200
+                return .handled
+            case .leftArrow:
+                if press.modifiers.contains(.shift) {
+                    cycleAIPanelTab(direction: -1)
+                    return .handled
+                }
+                if appState.currentChapterIndex > 0 {
+                    appState.currentChapterIndex -= 1
+                }
+                return .handled
+            case .rightArrow:
+                if press.modifiers.contains(.shift) {
+                    cycleAIPanelTab(direction: 1)
+                    return .handled
+                }
+                if appState.currentChapterIndex < chapters.count - 1 {
+                    appState.currentChapterIndex += 1
+                }
+                return .handled
+            default:
+                return .ignored
             }
-            return .handled
         }
-        .onKeyPress(.rightArrow) {
-            if appState.currentChapterIndex < chapters.count - 1 {
-                appState.currentChapterIndex += 1
-            }
-            return .handled
+    }
+
+    // MARK: - Keyboard Navigation
+
+    private func cycleAIPanelTab(direction: Int) {
+        let tabs = AIPanel.Tab.allCases
+        guard let currentIndex = tabs.firstIndex(of: aiPanelSelectedTab), !tabs.isEmpty else { return }
+        let nextIndex = (currentIndex + direction + tabs.count) % tabs.count
+        withAnimation(.easeOut(duration: 0.15)) {
+            aiPanelSelectedTab = tabs[nextIndex]
         }
     }
 
@@ -238,9 +275,16 @@ struct ReaderView: View {
                         images: images,
                         onWordClick: handleWordClick,
                         onAnnotationClick: handleAnnotationClick,
+                        onImageMarkerClick: handleImageMarkerClick,
                         onFootnoteClick: handleFootnoteClick,
-                        onScrollPositionChange: { annotationId, footnoteRefId, focusType, scrollPercent, scrollOffset, viewportHeight in
+                        onScrollPositionChange: { annotationId, footnoteRefId, imageId, focusType, scrollPercent, scrollOffset, viewportHeight in
                             currentAnnotationId = annotationId
+                            if let imageId = imageId,
+                               images.contains(where: { $0.id == imageId }) {
+                                currentImageId = imageId
+                            } else {
+                                currentImageId = nil
+                            }
                             if let refId = footnoteRefId,
                                footnotes.contains(where: { $0.refId == refId }) {
                                 currentFootnoteRefId = refId
@@ -270,24 +314,19 @@ struct ReaderView: View {
                                !hasAutoSwitchedToQuiz &&
                                !quizzes.isEmpty {
                                 hasAutoSwitchedToQuiz = true
+                                suppressContextAutoSwitchUntil = Date().timeIntervalSinceReferenceDate + 0.75
                                 // Small delay for graceful transition
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                     externalTabSelection = .quiz
                                 }
                             }
 
-                            if appState.settings.autoSwitchInsightsAndFootnotes &&
-                               !hasAutoSwitchedToQuiz,
-                               let focusType = focusType {
-                                let isChatActive = aiPanelSelectedTab == .chat
-                                if !isChatActive || appState.settings.autoSwitchFromChatOnScroll {
-                                    if focusType == "footnote", currentFootnoteRefId != nil {
-                                        externalTabSelection = .footnotes
-                                    } else if focusType == "annotation", annotationId != nil {
-                                        externalTabSelection = .insights
-                                    }
-                                }
-                            }
+                            handleAutoSwitch(
+                                focusType: focusType,
+                                annotationId: annotationId,
+                                imageId: imageId,
+                                footnoteRefId: footnoteRefId
+                            )
                         },
                         scrollToAnnotationId: $scrollToAnnotationId,
                         scrollToPercent: $scrollToPercent,
@@ -295,6 +334,7 @@ struct ReaderView: View {
                         scrollToBlockId: $scrollToBlockId,
                         scrollToQuote: $scrollToQuote,
                         pendingMarkerInjections: $pendingMarkerInjections,
+                        pendingImageMarkerInjections: $pendingImageMarkerInjections,
                         scrollByAmount: $scrollByAmount
                     )
 
@@ -550,43 +590,52 @@ struct ReaderView: View {
                 return
             }
 
-            // Show content immediately - don't block on classification
             if appState.currentChapterIndex >= chapters.count {
                 appState.currentChapterIndex = max(0, chapters.count - 1)
             }
+
+            startClassificationIfNeeded()
 
             // Clear loading state before loading chapter content
             isLoadingChapters = false
 
             await loadChapter(at: appState.currentChapterIndex)
-
-            // Run classification in background if needed (doesn't block text display)
-            if book.needsClassification {
-                Task {
-                    await classifyBookChapters()
-                    // Reload chapters after classification to pick up updates
-                    if let updatedChapters = try? appState.database.fetchChapters(for: book) {
-                        await MainActor.run {
-                            chapters = updatedChapters
-                        }
-                    }
-                }
-            }
         } catch {
             loadError = "Database error: \(error.localizedDescription)"
             isLoadingChapters = false
         }
     }
 
-    /// Classify all chapters in the book using LLM
-    private func classifyBookChapters() async {
+    private func startClassificationIfNeeded() {
+        guard book.needsClassification, !isClassifying else { return }
+
         isClassifying = true
         classificationError = nil
-
-        // Update book status to in-progress
         book.classificationStatus = .inProgress
         try? appState.database.saveBook(&book)
 
+        Task {
+            await classifyBookChapters()
+
+            if let updatedChapters = try? appState.database.fetchChapters(for: book) {
+                await MainActor.run {
+                    chapters = updatedChapters
+                    refreshCurrentChapterFromChapters()
+                }
+            } else {
+                await MainActor.run {
+                    refreshCurrentChapterFromChapters()
+                }
+            }
+
+            await MainActor.run {
+                processCurrentChapterIfReady()
+            }
+        }
+    }
+
+    /// Classify all chapters in the book using LLM
+    private func classifyBookChapters() async {
         do {
             // Prepare chapter data for classification
             let chapterData: [(index: Int, title: String, preview: String)] = chapters.map { chapter in
@@ -630,13 +679,25 @@ struct ReaderView: View {
 
     /// Retry classification after failure
     func retryClassification() {
-        Task {
-            await classifyBookChapters()
-            // Reload chapters after classification
-            if let newChapters = try? appState.database.fetchChapters(for: book) {
-                chapters = newChapters
-            }
-        }
+        startClassificationIfNeeded()
+    }
+
+    private func refreshCurrentChapterFromChapters() {
+        guard let current = currentChapter,
+              let index = chapters.firstIndex(where: { $0.id == current.id }) else { return }
+        currentChapter = chapters[index]
+    }
+
+    private func processCurrentChapterIfReady() {
+        guard let chapter = currentChapter, shouldAutoProcess(chapter) else { return }
+        Task { await processChapter(chapter) }
+    }
+
+    private func shouldAutoProcess(_ chapter: Chapter) -> Bool {
+        hasLLMKey
+            && book.classificationStatus == .completed
+            && !chapter.processed
+            && !chapter.shouldSkipAutoProcessing
     }
 
     private func loadChapter(at index: Int) async {
@@ -652,6 +713,11 @@ struct ReaderView: View {
         // Reset auto-switch state and switch back to insights for new chapter
         hasAutoSwitchedToQuiz = false
         externalTabSelection = .insights
+        currentAnnotationId = nil
+        currentImageId = nil
+        currentFootnoteRefId = nil
+        lastAutoSwitchAt = 0
+        suppressContextAutoSwitchUntil = 0
         chapterWPM = nil
 
         guard let chapter = currentChapter else { return }
@@ -697,8 +763,8 @@ struct ReaderView: View {
             print("Failed to load chapter data: \(error)")
         }
 
-        // Process chapter if not already processed, not garbage, and API key is set
-        if !chapter.processed && !chapter.shouldSkipAutoProcessing && hasLLMKey {
+        // Process chapter if not already processed, not garbage, and classification is complete
+        if shouldAutoProcess(chapter) {
             await processChapter(chapter)
         }
     }
@@ -799,6 +865,13 @@ struct ReaderView: View {
                 appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
             }
 
+            await generateSuggestedImages(
+                analysis.imageSuggestions,
+                blockCount: blocks.count,
+                chapterId: chapterId,
+                stillOnSameChapter: stillOnSameChapter
+            )
+
             // Update chapter as processed with block info
             var updatedChapter = chapter
             updatedChapter.processed = true
@@ -819,6 +892,95 @@ struct ReaderView: View {
 
         } catch {
             print("Failed to process chapter: \(error)")
+        }
+    }
+
+    private func generateSuggestedImages(
+        _ suggestions: [LLMService.ImageSuggestion],
+        blockCount: Int,
+        chapterId: Int64,
+        stillOnSameChapter: Bool
+    ) async {
+        guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
+
+        let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            print("Skipping image generation: missing Google API key.")
+            return
+        }
+
+        imageGenerating = true
+        defer { imageGenerating = false }
+
+        let inputs = imageInputs(
+            from: suggestions,
+            blockCount: blockCount,
+            rewrite: appState.settings.rewriteImageExcerpts
+        )
+        let results = await appState.imageService.generateImages(
+            from: inputs,
+            model: appState.settings.imageModel,
+            apiKey: trimmedKey,
+            maxConcurrent: 5
+        )
+
+        await storeGeneratedImages(
+            results,
+            chapterId: chapterId,
+            stillOnSameChapter: stillOnSameChapter
+        )
+    }
+
+    private func imageInputs(
+        from suggestions: [LLMService.ImageSuggestion],
+        blockCount: Int,
+        rewrite: Bool
+    ) -> [ImageService.ImageSuggestionInput] {
+        suggestions.map { suggestion in
+            let validBlockId = suggestion.sourceBlockId > 0 && suggestion.sourceBlockId <= blockCount
+                ? suggestion.sourceBlockId : 1
+            let excerpt = suggestion.excerpt
+            let prompt = appState.llmService.imagePromptFromExcerpt(excerpt, rewrite: rewrite)
+            return ImageService.ImageSuggestionInput(
+                excerpt: excerpt,
+                prompt: prompt,
+                sourceBlockId: validBlockId
+            )
+        }
+    }
+
+    private func storeGeneratedImages(
+        _ results: [ImageService.GeneratedImageResult],
+        chapterId: Int64,
+        stillOnSameChapter: Bool
+    ) async {
+        for result in results {
+            do {
+                let imagePath = try appState.imageService.saveImage(
+                    result.imageData,
+                    for: book.id!,
+                    chapterId: chapterId
+                )
+                var image = GeneratedImage(
+                    chapterId: chapterId,
+                    prompt: result.excerpt,
+                    imagePath: imagePath,
+                    sourceBlockId: result.sourceBlockId
+                )
+                try appState.database.saveImage(&image)
+                appState.readingStats.recordImage()
+
+                if stillOnSameChapter {
+                    images.append(image)
+                    if let id = image.id {
+                        pendingImageMarkerInjections.append(
+                            ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId)
+                        )
+                    }
+                }
+            } catch {
+                print("Failed to save image: \(error)")
+            }
         }
     }
 
@@ -1036,11 +1198,10 @@ struct ReaderView: View {
 
             Task {
                 do {
-                    // First get the image prompt from LLM
-                    let prompt = try await appState.llmService.generateImagePrompt(
-                        word: word,
-                        context: context,
-                        settings: appState.settings
+                    let excerpt = word
+                    let prompt = appState.llmService.imagePromptFromExcerpt(
+                        excerpt,
+                        rewrite: appState.settings.rewriteImageExcerpts
                     )
 
                     // Then generate the image
@@ -1060,12 +1221,17 @@ struct ReaderView: View {
                     // Create database record
                     var image = GeneratedImage(
                         chapterId: chapter.id!,
-                        prompt: prompt,
+                        prompt: excerpt,
                         imagePath: imagePath,
                         sourceBlockId: blockId > 0 ? blockId : 1
                     )
                     try appState.database.saveImage(&image)
                     images.append(image)
+                    if let id = image.id {
+                        pendingImageMarkerInjections.append(
+                            ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId)
+                        )
+                    }
 
                 } catch {
                     print("Failed to generate image: \(error)")
@@ -1081,10 +1247,59 @@ struct ReaderView: View {
         currentAnnotationId = annotation.id
     }
 
+    private func handleImageMarkerClick(_ imageId: Int64) {
+        guard images.contains(where: { $0.id == imageId }) else { return }
+        currentImageId = imageId
+        externalTabSelection = .images
+    }
+
     private func handleFootnoteClick(_ refId: String) {
         guard footnotes.contains(where: { $0.refId == refId }) else { return }
         currentFootnoteRefId = refId
         externalTabSelection = .footnotes
+    }
+
+    private func handleAutoSwitch(
+        focusType: String?,
+        annotationId: Int64?,
+        imageId: Int64?,
+        footnoteRefId: String?
+    ) {
+        guard appState.settings.autoSwitchContextTabs,
+              let focusType = focusType else {
+            return
+        }
+
+        let now = Date().timeIntervalSinceReferenceDate
+        if now < suppressContextAutoSwitchUntil { return }
+
+        let targetTab: AIPanel.Tab?
+        switch focusType {
+        case "annotation":
+            targetTab = annotationId != nil ? .insights : nil
+        case "image":
+            targetTab = (imageId != nil && currentImageId != nil) ? .images : nil
+        case "footnote":
+            targetTab = (footnoteRefId != nil && currentFootnoteRefId != nil) ? .footnotes : nil
+        default:
+            targetTab = nil
+        }
+
+        guard let tab = targetTab else { return }
+
+        if aiPanelSelectedTab == tab { return }
+        if aiPanelSelectedTab == .quiz { return }
+        if aiPanelSelectedTab == .chat && !appState.settings.autoSwitchFromChatOnScroll { return }
+
+        if now - lastAutoSwitchAt < 0.35 { return }
+
+        lastAutoSwitchAt = now
+        externalTabSelection = tab
+    }
+
+    private func suppressContextAutoSwitch(for duration: TimeInterval = 2.0) {
+        let now = Date().timeIntervalSinceReferenceDate
+        suppressContextAutoSwitchUntil = max(suppressContextAutoSwitchUntil, now + duration)
     }
 
     // MARK: - Helpers

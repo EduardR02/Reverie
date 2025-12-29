@@ -607,6 +607,13 @@ struct HomeView: View {
                     appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
                 }
 
+                await generateSuggestedImages(
+                    analysis.imageSuggestions,
+                    blockCount: blocks.count,
+                    bookId: book.id!,
+                    chapterId: chapter.id!
+                )
+
                 // Update chapter with block info
                 var updatedChapter = chapter
                 updatedChapter.processed = true
@@ -643,6 +650,83 @@ struct HomeView: View {
         }
 
         isProcessingBook = false
+    }
+
+    private func generateSuggestedImages(
+        _ suggestions: [LLMService.ImageSuggestion],
+        blockCount: Int,
+        bookId: Int64,
+        chapterId: Int64
+    ) async {
+        guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
+
+        let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            print("Skipping image generation: missing Google API key.")
+            return
+        }
+
+        let inputs = imageInputs(
+            from: suggestions,
+            blockCount: blockCount,
+            rewrite: appState.settings.rewriteImageExcerpts
+        )
+        let results = await appState.imageService.generateImages(
+            from: inputs,
+            model: appState.settings.imageModel,
+            apiKey: trimmedKey,
+            maxConcurrent: 5
+        )
+
+        await storeGeneratedImages(
+            results,
+            bookId: bookId,
+            chapterId: chapterId
+        )
+    }
+
+    private func imageInputs(
+        from suggestions: [LLMService.ImageSuggestion],
+        blockCount: Int,
+        rewrite: Bool
+    ) -> [ImageService.ImageSuggestionInput] {
+        suggestions.map { suggestion in
+            let validBlockId = suggestion.sourceBlockId > 0 && suggestion.sourceBlockId <= blockCount
+                ? suggestion.sourceBlockId : 1
+            let excerpt = suggestion.excerpt
+            let prompt = appState.llmService.imagePromptFromExcerpt(excerpt, rewrite: rewrite)
+            return ImageService.ImageSuggestionInput(
+                excerpt: excerpt,
+                prompt: prompt,
+                sourceBlockId: validBlockId
+            )
+        }
+    }
+
+    private func storeGeneratedImages(
+        _ results: [ImageService.GeneratedImageResult],
+        bookId: Int64,
+        chapterId: Int64
+    ) async {
+        for result in results {
+            do {
+                let imagePath = try appState.imageService.saveImage(
+                    result.imageData,
+                    for: bookId,
+                    chapterId: chapterId
+                )
+                var image = GeneratedImage(
+                    chapterId: chapterId,
+                    prompt: result.excerpt,
+                    imagePath: imagePath,
+                    sourceBlockId: result.sourceBlockId
+                )
+                try appState.database.saveImage(&image)
+                appState.readingStats.recordImage()
+            } catch {
+                print("Failed to save image: \(error)")
+            }
+        }
     }
 }
 

@@ -6,20 +6,27 @@ struct MarkerInjection: Equatable {
     let sourceBlockId: Int
 }
 
+struct ImageMarkerInjection: Equatable {
+    let imageId: Int64
+    let sourceBlockId: Int
+}
+
 struct BookContentView: NSViewRepresentable {
     let chapter: Chapter
     let annotations: [Annotation]
     let images: [GeneratedImage]
     let onWordClick: (String, String, Int, WordAction) -> Void  // word, context, blockId, action
     let onAnnotationClick: (Annotation) -> Void
+    let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
-    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ focusType: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
+    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ focusType: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
     @Binding var scrollToOffset: Double?
     @Binding var scrollToBlockId: Int?
     @Binding var scrollToQuote: String?
     @Binding var pendingMarkerInjections: [MarkerInjection]
+    @Binding var pendingImageMarkerInjections: [ImageMarkerInjection]
     @Binding var scrollByAmount: Double?
 
     @Environment(\.theme) private var theme
@@ -42,14 +49,29 @@ struct BookContentView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // Only reload if chapter changed
-        if context.coordinator.currentChapterId != chapter.id {
+        let inlineSetting = appState.settings.inlineAIImages
+        let chapterChanged = context.coordinator.currentChapterId != chapter.id
+        let inlineChanged = context.coordinator.currentInlineAIImages != inlineSetting
+
+        // Reload when chapter changes or inline setting toggles
+        if chapterChanged || inlineChanged {
             context.coordinator.currentChapterId = chapter.id
+            context.coordinator.currentInlineAIImages = inlineSetting
             context.coordinator.isContentLoaded = false
+            if inlineChanged && !chapterChanged {
+                if let lastOffset = context.coordinator.lastScrollOffset {
+                    context.coordinator.pendingScrollOffset = lastOffset
+                } else if let lastPercent = context.coordinator.lastScrollPercent {
+                    context.coordinator.pendingScrollPercent = lastPercent
+                }
+            } else if chapterChanged {
+                context.coordinator.lastScrollOffset = nil
+                context.coordinator.lastScrollPercent = nil
+            }
             let chapterBaseURL = chapterDirectoryURL()
             let readerRootURL = readerRootDirectoryURL()
             let html = buildHTML(baseHrefURL: chapterBaseURL)
-            webView.loadHTMLString(html, baseURL: readerRootURL)
+            loadHTML(html, on: webView, baseReadAccessURL: readerRootURL)
         }
 
         // Scroll to annotation if requested
@@ -122,6 +144,17 @@ struct BookContentView: NSViewRepresentable {
             }
         }
 
+        // Inject markers for newly generated images
+        if !pendingImageMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
+            for injection in pendingImageMarkerInjections {
+                let js = "injectImageMarker(\(injection.imageId), \(injection.sourceBlockId));"
+                webView.evaluateJavaScript(js) { _, _ in }
+            }
+            DispatchQueue.main.async {
+                self.pendingImageMarkerInjections = []
+            }
+        }
+
         // Scroll by amount (for arrow key navigation)
         if let amount = scrollByAmount, context.coordinator.isContentLoaded {
             let js = "scrollByPixels(\(amount));"
@@ -149,15 +182,16 @@ struct BookContentView: NSViewRepresentable {
 
         // Inject annotation markers into content using block IDs
         var content = chapter.contentHTML
-        // Sort by blockId descending to preserve offsets during injection
-        for annotation in annotations.sorted(by: { $0.sourceBlockId > $1.sourceBlockId }) {
-            content = injectMarkerAtBlock(content, for: annotation, blocks: blocks)
-        }
 
         // Inject images using block IDs
-        for image in images.sorted(by: { $0.sourceBlockId > $1.sourceBlockId }) {
-            content = injectImageAtBlock(content, for: image, blocks: blocks, baseURL: baseHrefURL)
+        if settings.inlineAIImages {
+            for image in images.sorted(by: { $0.sourceBlockId > $1.sourceBlockId }) {
+                content = injectImageAtBlock(content, for: image, blocks: blocks, baseURL: baseHrefURL)
+            }
         }
+
+        // Inject markers (always)
+        content = injectContextMarkers(content, annotations: annotations, images: images, blocks: blocks)
 
         let selectionColor = selectionColorHexString(
             foreground: theme.rose,
@@ -252,6 +286,26 @@ struct BookContentView: NSViewRepresentable {
                     opacity: 1;
                     transform: scale(1.3);
                     box-shadow: 0 0 8px var(--rose);
+                }
+
+                /* Image marker */
+                .image-marker {
+                    display: inline-block;
+                    width: 8px;
+                    height: 8px;
+                    background: var(--iris);
+                    border-radius: 50%;
+                    margin-left: 4px;
+                    cursor: pointer;
+                    opacity: 0.8;
+                    transition: all 0.15s ease;
+                    vertical-align: middle;
+                }
+
+                .image-marker:hover {
+                    opacity: 1;
+                    transform: scale(1.3);
+                    box-shadow: 0 0 8px var(--iris);
                 }
 
                 /* Inline image */
@@ -410,7 +464,7 @@ struct BookContentView: NSViewRepresentable {
                             return parseInt(blockId, 10);
                         }
                         // Check for nearby annotation marker
-                        const marker = current.querySelector('.annotation-marker');
+                        const marker = current.querySelector('.annotation-marker, .image-marker');
                         if (marker && marker.dataset.blockId) {
                             return parseInt(marker.dataset.blockId, 10);
                         }
@@ -478,6 +532,16 @@ struct BookContentView: NSViewRepresentable {
                             id: id
                         });
                     }
+
+                    if (e.target.classList.contains('image-marker')) {
+                        const id = e.target.dataset.imageId;
+                        if (id) {
+                            webkit.messageHandlers.readerBridge.postMessage({
+                                type: 'imageMarkerClick',
+                                id: id
+                            });
+                        }
+                    }
                 });
 
                 // Scroll tracking
@@ -515,6 +579,25 @@ struct BookContentView: NSViewRepresentable {
                             ? closestMarker.dataset.annotationId
                             : null;
 
+                        // Find which image marker is closest to viewport center
+                        const imageMarkers = document.querySelectorAll('.image-marker');
+                        let closestImage = null;
+                        let closestImageDistance = Infinity;
+
+                        imageMarkers.forEach(marker => {
+                            const rect = marker.getBoundingClientRect();
+                            const markerY = rect.top + scrollY;
+                            const distance = Math.abs(markerY - viewportCenter);
+                            if (distance < closestImageDistance) {
+                                closestImageDistance = distance;
+                                closestImage = marker;
+                            }
+                        });
+
+                        const imageId = closestImage && closestImageDistance < 300
+                            ? closestImage.dataset.imageId
+                            : null;
+
                         // Find which footnote reference is closest to viewport center
                         const footnoteLinks = document.querySelectorAll('.footnote-ref');
                         let closestFootnote = null;
@@ -536,9 +619,12 @@ struct BookContentView: NSViewRepresentable {
 
                         let focusType = null;
                         const annotationDistance = annotationId ? closestDistance : Infinity;
+                        const imageDistance = imageId ? closestImageDistance : Infinity;
                         const footnoteDistance = footnoteRefId ? closestFootnoteDistance : Infinity;
-                        if (annotationDistance < footnoteDistance) {
+                        if (annotationDistance <= imageDistance && annotationDistance <= footnoteDistance) {
                             focusType = 'annotation';
+                        } else if (imageDistance <= footnoteDistance) {
+                            focusType = 'image';
                         } else if (footnoteDistance < Infinity) {
                             focusType = 'footnote';
                         }
@@ -547,6 +633,7 @@ struct BookContentView: NSViewRepresentable {
                             type: 'scrollPosition',
                             annotationId: annotationId,
                             footnoteRefId: footnoteRefId,
+                            imageId: imageId,
                             focusType: focusType,
                             scrollY: scrollY,
                             scrollPercent: scrollPercent,
@@ -561,7 +648,22 @@ struct BookContentView: NSViewRepresentable {
                 function scrollToAnnotation(annotationId) {
                     const marker = document.querySelector('[data-annotation-id="' + annotationId + '"]');
                     if (marker) {
-                        marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        const blockId = marker.dataset.blockId;
+                        let offset = 0;
+                        if (blockId) {
+                            const markersInBlock = Array.from(
+                                document.querySelectorAll('.annotation-marker[data-block-id="' + blockId + '"]')
+                            );
+                            const annotationIdStr = String(annotationId);
+                            const index = markersInBlock.findIndex(item => item.dataset.annotationId === annotationIdStr);
+                            if (index >= 0) {
+                                offset = Math.min(index, 4) * 12;
+                            }
+                        }
+
+                        const rect = marker.getBoundingClientRect();
+                        const target = window.scrollY + rect.top - (window.innerHeight * 0.4) + offset;
+                        window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
 
                         // Highlight the marker
                         marker.style.transform = 'scale(2)';
@@ -656,6 +758,26 @@ struct BookContentView: NSViewRepresentable {
                         const markerSpan = document.createElement('span');
                         markerSpan.className = 'annotation-marker';
                         markerSpan.dataset.annotationId = annotationId;
+                        markerSpan.dataset.blockId = blockId;
+                        block.appendChild(markerSpan);
+                        return true;
+                    }
+                    return false;
+                }
+
+                // Inject image marker at a specific block (for dynamically generated images)
+                function injectImageMarker(imageId, blockId) {
+                    if (document.querySelector('[data-image-id="' + imageId + '"]')) {
+                        return true;
+                    }
+
+                    const blockElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
+                    if (blockId > 0 && blockId <= blockElements.length) {
+                        const block = blockElements[blockId - 1];
+
+                        const markerSpan = document.createElement('span');
+                        markerSpan.className = 'image-marker';
+                        markerSpan.dataset.imageId = imageId;
                         markerSpan.dataset.blockId = blockId;
                         block.appendChild(markerSpan);
                         return true;
@@ -787,18 +909,58 @@ struct BookContentView: NSViewRepresentable {
 
     // MARK: - Block-Based Injection
 
-    private func injectMarkerAtBlock(_ content: String, for annotation: Annotation, blocks: [ContentBlock]) -> String {
-        let marker = "<span class=\"annotation-marker\" data-annotation-id=\"\(annotation.id ?? 0)\" data-block-id=\"\(annotation.sourceBlockId)\"></span>"
+    private func injectContextMarkers(
+        _ content: String,
+        annotations: [Annotation],
+        images: [GeneratedImage],
+        blocks: [ContentBlock]
+    ) -> String {
+        var result = content
+        var markersByBlock: [Int: String] = [:]
 
-        // Find the block and inject marker at its end
-        guard let block = blocks.first(where: { $0.id == annotation.sourceBlockId }),
+        for annotation in annotations {
+            let marker = "<span class=\"annotation-marker\" data-annotation-id=\"\(annotation.id ?? 0)\" data-block-id=\"\(annotation.sourceBlockId)\"></span>"
+            markersByBlock[annotation.sourceBlockId, default: ""].append(marker)
+        }
+
+        for image in images {
+            guard let imageId = image.id else { continue }
+            let marker = "<span class=\"image-marker\" data-image-id=\"\(imageId)\" data-block-id=\"\(image.sourceBlockId)\"></span>"
+            markersByBlock[image.sourceBlockId, default: ""].append(marker)
+        }
+
+        for blockId in markersByBlock.keys.sorted(by: >) {
+            guard let markers = markersByBlock[blockId], !markers.isEmpty else { continue }
+            result = injectMarkersAtBlockEnd(result, markers: markers, blockId: blockId, blocks: blocks)
+        }
+
+        return result
+    }
+
+    private func injectMarkersAtBlockEnd(
+        _ content: String,
+        markers: String,
+        blockId: Int,
+        blocks: [ContentBlock]
+    ) -> String {
+        guard let block = blocks.first(where: { $0.id == blockId }),
+              block.htmlStartOffset < block.htmlEndOffset,
               block.htmlEndOffset <= content.count else {
             return content
         }
 
-        let insertIndex = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
+        let startIndex = content.index(content.startIndex, offsetBy: block.htmlStartOffset)
+        let endIndex = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
+        let blockHTML = content[startIndex..<endIndex]
+
+        if let closingTagRange = blockHTML.range(of: "</", options: .backwards) {
+            var result = content
+            result.insert(contentsOf: markers, at: closingTagRange.lowerBound)
+            return result
+        }
+
         var result = content
-        result.insert(contentsOf: marker, at: insertIndex)
+        result.insert(contentsOf: markers, at: endIndex)
         return result
     }
 
@@ -835,6 +997,24 @@ struct BookContentView: NSViewRepresentable {
 
     private func readerRootDirectoryURL() -> URL {
         ensureDirectoryURL(LibraryPaths.readerRoot)
+    }
+
+    private func renderedChapterURL() -> URL {
+        let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId)
+            .appendingPathComponent("_reader", isDirectory: true)
+        try? LibraryPaths.ensureDirectory(renderDir)
+        let idComponent = chapter.id.map(String.init) ?? "index-\(chapter.index)"
+        return renderDir.appendingPathComponent("chapter-\(idComponent).html")
+    }
+
+    private func loadHTML(_ html: String, on webView: WKWebView, baseReadAccessURL: URL) {
+        let fileURL = renderedChapterURL()
+        do {
+            try html.write(to: fileURL, atomically: true, encoding: .utf8)
+            webView.loadFileURL(fileURL, allowingReadAccessTo: baseReadAccessURL)
+        } catch {
+            webView.loadHTMLString(html, baseURL: baseReadAccessURL)
+        }
     }
 
     private func ensureDirectoryURL(_ url: URL) -> URL {
@@ -889,9 +1069,12 @@ struct BookContentView: NSViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: BookContentView
         var currentChapterId: Int64?
+        var currentInlineAIImages: Bool?
         var isContentLoaded = false
         var pendingScrollPercent: Double?
         var pendingScrollOffset: Double?
+        var lastScrollPercent: Double?
+        var lastScrollOffset: Double?
 
         init(_ parent: BookContentView) {
             self.parent = parent
@@ -957,6 +1140,12 @@ struct BookContentView: NSViewRepresentable {
                     parent.onAnnotationClick(annotation)
                 }
 
+            case "imageMarkerClick":
+                if let idString = body["id"] as? String,
+                   let id = Int64(idString) {
+                    parent.onImageMarkerClick(id)
+                }
+
             case "scrollToAnnotationFailed":
                 // Marker not found, fall back to block-based scroll
                 if let annotationId = body["annotationId"] as? Int,
@@ -981,11 +1170,21 @@ struct BookContentView: NSViewRepresentable {
                 }
 
                 let footnoteRefId = body["footnoteRefId"] as? String
+                let imageId: Int64?
+                if let idString = body["imageId"] as? String, let id = Int64(idString) {
+                    imageId = id
+                } else if let idNumber = body["imageId"] as? NSNumber {
+                    imageId = idNumber.int64Value
+                } else {
+                    imageId = nil
+                }
                 let focusType = body["focusType"] as? String
                 let scrollY = (body["scrollY"] as? Double) ?? (body["scrollY"] as? NSNumber)?.doubleValue ?? 0
                 let scrollPercent = (body["scrollPercent"] as? Double) ?? (body["scrollPercent"] as? NSNumber)?.doubleValue ?? 0
                 let viewportHeight = (body["viewportHeight"] as? Double) ?? (body["viewportHeight"] as? NSNumber)?.doubleValue ?? 0
-                parent.onScrollPositionChange(annotationId, footnoteRefId, focusType, scrollPercent, scrollY, viewportHeight)
+                lastScrollOffset = scrollY
+                lastScrollPercent = scrollPercent
+                parent.onScrollPositionChange(annotationId, footnoteRefId, imageId, focusType, scrollPercent, scrollY, viewportHeight)
 
             default:
                 break

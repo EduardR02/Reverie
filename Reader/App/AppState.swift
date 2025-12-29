@@ -369,6 +369,8 @@ struct UserSettings: Codable, Equatable {
     var insightDensity: DensityLevel = .medium
     var imageDensity: DensityLevel = .low
     var imagesEnabled: Bool = false
+    var inlineAIImages: Bool = false
+    var rewriteImageExcerpts: Bool = false
 
     // Reasoning
     var chatReasoningLevel: ReasoningLevel = .medium
@@ -379,7 +381,7 @@ struct UserSettings: Codable, Equatable {
 
     // Auto-scroll behavior
     var autoSwitchToQuiz: Bool = true
-    var autoSwitchInsightsAndFootnotes: Bool = true
+    var autoSwitchContextTabs: Bool = true
     var autoSwitchFromChatOnScroll: Bool = true
     var smartAutoScrollEnabled: Bool = true
     var showReadingSpeedFooter: Bool = true

@@ -4,9 +4,16 @@ import AppKit
 /// Image generation service using Google Imagen (Nano Banana)
 final class ImageService {
 
-    struct GeneratedImageResult {
-        let imageData: Data
+    struct ImageSuggestionInput {
+        let excerpt: String
         let prompt: String
+        let sourceBlockId: Int
+    }
+
+    struct GeneratedImageResult {
+        let excerpt: String
+        let imageData: Data
+        let sourceBlockId: Int
     }
 
     // MARK: - Generate Image
@@ -82,6 +89,39 @@ final class ImageService {
         }
 
         return imageData
+    }
+
+    func generateImages(
+        from suggestions: [ImageSuggestionInput],
+        model: ImageModel,
+        apiKey: String,
+        maxConcurrent: Int = 5
+    ) async -> [GeneratedImageResult] {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty, !suggestions.isEmpty else {
+            return []
+        }
+
+        let limit = max(1, maxConcurrent)
+        let results = await mapWithConcurrency(items: suggestions, maxConcurrent: limit) { suggestion in
+            do {
+                let data = try await self.generateImage(
+                    prompt: suggestion.prompt,
+                    model: model,
+                    apiKey: trimmedKey
+                )
+                return GeneratedImageResult(
+                    excerpt: suggestion.excerpt,
+                    imageData: data,
+                    sourceBlockId: suggestion.sourceBlockId
+                )
+            } catch {
+                print("Failed to generate image: \(error)")
+                return nil
+            }
+        }
+
+        return results.compactMap { $0 }
     }
 
     // MARK: - Save Image
@@ -191,6 +231,38 @@ final class ImageService {
             offset = chunkEnd
         }
         return nil
+    }
+
+    private func mapWithConcurrency<T, U>(
+        items: [T],
+        maxConcurrent: Int,
+        transform: @escaping (T) async -> U?
+    ) async -> [U?] {
+        var results = Array<U?>(repeating: nil, count: items.count)
+        var nextIndex = 0
+
+        await withTaskGroup(of: (Int, U?).self) { group in
+            func enqueueNext() {
+                guard nextIndex < items.count else { return }
+                let index = nextIndex
+                nextIndex += 1
+                group.addTask {
+                    let value = await transform(items[index])
+                    return (index, value)
+                }
+            }
+
+            for _ in 0..<min(maxConcurrent, items.count) {
+                enqueueNext()
+            }
+
+            while let (index, value) = await group.next() {
+                results[index] = value
+                enqueueNext()
+            }
+        }
+
+        return results
     }
 
     func saveImage(_ data: Data, for bookId: Int64, chapterId: Int64) throws -> String {

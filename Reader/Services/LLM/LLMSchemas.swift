@@ -72,10 +72,10 @@ enum SchemaLibrary {
 
     private static let imageSuggestion = JSONSchemaBuilder.object(
         properties: [
-            "prompt": JSONSchemaBuilder.string(description: "Vivid image generation prompt."),
-            "sourceBlockId": JSONSchemaBuilder.integer(description: "Block number [N] this depicts.")
+            "excerpt": JSONSchemaBuilder.string(description: "Verbatim excerpt that captures the scene to visualize."),
+            "sourceBlockId": JSONSchemaBuilder.integer(description: "Block number [N] where the excerpt starts.")
         ],
-        required: ["prompt", "sourceBlockId"]
+        required: ["excerpt", "sourceBlockId"]
     )
 
     static let chapterAnalysis = LLMStructuredSchema(
@@ -84,7 +84,7 @@ enum SchemaLibrary {
             properties: [
                 "annotations": JSONSchemaBuilder.array(items: annotation, description: "Chapter insights."),
                 "quizQuestions": JSONSchemaBuilder.array(items: quizQuestion, description: "Quiz questions."),
-                "imageSuggestions": JSONSchemaBuilder.array(items: imageSuggestion, description: "Image prompts."),
+                "imageSuggestions": JSONSchemaBuilder.array(items: imageSuggestion, description: "Image excerpts."),
                 "summary": JSONSchemaBuilder.string(description: "2-3 sentence summary.")
             ],
             required: ["annotations", "quizQuestions", "imageSuggestions", "summary"]

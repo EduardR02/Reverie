@@ -7,6 +7,7 @@ struct AIPanel: View {
     let footnotes: [Footnote]
     let images: [GeneratedImage]
     let currentAnnotationId: Int64?
+    let currentImageId: Int64?
     let currentFootnoteRefId: String?
     let isProcessing: Bool
     let isGeneratingMore: Bool
@@ -15,7 +16,7 @@ struct AIPanel: View {
     let onScrollTo: (Int64) -> Void  // Scroll to annotation by ID
     let onScrollToQuote: (String) -> Void  // Scroll to quote text (for quizzes)
     let onScrollToFootnote: (String) -> Void  // Scroll to footnote reference by refId
-    let onScrollToBlockId: (Int) -> Void  // Scroll to block by ID (for images/quizzes)
+    let onScrollToBlockId: (_ blockId: Int, _ imageId: Int64?) -> Void  // Scroll to block by ID (for images/quizzes)
     let onGenerateMoreInsights: () -> Void
     let onGenerateMoreQuestions: () -> Void
     let onForceProcess: () -> Void  // Force process garbage chapter
@@ -23,6 +24,7 @@ struct AIPanel: View {
     @Binding var externalTabSelection: Tab?  // External control for tab switching
     @Binding var selectedTab: Tab
     @Binding var pendingChatPrompt: String?
+    @Binding var isChatInputFocused: Bool
 
     // Reading speed tracking
     let scrollPercent: Double
@@ -45,6 +47,7 @@ struct AIPanel: View {
     @State private var chatContentMetrics = ChatContentMetrics(height: 0, minY: 0)
     @State private var chatAutoScrollEnabled = true
     @State private var chatScrollTick = 0
+    @FocusState private var isChatFocused: Bool
 
     private let chatScrollSpace = "chat-scroll"
     private let chatBottomId = "chat-bottom"
@@ -116,6 +119,16 @@ struct AIPanel: View {
             sendMessage(trimmed)
             DispatchQueue.main.async {
                 pendingChatPrompt = nil
+            }
+        }
+        .onChange(of: selectedTab) { _, newTab in
+            if newTab != .chat && isChatFocused {
+                isChatFocused = false
+            }
+        }
+        .onChange(of: isChatFocused) { _, newValue in
+            if isChatInputFocused != newValue {
+                isChatInputFocused = newValue
             }
         }
     }
@@ -318,31 +331,51 @@ struct AIPanel: View {
     // MARK: - Images Tab
 
     private var imagesTab: some View {
-        ScrollView {
-            LazyVStack(spacing: 16) {
-                if images.isEmpty {
-                    emptyState(
-                        icon: "photo",
-                        title: "No images yet",
-                        subtitle: "Images will appear as they're generated"
-                    )
-                } else {
-                    ForEach(images) { image in
-                        ImageCard(
-                            image: image,
-                            onScrollTo: {
-                                onScrollToBlockId(image.sourceBlockId)
-                            },
-                            onExpand: {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    expandedImage = image
-                                }
-                            }
+        let autoScrollAnchor = UnitPoint(x: 0.5, y: 0.2)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    if images.isEmpty {
+                        emptyState(
+                            icon: "photo",
+                            title: "No images yet",
+                            subtitle: "Images will appear as they're generated"
                         )
+                    } else {
+                        ForEach(images) { image in
+                            ImageCard(
+                                image: image,
+                                isHighlighted: image.id == currentImageId,
+                                onScrollTo: {
+                                    onScrollToBlockId(image.sourceBlockId, image.id)
+                                },
+                                onExpand: {
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        expandedImage = image
+                                    }
+                                }
+                            )
+                            .id(image.id ?? Int64(image.sourceBlockId))
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .onChange(of: currentImageId) { _, newId in
+                guard let id = newId else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    proxy.scrollTo(id, anchor: autoScrollAnchor)
+                }
+            }
+            .onAppear {
+                if let id = currentImageId {
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            proxy.scrollTo(id, anchor: autoScrollAnchor)
+                        }
                     }
                 }
             }
-            .padding(16)
         }
     }
 
@@ -372,7 +405,7 @@ struct AIPanel: View {
                         QuizCard(
                             quiz: quiz,
                             onScrollTo: {
-                                onScrollToBlockId(quiz.sourceBlockId)
+                                onScrollToBlockId(quiz.sourceBlockId, nil)
                             }
                         )
                     }
@@ -438,12 +471,6 @@ struct AIPanel: View {
                 if let id = newId {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(id, anchor: .center)
-                    }
-                    // Remove highlight after animation
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        if highlightedFootnoteId == id {
-                            highlightedFootnoteId = nil
-                        }
                     }
                 }
             }
@@ -531,6 +558,7 @@ struct AIPanel: View {
                 .padding(.vertical, 6)
                 .background(theme.base)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .focused($isChatFocused)
                 .onSubmit {
                     sendMessage()
                 }
@@ -562,6 +590,8 @@ struct AIPanel: View {
     private var chapterCompletePrompt: some View {
         ReadingSpeedPrompt(
             chapterWPM: chapterWPM,
+            liveWPM: appState.readingSpeedTracker.currentSession?.wpm,
+            liveSeconds: appState.readingSpeedTracker.currentSession?.timeSpentSeconds,
             averageWPM: appState.readingSpeedTracker.averageWPM,
             confidence: appState.readingSpeedTracker.confidence,
             onApplyAdjustment: { adjustment in
@@ -576,45 +606,20 @@ struct AIPanel: View {
 
     /// Compact reading speed prompt for quiz tab
     private var compactSpeedPrompt: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "speedometer")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(theme.iris)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Chapter Complete")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(theme.text)
-
-                if let wpm = chapterWPM, wpm > 0 {
-                    Text("\(Int(wpm)) WPM this chapter")
-                        .font(.system(size: 11))
-                        .foregroundColor(theme.muted)
-                }
-            }
-
-            Spacer()
-
-            Button {
+        CompactReadingSpeedPrompt(
+            chapterWPM: chapterWPM,
+            liveWPM: appState.readingSpeedTracker.currentSession?.wpm,
+            liveSeconds: appState.readingSpeedTracker.currentSession?.timeSpentSeconds,
+            averageWPM: appState.readingSpeedTracker.averageWPM,
+            confidence: appState.readingSpeedTracker.confidence,
+            onApplyAdjustment: { adjustment in
+                onApplyAdjustment(adjustment)
                 showedSpeedPromptForChapter = chapter?.id
-            } label: {
-                Text("OK")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(theme.foam)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(theme.foam.opacity(0.15))
-                    .clipShape(Capsule())
+            },
+            onDismiss: {
+                showedSpeedPromptForChapter = chapter?.id
             }
-            .buttonStyle(.plain)
-        }
-        .padding(12)
-        .background(theme.iris.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(theme.iris.opacity(0.2), lineWidth: 1)
-        }
+        )
     }
 
     private var readingSpeedFooter: some View {
@@ -824,7 +829,7 @@ struct AIPanel: View {
             ProgressView()
                 .scaleEffect(0.8)
 
-            Text("Classifying chapters...")
+            Text("Generating chapter dividers...")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(theme.foam)
         }
@@ -1312,6 +1317,8 @@ struct FootnoteCard: View {
 
 struct ReadingSpeedPrompt: View {
     let chapterWPM: Double?
+    let liveWPM: Double?
+    let liveSeconds: Double?
     let averageWPM: Double
     let confidence: Double
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
@@ -1343,17 +1350,26 @@ struct ReadingSpeedPrompt: View {
             }
 
             // WPM display
-            if let wpm = chapterWPM, wpm > 0 {
-                VStack(spacing: 4) {
-                    Text("\(Int(wpm))")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
+            if let wpm = resolvedWPM {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(verbatim: "\(wpm) WPM")
+                        .font(.system(size: showsLiveEstimate ? 30 : 36, weight: .bold, design: .rounded))
                         .foregroundColor(theme.iris)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
 
-                    Text("words per minute")
-                        .font(.system(size: 12))
-                        .foregroundColor(theme.muted)
+                    if showsLiveEstimate {
+                        Text("Live estimate")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(theme.muted)
+                    }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
+            } else if isLiveEstimateTooEarly {
+                Text("Too early to estimate")
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.muted)
+                    .padding(.vertical, 8)
             }
 
             // Confidence indicator
@@ -1461,12 +1477,227 @@ struct ReadingSpeedPrompt: View {
         case .wasDistracted: return "-30%"
         }
     }
+
+    private var minimumLiveSeconds: Double { 15 }
+
+    private var isLiveEstimateTooEarly: Bool {
+        (chapterWPM ?? 0) <= 0 && (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
+    }
+
+    private var resolvedWPM: Int? {
+        if let wpm = chapterWPM, wpm > 0 {
+            return Int(wpm.rounded())
+        }
+        if let wpm = liveWPM, wpm > 0, (liveSeconds ?? 0) >= minimumLiveSeconds {
+            return Int(wpm.rounded())
+        }
+        return nil
+    }
+
+    private var showsLiveEstimate: Bool {
+        (chapterWPM ?? 0) <= 0 && (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
+    }
+
+}
+
+// MARK: - Compact Reading Speed Prompt
+
+struct CompactReadingSpeedPrompt: View {
+    let chapterWPM: Double?
+    let liveWPM: Double?
+    let liveSeconds: Double?
+    let averageWPM: Double
+    let confidence: Double
+    let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
+    let onDismiss: () -> Void
+
+    @Environment(\.theme) private var theme
+    @State private var showAdjustments = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(theme.iris)
+
+                Text("Chapter Complete")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(theme.text)
+
+                Spacer()
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                if let wpm = resolvedWPM {
+                    Text(wpmLabel(wpm, isLive: showsLiveEstimate))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(theme.iris)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                } else if isLiveEstimateTooEarly {
+                    Text("Too early to estimate")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                } else {
+                    Text("Reading session in progress")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+
+                Spacer()
+
+                if averageWPM > 0 {
+                    HStack(spacing: 6) {
+                        Text("Average \(Int(averageWPM)) WPM")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(theme.subtle)
+
+                        Circle()
+                            .fill(confidence >= 0.8 ? theme.foam : theme.gold)
+                            .frame(width: 5, height: 5)
+
+                        Text("\(Int(confidence * 100))% confident")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(confidence >= 0.8 ? theme.foam : theme.gold)
+                    }
+                } else {
+                    Text("Still calibrating")
+                        .font(.system(size: 10))
+                        .foregroundColor(theme.muted)
+                }
+            }
+
+            if !showAdjustments {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            showAdjustments = true
+                        }
+                    } label: {
+                        Text("Adjust speed")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(theme.rose)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(theme.rose.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: onDismiss) {
+                        Text("Looks right")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(theme.foam)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(theme.foam.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Button(action: onDismiss) {
+                        Text("I was just browsing")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Calibration")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(theme.muted)
+
+                    let columns = [GridItem(.flexible()), GridItem(.flexible())]
+                    LazyVGrid(columns: columns, spacing: 6) {
+                        ForEach(ReadingSpeedTracker.AdjustmentType.allCases, id: \.self) { adjustment in
+                            Button {
+                                onApplyAdjustment(adjustment)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(adjustment.rawValue)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(theme.text)
+
+                                    Spacer()
+
+                                    Text(adjustmentDescription(adjustment))
+                                        .font(.system(size: 9))
+                                        .foregroundColor(theme.muted)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(theme.overlay)
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .background(theme.iris.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(theme.iris.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private var minimumLiveSeconds: Double { 15 }
+
+    private var isLiveEstimateTooEarly: Bool {
+        (chapterWPM ?? 0) <= 0 && (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
+    }
+
+    private var resolvedWPM: Int? {
+        if let wpm = chapterWPM, wpm > 0 {
+            return Int(wpm.rounded())
+        }
+        if let wpm = liveWPM, wpm > 0, (liveSeconds ?? 0) >= minimumLiveSeconds {
+            return Int(wpm.rounded())
+        }
+        return nil
+    }
+
+    private var showsLiveEstimate: Bool {
+        (chapterWPM ?? 0) <= 0 && (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
+    }
+
+    private func wpmLabel(_ wpm: Int, isLive: Bool) -> String {
+        isLive ? "Live estimate: \(wpm) WPM" : "\(wpm) WPM"
+    }
+
+    private func adjustmentDescription(_ type: ReadingSpeedTracker.AdjustmentType) -> String {
+        switch type {
+        case .readingSlowly: return "-15%"
+        case .skippedInsights: return "+15%"
+        case .readInsights: return "-10%"
+        case .wasDistracted: return "-30%"
+        }
+    }
 }
 
 // MARK: - Image Card
 
 struct ImageCard: View {
     let image: GeneratedImage
+    let isHighlighted: Bool
     let onScrollTo: () -> Void
     let onExpand: () -> Void
 
@@ -1474,14 +1705,13 @@ struct ImageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image preview - use .fit to show full image, never clip content
+            // Image preview - full width with natural height per aspect ratio
             AsyncImage(url: image.imageURL) { phase in
                 switch phase {
                 case .success(let loadedImage):
                     loadedImage
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 200)
                         .frame(maxWidth: .infinity)
                         .background(theme.overlay.opacity(0.3))
                 case .failure:
@@ -1556,11 +1786,12 @@ struct ImageCard: View {
             }
             .padding(10)
         }
-        .background(theme.base)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isHighlighted ? theme.iris.opacity(0.08) : theme.base)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
-                .stroke(theme.overlay, lineWidth: 1)
+                .stroke(isHighlighted ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
         }
     }
 }
