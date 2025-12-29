@@ -12,8 +12,8 @@ struct Quiz: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
 
     static let databaseTableName = "quizzes"
 
-    mutating func didInsert(with rowID: Int64, for column: String?) {
-        id = rowID
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 
     // MARK: - Relationships
@@ -24,13 +24,7 @@ struct Quiz: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
 // MARK: - Column Definitions
 
 extension Quiz {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let chapterId = Column(CodingKeys.chapterId)
-        static let question = Column(CodingKeys.question)
-        static let answer = Column(CodingKeys.answer)
-        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
-        static let userAnswered = Column(CodingKeys.userAnswered)
-        static let userCorrect = Column(CodingKeys.userCorrect)
+    enum Columns: String, ColumnExpression {
+        case id, chapterId, question, answer, sourceBlockId, userAnswered, userCorrect
     }
 }

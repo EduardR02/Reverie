@@ -23,12 +23,13 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     var createdAt: Date = Date()
     var lastReadAt: Date?
     var classificationStatus: ClassificationStatus = .pending
-    var classificationError: String?  // Store error message for user display
+    var classificationError: String?
+    var isFinished: Bool = false
 
     static let databaseTableName = "books"
 
-    mutating func didInsert(with rowID: Int64, for column: String?) {
-        id = rowID
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 
     // MARK: - Computed
@@ -45,31 +46,18 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     // MARK: - Relationships
 
     static let chapters = hasMany(Chapter.self)
-
     var chapters: QueryInterfaceRequest<Chapter> {
-        request(for: Book.chapters).order(Chapter.Columns.index)
+        request(for: Book.chapters).order(Column("index"))
     }
 }
 
 // MARK: - Column Definitions
 
 extension Book {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let title = Column(CodingKeys.title)
-        static let author = Column(CodingKeys.author)
-        static let coverPath = Column(CodingKeys.coverPath)
-        static let epubPath = Column(CodingKeys.epubPath)
-        static let progressPercent = Column(CodingKeys.progressPercent)
-        static let currentChapter = Column(CodingKeys.currentChapter)
-        static let currentScrollPercent = Column(CodingKeys.currentScrollPercent)
-        static let currentScrollOffset = Column(CodingKeys.currentScrollOffset)
-        static let chapterCount = Column(CodingKeys.chapterCount)
-        static let processedFully = Column(CodingKeys.processedFully)
-        static let createdAt = Column(CodingKeys.createdAt)
-        static let lastReadAt = Column(CodingKeys.lastReadAt)
-        static let classificationStatus = Column(CodingKeys.classificationStatus)
-        static let classificationError = Column(CodingKeys.classificationError)
+    enum Columns: String, ColumnExpression {
+        case id, title, author, coverPath, epubPath, progressPercent, currentChapter, 
+             currentScrollPercent, currentScrollOffset, chapterCount, processedFully, 
+             createdAt, lastReadAt, classificationStatus, classificationError, isFinished
     }
 
     /// Whether classification needs to run (pending, failed, or stuck in-progress)

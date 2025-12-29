@@ -23,12 +23,7 @@ struct Footnote: Identifiable, Codable, FetchableRecord, MutablePersistableRecor
 // MARK: - Column Definitions
 
 extension Footnote {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let chapterId = Column(CodingKeys.chapterId)
-        static let marker = Column(CodingKeys.marker)
-        static let content = Column(CodingKeys.content)
-        static let refId = Column(CodingKeys.refId)
-        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
+    enum Columns: String, ColumnExpression {
+        case id, chapterId, marker, content, refId, sourceBlockId
     }
 }

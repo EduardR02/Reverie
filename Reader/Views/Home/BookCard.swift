@@ -6,76 +6,111 @@ struct BookCard: View {
     let onOpen: () -> Void
     let onProcess: () -> Void
     let onDelete: () -> Void
+    let onToggleFinished: () -> Void
 
     @Environment(\.theme) private var theme
     @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Cover with hover overlay
+            // Cover with hover overlays
             ZStack(alignment: .topTrailing) {
                 coverView
                     .frame(height: 260)
                     .clipped()
 
-                // Process button overlay (appears on hover)
-                if isHovered && !book.processedFully {
+                // Top Toolbar (Process + Status)
+                HStack(alignment: .top) {
+                    // LEFT: Process Button
                     Button {
                         onProcess()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text(processingStatus == nil ? "Process" : "View Progress")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundColor(theme.base)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(theme.rose)
-                        .clipShape(Capsule())
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(theme.base)
+                            .frame(width: 32, height: 32)
+                            .background(theme.rose)
+                            .clipShape(Circle())
+                            .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
                     }
                     .buttonStyle(.plain)
-                    .padding(8)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                }
+                    .opacity(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0)
+                    .scaleEffect(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0.8)
 
+                    Spacer()
+
+                    // RIGHT: Status area
+                    HStack(spacing: 8) {
+                        // Subtle "Processed" indicator
+                        if book.processedFully && !isHovered {
+                            Image(systemName: "sparkles.rectangle.stack.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(theme.rose)
+                                .shadow(color: .black.opacity(0.4), radius: 2)
+                        }
+                        
+                        // The "Finished" Toggle Button
+                        Button {
+                            onToggleFinished()
+                        } label: {
+                            Image(systemName: book.isFinished ? "checkmark.seal.fill" : "checkmark.seal")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(book.isFinished ? theme.foam : theme.base)
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    book.isFinished ? theme.foam.opacity(0.2) : theme.rose
+                                )
+                                .clipShape(Circle())
+                                .shadow(color: .black.opacity(book.isFinished ? 0 : 0.2), radius: 4, y: 2)
+                        }
+                        .buttonStyle(.plain)
+                        .opacity(book.isFinished || isHovered ? 1 : 0)
+                        .scaleEffect(book.isFinished || isHovered ? 1 : 0.8)
+                    }
+                }
+                .padding(8)
+
+                // BOTTOM-LEADING: Active Processing Badge
                 if let processingStatus {
                     processingBadge(status: processingStatus)
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                        .transition(.opacity)
-                }
-
-                // Processed badge
-                if book.processedFully {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(theme.foam)
-                        .padding(8)
-                        .transition(.opacity)
                 }
             }
 
-            // Info
+            // Info section unchanged
             VStack(alignment: .leading, spacing: 6) {
                 Text(book.title)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(theme.text)
                     .lineLimit(2)
 
-                Text(book.author)
-                    .font(.system(size: 12))
-                    .foregroundColor(theme.muted)
-                    .lineLimit(1)
+                HStack {
+                    Text(book.author)
+                        .font(.system(size: 12))
+                        .foregroundColor(theme.muted)
+                        .lineLimit(1)
+                    
+                    Spacer()
+                    
+                    if book.isFinished {
+                        Text("FINISHED")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundColor(theme.foam)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(theme.foam.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
 
                 // Progress
                 HStack(spacing: 8) {
-                    ProgressView(value: book.progressPercent)
-                        .tint(theme.rose)
+                    ProgressView(value: book.isFinished ? 1.0 : book.progressPercent)
+                        .tint(book.isFinished ? theme.foam : theme.rose)
                         .scaleEffect(y: 0.6)
 
-                    Text(book.displayProgress)
+                    Text(book.isFinished ? "100%" : book.displayProgress)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(theme.subtle)
                 }
@@ -86,11 +121,11 @@ struct BookCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isHovered ? theme.rose.opacity(0.5) : theme.overlay, lineWidth: 1)
+                .stroke(isHovered ? (book.isFinished ? theme.foam : theme.rose).opacity(0.5) : theme.overlay, lineWidth: 1)
         }
         .scaleEffect(isHovered ? 1.02 : 1.0)
         .shadow(
-            color: isHovered ? theme.rose.opacity(0.2) : .clear,
+            color: isHovered ? (book.isFinished ? theme.foam : theme.rose).opacity(0.2) : .clear,
             radius: 12,
             y: 4
         )
@@ -103,6 +138,10 @@ struct BookCard: View {
 
             if !book.processedFully {
                 Button("Process Full Book") { onProcess() }
+            }
+            
+            Button(book.isFinished ? "Mark as Unread" : "Mark as Finished") {
+                onToggleFinished()
             }
 
             Divider()

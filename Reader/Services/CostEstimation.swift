@@ -42,13 +42,11 @@ enum PricingCatalog {
             return ModelPricing(inputPerMToken: 0.5, outputPerMToken: 3, cachedInputMultiplier: cachedInputMultiplier)
         case "gpt-5.2":
             return ModelPricing(inputPerMToken: 1.75, outputPerMToken: 14, cachedInputMultiplier: cachedInputMultiplier)
-        case "gpt-5.2-mini":
-            return ModelPricing(inputPerMToken: 1.75, outputPerMToken: 14, cachedInputMultiplier: cachedInputMultiplier)
-        case "claude-4.5-opus":
+        case "claude-opus-4-5":
             return ModelPricing(inputPerMToken: 5, outputPerMToken: 25, cachedInputMultiplier: cachedInputMultiplier)
         case "claude-sonnet-4-5":
             return ModelPricing(inputPerMToken: 3, outputPerMToken: 15, cachedInputMultiplier: cachedInputMultiplier)
-        case "claude-4.5-haiku":
+        case "claude-haiku-4-5":
             return ModelPricing(inputPerMToken: 1, outputPerMToken: 5, cachedInputMultiplier: cachedInputMultiplier)
         default:
             return nil

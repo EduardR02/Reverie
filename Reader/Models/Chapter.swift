@@ -16,11 +16,12 @@ struct Chapter: Identifiable, Codable, FetchableRecord, MutablePersistableRecord
     var wordCount: Int = 0
     var isGarbage: Bool = false      // LLM classified as non-content
     var userOverride: Bool = false   // User clicked "Process Anyway"
+    var maxScrollReached: Double = 0
 
     static let databaseTableName = "chapters"
 
-    mutating func didInsert(with rowID: Int64, for column: String?) {
-        id = rowID
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 
     // MARK: - Relationships
@@ -28,18 +29,23 @@ struct Chapter: Identifiable, Codable, FetchableRecord, MutablePersistableRecord
     static let book = belongsTo(Book.self)
     static let annotations = hasMany(Annotation.self)
     static let quizzes = hasMany(Quiz.self)
-    static let images = hasMany(GeneratedImage.self)
+    static let generatedImages = hasMany(GeneratedImage.self)
+    static let footnotes = hasMany(Footnote.self)
 
     var annotations: QueryInterfaceRequest<Annotation> {
-        request(for: Chapter.annotations).order(Annotation.Columns.sourceBlockId)
+        request(for: Chapter.annotations).order(Column("sourceBlockId"))
     }
 
     var quizzes: QueryInterfaceRequest<Quiz> {
-        request(for: Chapter.quizzes)
+        request(for: Chapter.quizzes).order(Column("sourceBlockId"))
     }
 
     var images: QueryInterfaceRequest<GeneratedImage> {
-        request(for: Chapter.images).order(GeneratedImage.Columns.sourceBlockId)
+        request(for: Chapter.generatedImages).order(Column("sourceBlockId"))
+    }
+
+    var footnotes: QueryInterfaceRequest<Footnote> {
+        request(for: Chapter.footnotes).order(Column("sourceBlockId"))
     }
 
     // MARK: - Computed
@@ -65,21 +71,10 @@ struct Chapter: Identifiable, Codable, FetchableRecord, MutablePersistableRecord
 // MARK: - Column Definitions
 
 extension Chapter {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let bookId = Column(CodingKeys.bookId)
-        static let index = Column(CodingKeys.index)
-        static let title = Column(CodingKeys.title)
-        static let contentHTML = Column(CodingKeys.contentHTML)
-        static let contentText = Column(CodingKeys.contentText)
-        static let blockCount = Column(CodingKeys.blockCount)
-        static let resourcePath = Column(CodingKeys.resourcePath)
-        static let summary = Column(CodingKeys.summary)
-        static let rollingSummary = Column(CodingKeys.rollingSummary)
-        static let processed = Column(CodingKeys.processed)
-        static let wordCount = Column(CodingKeys.wordCount)
-        static let isGarbage = Column(CodingKeys.isGarbage)
-        static let userOverride = Column(CodingKeys.userOverride)
+    enum Columns: String, ColumnExpression {
+        case id, bookId, index, title, contentHTML, contentText, blockCount,
+             resourcePath, summary, rollingSummary, processed, wordCount,
+             isGarbage, userOverride, maxScrollReached
     }
 
     /// Whether this chapter should skip automatic AI processing

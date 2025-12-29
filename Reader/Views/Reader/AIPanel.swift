@@ -90,6 +90,11 @@ struct AIPanel: View {
                 withAnimation(.easeOut(duration: 0.2)) {
                     expandedAnnotationId = newId
                 }
+                
+                // Record as seen in Journey
+                if let annotation = annotations.first(where: { $0.id == newId }) {
+                    appState.recordAnnotationSeen(annotation)
+                }
             }
         }
         .onChange(of: currentFootnoteRefId) { _, newId in
@@ -880,6 +885,7 @@ struct AIPanel: View {
         let userMessage = ChatMessage(role: .user, content: trimmed)
         chatMessages.append(userMessage)
         chatScrollTick += 1
+        appState.readingStats.recordFollowup()
         let query = trimmed
         if text == nil {
             chatInput = ""
@@ -1100,11 +1106,17 @@ struct AnnotationCard: View {
     let onScrollTo: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(AppState.self) private var appState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header (always visible)
-            Button(action: onToggle) {
+            Button {
+                onToggle()
+                if !isExpanded {
+                    appState.recordAnnotationSeen(annotation)
+                }
+            } label: {
                 HStack(spacing: 10) {
                     // Type icon
                     Image(systemName: annotation.type.icon)
@@ -1184,6 +1196,7 @@ struct QuizCard: View {
     let onScrollTo: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(AppState.self) private var appState
     @State private var showAnswer = false
     @State private var userResponse: Bool?
 
@@ -1253,6 +1266,7 @@ struct QuizCard: View {
 
                     Button {
                         userResponse = true
+                        appState.recordQuizAnswer(quiz: quiz, correct: true)
                     } label: {
                         Image(systemName: "checkmark.circle")
                             .font(.system(size: 20))
@@ -1264,6 +1278,7 @@ struct QuizCard: View {
 
                     Button {
                         userResponse = false
+                        appState.recordQuizAnswer(quiz: quiz, correct: false)
                     } label: {
                         Image(systemName: "xmark.circle")
                             .font(.system(size: 20))
@@ -1278,6 +1293,11 @@ struct QuizCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.base)
+        .onAppear {
+            if quiz.userAnswered {
+                userResponse = quiz.userCorrect
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)

@@ -8,11 +8,12 @@ struct Annotation: Identifiable, Codable, FetchableRecord, MutablePersistableRec
     var title: String
     var content: String
     var sourceBlockId: Int  // Block number [N] this insight relates to
+    var isSeen: Bool = false
 
     static let databaseTableName = "annotations"
 
-    mutating func didInsert(with rowID: Int64, for column: String?) {
-        id = rowID
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 
     // MARK: - Relationships
@@ -53,12 +54,7 @@ enum AnnotationType: String, Codable {
 // MARK: - Column Definitions
 
 extension Annotation {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let chapterId = Column(CodingKeys.chapterId)
-        static let type = Column(CodingKeys.type)
-        static let title = Column(CodingKeys.title)
-        static let content = Column(CodingKeys.content)
-        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
+    enum Columns: String, ColumnExpression {
+        case id, chapterId, type, title, content, sourceBlockId, isSeen
     }
 }

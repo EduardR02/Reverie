@@ -5,6 +5,7 @@ struct StatsView: View {
     @Environment(\.theme) private var theme
 
     @State private var animateStats = false
+    @State private var dbStats: DatabaseService.DBStats?
 
     var body: some View {
         ZStack {
@@ -41,9 +42,14 @@ struct StatsView: View {
             }
         }
         .onAppear {
+            appState.refreshReadingStats()
             withAnimation(.easeOut(duration: 0.8).delay(0.1)) {
                 animateStats = true
             }
+        }
+        .task {
+            appState.refreshReadingStats()
+            dbStats = try? appState.database.fetchStats()
         }
     }
 
@@ -93,11 +99,11 @@ struct StatsView: View {
 
     private var heroStatsSection: some View {
         HStack(spacing: 20) {
-            // Total reading time
+            // Today's reading time
             HeroStatCard(
                 icon: "clock.fill",
-                value: formatTime(appState.readingStats.totalMinutes),
-                label: "Total Reading",
+                value: formatTime(appState.readingStats.minutesToday),
+                label: "Today's Reading",
                 color: theme.iris,
                 delay: 0,
                 animate: animateStats
@@ -233,21 +239,21 @@ struct StatsView: View {
             HStack(spacing: 16) {
                 MiniStatBadge(
                     icon: "lightbulb.fill",
-                    value: "\(stats.insightsGenerated)",
+                    value: "\(appState.readingStats.insightsSeen)",
                     label: "Insights",
                     color: theme.gold
                 )
 
                 MiniStatBadge(
                     icon: "bubble.left.fill",
-                    value: "\(stats.followupsAsked)",
+                    value: "\(appState.readingStats.followupsAsked)",
                     label: "Followups",
                     color: theme.foam
                 )
 
                 MiniStatBadge(
                     icon: "photo.fill",
-                    value: "\(stats.imagesGenerated)",
+                    value: "\(appState.readingStats.imagesGenerated)",
                     label: "Images",
                     color: theme.rose
                 )
@@ -277,15 +283,15 @@ struct StatsView: View {
                     .foregroundColor(theme.text)
             }
 
-            let stats = appState.readingStats
+            let accuracy = Double(dbStats?.quizzesCorrect ?? 0) / Double(max(dbStats?.quizzesAnswered ?? 0, 1))
 
             // Large accuracy ring
             HStack {
                 Spacer()
                 AccuracyRing(
-                    accuracy: stats.quizAccuracy,
-                    answered: stats.quizzesAnswered,
-                    correct: stats.quizzesCorrect,
+                    accuracy: accuracy,
+                    answered: dbStats?.quizzesAnswered ?? 0,
+                    correct: dbStats?.quizzesCorrect ?? 0,
                     animate: animateStats
                 )
                 Spacer()
@@ -297,7 +303,7 @@ struct StatsView: View {
             // Quiz breakdown
             HStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(stats.quizzesGenerated)")
+                    Text("\(dbStats?.quizzesGenerated ?? 0)")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(theme.iris)
                     Text("Generated")
@@ -306,7 +312,7 @@ struct StatsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(stats.quizzesAnswered)")
+                    Text("\(dbStats?.quizzesAnswered ?? 0)")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text)
                     Text("Answered")
@@ -315,7 +321,7 @@ struct StatsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(stats.quizzesCorrect)")
+                    Text("\(dbStats?.quizzesCorrect ?? 0)")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(theme.foam)
                     Text("Correct")
@@ -324,7 +330,8 @@ struct StatsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(stats.quizzesAnswered - stats.quizzesCorrect)")
+                    let missed = (dbStats?.quizzesAnswered ?? 0) - (dbStats?.quizzesCorrect ?? 0)
+                    Text("\(max(0, missed))")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(theme.love)
                     Text("Missed")
@@ -382,14 +389,14 @@ struct StatsView: View {
                 MilestoneCard(
                     icon: "book.closed.fill",
                     title: "First Book",
-                    achieved: stats.totalBooks >= 1,
+                    achieved: (dbStats?.finishedBooks ?? 0) >= 1,
                     color: theme.gold
                 )
 
                 MilestoneCard(
                     icon: "lightbulb.fill",
                     title: "100 Insights",
-                    achieved: stats.insightsGenerated >= 100,
+                    achieved: (dbStats?.totalInsights ?? 0) >= 100,
                     color: theme.iris
                 )
 
@@ -403,7 +410,7 @@ struct StatsView: View {
                 MilestoneCard(
                     icon: "checkmark.seal.fill",
                     title: "Quiz Master",
-                    achieved: stats.quizzesCorrect >= 50,
+                    achieved: (dbStats?.quizzesCorrect ?? 0) >= 50,
                     color: theme.foam
                 )
 

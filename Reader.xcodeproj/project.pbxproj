@@ -41,6 +41,7 @@
 		F032 /* CostEstimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = S032 /* CostEstimation.swift */; };
 		F033 /* BookProcessingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = S033 /* BookProcessingStatus.swift */; };
 		F034 /* SelectableText.swift in Sources */ = {isa = PBXBuildFile; fileRef = S034 /* SelectableText.swift */; };
+		F035 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = S035 /* ReadingStats.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -78,6 +79,7 @@
 		S032 /* CostEstimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostEstimation.swift; sourceTree = "<group>"; };
 		S033 /* BookProcessingStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessingStatus.swift; sourceTree = "<group>"; };
 		S034 /* SelectableText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableText.swift; sourceTree = "<group>"; };
+		S035 /* ReadingStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStats.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +99,7 @@
 			children = (
 				S001 /* ReaderApp.swift */,
 				S002 /* AppState.swift */,
+				S035 /* ReadingStats.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -296,6 +299,7 @@
 			files = (
 				F001 /* ReaderApp.swift in Sources */,
 				F002 /* AppState.swift in Sources */,
+				F035 /* ReadingStats.swift in Sources */,
 				F003 /* Book.swift in Sources */,
 				F004 /* Chapter.swift in Sources */,
 				F005 /* Annotation.swift in Sources */,

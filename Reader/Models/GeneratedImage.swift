@@ -11,8 +11,8 @@ struct GeneratedImage: Identifiable, Codable, FetchableRecord, MutablePersistabl
 
     static let databaseTableName = "generated_images"
 
-    mutating func didInsert(with rowID: Int64, for column: String?) {
-        id = rowID
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 
     // MARK: - Computed
@@ -29,12 +29,7 @@ struct GeneratedImage: Identifiable, Codable, FetchableRecord, MutablePersistabl
 // MARK: - Column Definitions
 
 extension GeneratedImage {
-    enum Columns {
-        static let id = Column(CodingKeys.id)
-        static let chapterId = Column(CodingKeys.chapterId)
-        static let prompt = Column(CodingKeys.prompt)
-        static let imagePath = Column(CodingKeys.imagePath)
-        static let sourceBlockId = Column(CodingKeys.sourceBlockId)
-        static let createdAt = Column(CodingKeys.createdAt)
+    enum Columns: String, ColumnExpression {
+        case id, chapterId, prompt, imagePath, sourceBlockId, createdAt
     }
 }

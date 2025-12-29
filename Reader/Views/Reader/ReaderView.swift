@@ -36,7 +36,6 @@ struct ReaderView: View {
     @State private var scrollByAmount: Double?
     @State private var lastScrollPercent: Double = 0
     @State private var lastScrollOffset: Double = 0
-    @State private var pendingProgressSaveTask: Task<Void, Never>?
     @State private var didRestoreInitialPosition = false
 
     // Back navigation (after clicking insight)
@@ -165,11 +164,17 @@ struct ReaderView: View {
             Task { await loadChapter(at: newIndex) }
         }
         .onDisappear {
-            pendingProgressSaveTask?.cancel()
-            saveReadingProgress(scrollPercent: lastScrollPercent, scrollOffset: lastScrollOffset)
+            if let chapter = currentChapter {
+                appState.updateChapterProgress(
+                    chapter: chapter,
+                    scrollPercent: lastScrollPercent,
+                    scrollOffset: lastScrollOffset
+                )
+            }
             // End reading session when leaving the reader
-            if appState.readingSpeedTracker.currentSession != nil {
-                _ = appState.readingSpeedTracker.endSession()
+            if let result = appState.readingSpeedTracker.endSession() {
+                appState.readingStats.addReadingTime(result.seconds)
+                appState.readingStats.addWords(result.words)
             }
         }
         // Arrow key navigation
@@ -303,9 +308,15 @@ struct ReaderView: View {
                             }
                             lastScrollPercent = scrollPercent
                             lastScrollOffset = scrollOffset
-                            scheduleProgressSave(scrollPercent: scrollPercent, scrollOffset: scrollOffset)
+                            
+                            // Centralized throttled progress tracking
+                            appState.updateChapterProgress(
+                                chapter: chapter,
+                                scrollPercent: scrollPercent,
+                                scrollOffset: scrollOffset
+                            )
 
-                            // Update reading speed session
+                            // Update reading speed session (in-memory only)
                             appState.readingSpeedTracker.updateSession(scrollPercent: scrollPercent)
 
                             updateBackAnchor(
@@ -467,7 +478,7 @@ struct ReaderView: View {
 
             Spacer()
 
-            // Image generating indicator (processing spinner moved to AI Panel)
+            // Image generating indicator
             if imageGenerating {
                 HStack(spacing: 6) {
                     ProgressView()
@@ -728,8 +739,10 @@ struct ReaderView: View {
         guard index >= 0, index < chapters.count else { return }
 
         // End previous reading session
-        if appState.readingSpeedTracker.currentSession != nil {
-            chapterWPM = appState.readingSpeedTracker.endSession()
+        if let result = appState.readingSpeedTracker.endSession() {
+            chapterWPM = result.wpm
+            appState.readingStats.addReadingTime(result.seconds)
+            appState.readingStats.addWords(result.words)
         }
 
         currentChapter = chapters[index]
@@ -774,7 +787,11 @@ struct ReaderView: View {
             lastScrollPercent = 0
             lastScrollOffset = 0
             if didRestoreInitialPosition {
-                saveReadingProgress(scrollPercent: 0, scrollOffset: 0)
+                appState.updateChapterProgress(
+                    chapter: chapter,
+                    scrollPercent: 0,
+                    scrollOffset: 0
+                )
             } else {
                 didRestoreInitialPosition = true
             }
@@ -848,17 +865,25 @@ struct ReaderView: View {
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
                     ? data.sourceBlockId : 1
 
-                var annotation = Annotation(
-                    chapterId: chapterId,
-                    type: type,
-                    title: data.title,
-                    content: data.content,
-                    sourceBlockId: validBlockId
-                )
-                try appState.database.saveAnnotation(&annotation)
+                                var annotation = Annotation(
 
-                if stillOnSameChapter {
-                    annotations.append(annotation)
+                                    chapterId: chapterId,
+
+                                    type: type,
+
+                                    title: data.title,
+
+                                    content: data.content,
+
+                                    sourceBlockId: validBlockId
+
+                                )
+
+                                try appState.database.saveAnnotation(&annotation)
+
+                                if stillOnSameChapter {
+
+                                    annotations.append(annotation)
                     // Queue marker injection for WebView
                     if let id = annotation.id {
                         injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId))
@@ -888,9 +913,6 @@ struct ReaderView: View {
                 if stillOnSameChapter {
                     quizzes.append(quiz)
                 }
-            }
-            if !analysis.quizQuestions.isEmpty {
-                appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
             }
 
             await generateSuggestedImages(
@@ -1127,9 +1149,6 @@ struct ReaderView: View {
                 if stillOnSameChapter {
                     quizzes.append(quiz)
                 }
-            }
-            if !newQuestions.isEmpty {
-                appState.readingStats.recordQuizGenerated(count: newQuestions.count)
             }
         } catch {
             print("Failed to generate more questions: \(error)")
@@ -1390,36 +1409,6 @@ struct ReaderView: View {
     }
 
     // MARK: - Helpers
-
-    private func scheduleProgressSave(scrollPercent: Double, scrollOffset: Double) {
-        pendingProgressSaveTask?.cancel()
-        pendingProgressSaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 750_000_000)
-            saveReadingProgress(scrollPercent: scrollPercent, scrollOffset: scrollOffset)
-        }
-    }
-
-    private func saveReadingProgress(scrollPercent: Double, scrollOffset: Double) {
-        guard book.id != nil else { return }
-
-        let clampedPercent = max(0, min(scrollPercent, 1))
-        let chapterCount = max(1, max(chapters.count, book.chapterCount))
-        let chapterProgress = Double(appState.currentChapterIndex) + clampedPercent
-        let overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
-
-        var updatedBook = book
-        updatedBook.currentChapter = appState.currentChapterIndex
-        updatedBook.currentScrollPercent = clampedPercent
-        updatedBook.currentScrollOffset = scrollOffset
-        updatedBook.progressPercent = overallProgress
-        updatedBook.lastReadAt = Date()
-
-        do {
-            try appState.database.saveBook(&updatedBook)
-        } catch {
-            print("Failed to save reading progress: \(error)")
-        }
-    }
 
     private var hasLLMKey: Bool {
         switch appState.settings.llmProvider {

@@ -2,6 +2,24 @@ import Foundation
 
 final class LLMService {
     typealias StreamChunk = LLMStreamChunk
+    private weak var appState: AppState?
+
+    init(appState: AppState? = nil) {
+        self.appState = appState
+    }
+
+    func setAppState(_ appState: AppState) {
+        self.appState = appState
+    }
+
+    struct TokenUsage: Codable {
+        var input: Int = 0
+        var output: Int = 0
+        var cached: Int?
+        var reasoning: Int?
+
+        var total: Int { input + output }
+    }
 
     struct ChapterAnalysis: Codable {
         var annotations: [AnnotationData] = []
@@ -236,9 +254,6 @@ final class LLMService {
 
     // MARK: - Chapter Classification
 
-    /// Classifies all chapters in a book to identify garbage (front/back matter, empty, etc.)
-    /// Uses Gemini 3 Flash if available, otherwise falls back to cheapest available model.
-    /// Returns a dictionary mapping chapter index to isGarbage boolean.
     func classifyChapters(
         chapters: [(index: Int, title: String, preview: String)],
         settings: UserSettings
@@ -246,7 +261,7 @@ final class LLMService {
         let prompt = PromptLibrary.chapterClassificationPrompt(chapters: chapters)
         let (provider, model, key) = classificationModelSelection(settings: settings)
 
-        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !key.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
             throw LLMError.noAPIKey(provider)
         }
 
@@ -318,7 +333,9 @@ final class LLMService {
         )
 
         let data = try await performRequest(request)
-        return try client.parseResponseText(from: data)
+        let (text, usage) = try client.parseResponseText(from: data)
+        if let usage { recordUsage(usage) }
+        return text
     }
 
     private func requestStructured<T: Decodable>(
@@ -347,8 +364,20 @@ final class LLMService {
         )
 
         let data = try await performRequest(request)
-        let text = try client.parseResponseText(from: data)
+        let (text, usage) = try client.parseResponseText(from: data)
+        if let usage { recordUsage(usage) }
         return try decodeStructured(T.self, from: text)
+    }
+
+    private func recordUsage(_ usage: TokenUsage) {
+        guard let appState = self.appState else { return }
+        Task { @MainActor in
+            appState.readingStats.addTokens(
+                input: usage.input,
+                reasoning: usage.reasoning ?? 0,
+                output: usage.output
+            )
+        }
     }
 
     private func decodeStructured<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
@@ -426,48 +455,54 @@ final class LLMService {
                         stream: true
                     )
 
-                    try await performStream(request, provider: client, continuation: continuation)
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw LLMError.invalidResponse
+                    }
+
+                    if httpResponse.statusCode != 200 {
+                        throw LLMError.httpError(httpResponse.statusCode)
+                    }
+
+                    // A temporary continuation to intercept usage chunks
+                    let interceptor = AsyncThrowingStream<StreamChunk, Error> { inner in
+                        Task {
+                            do {
+                                var lineParser = SSELineParser()
+                                for try await byte in bytes {
+                                    try lineParser.append(byte: byte) { line in
+                                        guard let payload = ssePayload(from: line) else { return }
+                                        if payload == "[DONE]" { return }
+
+                                        guard let data = payload.data(using: .utf8),
+                                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                                            return
+                                        }
+
+                                        try client.handleStreamEvent(json, continuation: inner)
+                                    }
+                                }
+                                inner.finish()
+                            } catch {
+                                inner.finish(throwing: error)
+                            }
+                        }
+                    }
+
+                    for try await chunk in interceptor {
+                        if case .usage(let usage) = chunk {
+                            self.recordUsage(usage)
+                        } else {
+                            continuation.yield(chunk)
+                        }
+                    }
+                    
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
         }
-    }
-
-    private func performStream(
-        _ request: URLRequest,
-        provider: any LLMProviderClient,
-        continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
-    ) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LLMError.invalidResponse
-        }
-
-        if httpResponse.statusCode != 200 {
-            throw LLMError.httpError(httpResponse.statusCode)
-        }
-
-        var lineParser = SSELineParser()
-
-        func handleLine(_ line: String) throws {
-            guard let payload = ssePayload(from: line) else { return }
-            if payload == "[DONE]" { return }
-
-            guard let data = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return
-            }
-
-            try provider.handleStreamEvent(json, continuation: continuation)
-        }
-
-        for try await byte in bytes {
-            try lineParser.append(byte: byte, onLine: handleLine)
-        }
-
-        try lineParser.finalize(onLine: handleLine)
     }
 
     private func apiKey(for provider: LLMProvider, settings: UserSettings) -> String {

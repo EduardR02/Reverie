@@ -147,70 +147,6 @@ struct HomeView: View {
             }
             .padding(.horizontal, 32)
             .padding(.vertical, 24)
-
-            // Reading stats bar
-            if appState.readingStats.totalMinutes > 0 || appState.readingStats.currentStreak > 0 {
-                readingStatsBar
-            }
-        }
-    }
-
-    // MARK: - Reading Stats Bar
-
-    private var readingStatsBar: some View {
-        HStack(spacing: 24) {
-            // Today's reading
-            statItem(
-                icon: "clock",
-                value: formatMinutes(appState.readingStats.minutesToday),
-                label: "Today"
-            )
-
-            // Streak
-            statItem(
-                icon: "flame",
-                value: "\(appState.readingStats.currentStreak)",
-                label: "Day Streak",
-                accent: appState.readingStats.currentStreak >= 7
-            )
-
-            // Total time
-            statItem(
-                icon: "hourglass",
-                value: formatMinutes(appState.readingStats.totalMinutes),
-                label: "Total"
-            )
-
-            Spacer()
-        }
-        .padding(.horizontal, 32)
-        .padding(.bottom, 16)
-    }
-
-    private func statItem(icon: String, value: String, label: String, accent: Bool = false) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 14))
-                .foregroundColor(accent ? theme.gold : theme.muted)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(value)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundColor(accent ? theme.gold : theme.text)
-                Text(label)
-                    .font(.system(size: 11))
-                    .foregroundColor(theme.muted)
-            }
-        }
-    }
-
-    private func formatMinutes(_ minutes: Int) -> String {
-        if minutes < 60 {
-            return "\(minutes)m"
-        } else {
-            let hours = minutes / 60
-            let mins = minutes % 60
-            return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
         }
     }
 
@@ -229,6 +165,9 @@ struct HomeView: View {
                         handleProcessRequest(book)
                     } onDelete: {
                         deleteBook(book)
+                    } onToggleFinished: {
+                        appState.toggleBookFinished(book)
+                        Task { await loadBooks() }
                     }
                 }
             }
@@ -676,9 +615,6 @@ struct HomeView: View {
                     )
                     try appState.database.saveQuiz(&quiz)
                 }
-                if !analysis.quizQuestions.isEmpty {
-                    appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
-                }
 
                 if Task.isCancelled {
                     didCancel = true
@@ -1124,7 +1060,7 @@ struct ProcessBookSheet: View {
 
     private var classificationKeyMissing: Bool {
         let selection = appState.llmService.classificationModelSelection(settings: appState.settings)
-        return selection.2.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return selection.2.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
     }
 
     private var classificationCostEstimate: Double? {
@@ -1132,8 +1068,8 @@ struct ProcessBookSheet: View {
         guard let pricing = PricingCatalog.textPricing(for: selection.1) else { return nil }
         let inputTokens = Double(chapterStats.classificationPreviewWords) * CostEstimates.tokensPerWord
         let outputTokens = Double(chapterStats.totalChapters * CostEstimates.classificationOutputTokensPerChapter)
-        let inputCost = (inputTokens / 1_000_000) * pricing.inputPerMToken
-        let outputCost = (outputTokens / 1_000_000) * pricing.outputPerMToken
+        let inputCost: Double = (inputTokens / 1_000_000) * pricing.inputPerMToken
+        let outputCost: Double = (outputTokens / 1_000_000) * pricing.outputPerMToken
         return inputCost + outputCost
     }
 

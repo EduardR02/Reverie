@@ -109,7 +109,14 @@ final class ReadingSpeedTracker {
         currentSession = session
     }
 
-    func endSession() -> Double? {
+    struct SessionResult {
+        let wpm: Double
+        let minutes: Int
+        let seconds: Double
+        let words: Int
+    }
+
+    func endSession() -> SessionResult? {
         guard var session = currentSession else { return nil }
 
         // Final time update
@@ -121,6 +128,10 @@ final class ReadingSpeedTracker {
         }
 
         let wpm = session.wpm
+        let totalSeconds = session.timeSpentSeconds
+        let minutes = Int(totalSeconds / 60.0)
+        let words = session.wordsRead
+
         if wpm > 50 && wpm < 1000 {  // Sanity check
             historicalWPM.append(wpm)
             // Keep last 20 readings
@@ -132,7 +143,7 @@ final class ReadingSpeedTracker {
         }
 
         currentSession = nil
-        return wpm
+        return SessionResult(wpm: wpm, minutes: max(0, minutes), seconds: max(0, totalSeconds), words: max(0, words))
     }
 
     // MARK: - Pause Management

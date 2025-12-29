@@ -1,15 +1,20 @@
 import Foundation
 
-struct LLMStreamChunk {
-    let text: String
-    let isThinking: Bool
+enum LLMStreamChunk {
+    case content(String)
+    case thinking(String)
+    case usage(LLMService.TokenUsage)
 
-    static func content(_ text: String) -> LLMStreamChunk {
-        LLMStreamChunk(text: text, isThinking: false)
+    var text: String {
+        switch self {
+        case .content(let text), .thinking(let text): return text
+        case .usage: return ""
+        }
     }
 
-    static func thinking(_ text: String) -> LLMStreamChunk {
-        LLMStreamChunk(text: text, isThinking: true)
+    var isThinking: Bool {
+        if case .thinking = self { return true }
+        return false
     }
 }
 
