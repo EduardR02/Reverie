@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ReaderView: View {
@@ -41,6 +42,7 @@ struct ReaderView: View {
     // Back navigation (after clicking insight)
     @State private var savedScrollOffset: Double?
     @State private var showBackButton = false
+    @State private var backAnchorState: BackAnchorState = .inactive
 
     // Auto-switch to quiz
     @State private var externalTabSelection: AIPanel.Tab?
@@ -56,7 +58,6 @@ struct ReaderView: View {
 
     // Image generation
     @State private var imageGenerating = false
-    @State private var imageGenerationWord: String = ""
     @State private var expandedImage: GeneratedImage?  // Full-screen image overlay
 
     // Error handling
@@ -67,32 +68,41 @@ struct ReaderView: View {
     @State private var isClassifying = false
     @State private var classificationError: String?
 
-    var body: some View {
-        HSplitView {
-            // Left: Book Content
-            bookContentPanel
-                .frame(minWidth: 400)
+    private enum BackAnchorState {
+        case inactive
+        case pending
+        case away
+    }
 
-            // Right: AI Panel
-            AIPanel(
-                chapter: currentChapter,
-                annotations: annotations,
-                quizzes: quizzes,
-                footnotes: footnotes,
-                images: images,
-                currentAnnotationId: currentAnnotationId,
-                currentImageId: currentImageId,
-                currentFootnoteRefId: currentFootnoteRefId,
-                isProcessing: isProcessing,
-                isGeneratingMore: isGeneratingMore,
-                isClassifying: isClassifying,
-                classificationError: classificationError,
+    var body: some View {
+        GeometryReader { proxy in
+            let totalWidth = proxy.size.width
+            let readerIdealWidth = totalWidth * appState.splitRatio
+            let aiIdealWidth = totalWidth - readerIdealWidth
+
+            HSplitView {
+                // Left: Book Content
+                bookContentPanel
+                    .frame(minWidth: 400, idealWidth: readerIdealWidth)
+
+                // Right: AI Panel
+                AIPanel(
+                    chapter: currentChapter,
+                    annotations: annotations,
+                    quizzes: quizzes,
+                    footnotes: footnotes,
+                    images: images,
+                    currentAnnotationId: currentAnnotationId,
+                    currentImageId: currentImageId,
+                    currentFootnoteRefId: currentFootnoteRefId,
+                    isProcessing: isProcessing,
+                    isGeneratingMore: isGeneratingMore,
+                    isClassifying: isClassifying,
+                    classificationError: classificationError,
                 onScrollTo: { annotationId in
                     suppressContextAutoSwitch()
                     currentAnnotationId = annotationId
-                    // Save current position for back navigation
-                    savedScrollOffset = lastScrollOffset
-                    showBackButton = true
+                    setBackAnchor()
                     scrollToAnnotationId = annotationId
                 },
                 onScrollToQuote: { quote in
@@ -101,6 +111,7 @@ struct ReaderView: View {
                 onScrollToFootnote: { refId in
                     suppressContextAutoSwitch()
                     currentFootnoteRefId = refId
+                    setBackAnchor()
                     // Scroll to footnote reference in text
                     scrollToQuote = refId  // Will be handled by JS to find the footnote link
                 },
@@ -109,36 +120,34 @@ struct ReaderView: View {
                     if let imageId = imageId {
                         currentImageId = imageId
                     }
-                    // Save current position for back navigation
-                    savedScrollOffset = lastScrollOffset
-                    showBackButton = true
+                    setBackAnchor()
                     scrollToBlockId = blockId
                 },
-                onGenerateMoreInsights: {
-                    Task { await generateMoreInsights() }
-                },
-                onGenerateMoreQuestions: {
-                    Task { await generateMoreQuestions() }
-                },
-                onForceProcess: {
-                    forceProcessGarbageChapter()
-                },
-                onRetryClassification: {
-                    retryClassification()
-                },
-                externalTabSelection: $externalTabSelection,
-                selectedTab: $aiPanelSelectedTab,
-                pendingChatPrompt: $pendingChatPrompt,
-                isChatInputFocused: $isChatInputFocused,
-                scrollPercent: lastScrollPercent,
-                chapterWPM: chapterWPM,
-                onApplyAdjustment: { adjustment in
-                    appState.readingSpeedTracker.applyAdjustment(adjustment)
-                },
-                expandedImage: $expandedImage
-            )
-            .frame(minWidth: 280, idealWidth: 340)
-        }
+                    onGenerateMoreInsights: {
+                        Task { await generateMoreInsights() }
+                    },
+                    onGenerateMoreQuestions: {
+                        Task { await generateMoreQuestions() }
+                    },
+                    onForceProcess: {
+                        forceProcessGarbageChapter()
+                    },
+                    onRetryClassification: {
+                        retryClassification()
+                    },
+                    externalTabSelection: $externalTabSelection,
+                    selectedTab: $aiPanelSelectedTab,
+                    pendingChatPrompt: $pendingChatPrompt,
+                    isChatInputFocused: $isChatInputFocused,
+                    scrollPercent: lastScrollPercent,
+                    chapterWPM: chapterWPM,
+                    onApplyAdjustment: { adjustment in
+                        appState.readingSpeedTracker.applyAdjustment(adjustment)
+                    },
+                    expandedImage: $expandedImage
+                )
+                .frame(minWidth: 280, idealWidth: aiIdealWidth)
+            }
         .background(theme.base)
         .overlay {
             // Full-window image overlay
@@ -194,6 +203,7 @@ struct ReaderView: View {
             default:
                 return .ignored
             }
+        }
         }
     }
 
@@ -298,28 +308,10 @@ struct ReaderView: View {
                             // Update reading speed session
                             appState.readingSpeedTracker.updateSession(scrollPercent: scrollPercent)
 
-                            if showBackButton, let savedOffset = savedScrollOffset {
-                                let threshold = viewportHeight > 0
-                                    ? max(60, viewportHeight * 0.25)
-                                    : 120
-                                if abs(scrollOffset - savedOffset) <= threshold {
-                                    showBackButton = false
-                                    savedScrollOffset = nil
-                                }
-                            }
-
-                            // Auto-switch to quiz when near bottom of chapter
-                            if appState.settings.autoSwitchToQuiz &&
-                               scrollPercent > 0.95 &&
-                               !hasAutoSwitchedToQuiz &&
-                               !quizzes.isEmpty {
-                                hasAutoSwitchedToQuiz = true
-                                suppressContextAutoSwitchUntil = Date().timeIntervalSinceReferenceDate + 0.75
-                                // Small delay for graceful transition
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                    externalTabSelection = .quiz
-                                }
-                            }
+                            updateBackAnchor(
+                                scrollOffset: scrollOffset,
+                                viewportHeight: viewportHeight
+                            )
 
                             handleAutoSwitch(
                                 focusType: focusType,
@@ -327,6 +319,9 @@ struct ReaderView: View {
                                 imageId: imageId,
                                 footnoteRefId: footnoteRefId
                             )
+                        },
+                        onBottomTug: {
+                            handleQuizAutoSwitchOnTug()
                         },
                         scrollToAnnotationId: $scrollToAnnotationId,
                         scrollToPercent: $scrollToPercent,
@@ -340,27 +335,56 @@ struct ReaderView: View {
 
                     // Back button (appears after jumping to annotation)
                     if showBackButton {
-                        Button {
-                            if let offset = savedScrollOffset {
-                                scrollToOffset = offset
+                        HStack(spacing: 0) {
+                            Button {
+                                returnToBackAnchor()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("Back")
+                                        .font(.system(size: 13, weight: .medium))
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
                             }
-                            showBackButton = false
-                            savedScrollOffset = nil
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("Back")
-                                    .font(.system(size: 13, weight: .medium))
+                            .buttonStyle(.plain)
+                            .onHover { isHovering in
+                                if isHovering {
+                                    NSCursor.pointingHand.set()
+                                } else {
+                                    NSCursor.arrow.set()
+                                }
                             }
-                            .foregroundColor(theme.base)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(theme.rose)
-                            .clipShape(Capsule())
-                            .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+
+                            Rectangle()
+                                .fill(theme.base.opacity(0.25))
+                                .frame(width: 1, height: 14)
+
+                            Button {
+                                dismissBackAnchor()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { isHovering in
+                                if isHovering {
+                                    NSCursor.pointingHand.set()
+                                } else {
+                                    NSCursor.arrow.set()
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundColor(theme.base)
+                        .background(theme.rose)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
                         .padding(20)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -718,6 +742,9 @@ struct ReaderView: View {
         currentFootnoteRefId = nil
         lastAutoSwitchAt = 0
         suppressContextAutoSwitchUntil = 0
+        showBackButton = false
+        savedScrollOffset = nil
+        backAnchorState = .inactive
         chapterWPM = nil
 
         guard let chapter = currentChapter else { return }
@@ -829,6 +856,7 @@ struct ReaderView: View {
                     sourceBlockId: validBlockId
                 )
                 try appState.database.saveAnnotation(&annotation)
+
                 if stillOnSameChapter {
                     annotations.append(annotation)
                     // Queue marker injection for WebView
@@ -1194,7 +1222,6 @@ struct ReaderView: View {
             guard let chapter = currentChapter, appState.settings.imagesEnabled else { return }
 
             imageGenerating = true
-            imageGenerationWord = word
 
             Task {
                 do {
@@ -1245,6 +1272,7 @@ struct ReaderView: View {
     private func handleAnnotationClick(_ annotation: Annotation) {
         // Expand the annotation in the AI panel
         currentAnnotationId = annotation.id
+        externalTabSelection = .insights
     }
 
     private func handleImageMarkerClick(_ imageId: Int64) {
@@ -1300,6 +1328,65 @@ struct ReaderView: View {
     private func suppressContextAutoSwitch(for duration: TimeInterval = 2.0) {
         let now = Date().timeIntervalSinceReferenceDate
         suppressContextAutoSwitchUntil = max(suppressContextAutoSwitchUntil, now + duration)
+    }
+
+    private func handleQuizAutoSwitchOnTug() {
+        guard appState.settings.autoSwitchToQuiz,
+              !quizzes.isEmpty,
+              !hasAutoSwitchedToQuiz else { return }
+
+        if aiPanelSelectedTab == .quiz { return }
+
+        hasAutoSwitchedToQuiz = true
+        let now = Date().timeIntervalSinceReferenceDate
+        suppressContextAutoSwitchUntil = now + 0.75
+        DispatchQueue.main.async {
+            externalTabSelection = .quiz
+        }
+    }
+
+    private func setBackAnchor() {
+        savedScrollOffset = lastScrollOffset
+        showBackButton = true
+        backAnchorState = .pending
+    }
+
+    private func dismissBackAnchor() {
+        showBackButton = false
+        savedScrollOffset = nil
+        backAnchorState = .inactive
+    }
+
+    private func returnToBackAnchor() {
+        if let offset = savedScrollOffset {
+            scrollToOffset = offset
+        }
+        dismissBackAnchor()
+    }
+
+    private func updateBackAnchor(scrollOffset: Double, viewportHeight: Double) {
+        guard showBackButton, let savedOffset = savedScrollOffset else { return }
+
+        let leaveThreshold = viewportHeight > 0
+            ? max(80, viewportHeight * 0.12)
+            : 120
+        let returnThreshold = viewportHeight > 0
+            ? max(48, viewportHeight * 0.06)
+            : 72
+        let distance = abs(scrollOffset - savedOffset)
+
+        switch backAnchorState {
+        case .pending:
+            if distance > leaveThreshold {
+                backAnchorState = .away
+            }
+        case .away:
+            if distance <= returnThreshold {
+                dismissBackAnchor()
+            }
+        case .inactive:
+            break
+        }
     }
 
     // MARK: - Helpers

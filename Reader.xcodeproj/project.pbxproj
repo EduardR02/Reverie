@@ -38,6 +38,9 @@
 		F029 /* LLMProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = S029 /* LLMProviders.swift */; };
 		F030 /* LLMPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = S030 /* LLMPrompts.swift */; };
 		F031 /* ContentBlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = S031 /* ContentBlockParser.swift */; };
+		F032 /* CostEstimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = S032 /* CostEstimation.swift */; };
+		F033 /* BookProcessingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = S033 /* BookProcessingStatus.swift */; };
+		F034 /* SelectableText.swift in Sources */ = {isa = PBXBuildFile; fileRef = S034 /* SelectableText.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -72,6 +75,9 @@
 		S029 /* LLMProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProviders.swift; sourceTree = "<group>"; };
 		S030 /* LLMPrompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMPrompts.swift; sourceTree = "<group>"; };
 		S031 /* ContentBlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentBlockParser.swift; sourceTree = "<group>"; };
+		S032 /* CostEstimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostEstimation.swift; sourceTree = "<group>"; };
+		S033 /* BookProcessingStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessingStatus.swift; sourceTree = "<group>"; };
+		S034 /* SelectableText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableText.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -147,6 +153,7 @@
 				S026 /* LibraryPaths.swift */,
 				S023 /* ReadingSpeedTracker.swift */,
 				S031 /* ContentBlockParser.swift */,
+				S032 /* CostEstimation.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -177,6 +184,7 @@
 				VIEWS_HOME /* Home */,
 				VIEWS_READER /* Reader */,
 				VIEWS_SETTINGS /* Settings */,
+				VIEWS_SHARED /* Shared */,
 				VIEWS_STATS /* Stats */,
 			);
 			path = Views;
@@ -188,6 +196,7 @@
 				S012 /* HomeView.swift */,
 				S013 /* BookCard.swift */,
 				S014 /* ImportSheet.swift */,
+				S033 /* BookProcessingStatus.swift */,
 			);
 			path = Home;
 			sourceTree = "<group>";
@@ -217,6 +226,14 @@
 				S024 /* StatsView.swift */,
 			);
 			path = Stats;
+			sourceTree = "<group>";
+		};
+		VIEWS_SHARED /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				S034 /* SelectableText.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -295,6 +312,7 @@
 				F012 /* HomeView.swift in Sources */,
 				F013 /* BookCard.swift in Sources */,
 				F014 /* ImportSheet.swift in Sources */,
+				F033 /* BookProcessingStatus.swift in Sources */,
 				F015 /* ReaderView.swift in Sources */,
 				F016 /* BookContentView.swift in Sources */,
 				F017 /* AIPanel.swift in Sources */,
@@ -304,9 +322,11 @@
 				F022 /* Footnote.swift in Sources */,
 				F023 /* ReadingSpeedTracker.swift in Sources */,
 				F024 /* StatsView.swift in Sources */,
+				F034 /* SelectableText.swift in Sources */,
 				F025 /* ReaderMetrics.swift in Sources */,
 				F026 /* LibraryPaths.swift in Sources */,
 				F031 /* ContentBlockParser.swift in Sources */,
+				F032 /* CostEstimation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

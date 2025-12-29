@@ -289,10 +289,10 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Toggle(isOn: $state.settings.autoSwitchToQuiz) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Auto-switch to Quiz")
+                            Text("Switch to Quiz on End Tug")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(theme.text)
-                            Text("Switch to quiz tab when reaching end of chapter")
+                            Text("Tug past the end of the chapter to open the quiz")
                                 .font(.system(size: 12))
                                 .foregroundColor(theme.muted)
                         }
@@ -349,6 +349,38 @@ struct SettingsView: View {
                         }
                     }
                     .tint(theme.rose)
+                }
+            }
+
+            sectionHeader("Layout", icon: "rectangle.split.3x1")
+
+            settingsCard {
+                let readerPercent = Int((state.splitRatio * 100).rounded())
+                let aiPercent = max(0, 100 - readerPercent)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Reader / AI Split")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.muted)
+
+                        Spacer()
+
+                        Text("\(readerPercent)% / \(aiPercent)%")
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(theme.text)
+                    }
+
+                    Slider(
+                        value: $state.splitRatio,
+                        in: 0.5...0.8,
+                        step: 0.01
+                    )
+                    .tint(theme.iris)
+
+                    Text("Sets the default divider position. You can still drag it while reading.")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.subtle)
                 }
             }
 
@@ -507,6 +539,9 @@ struct SettingsView: View {
         .onChange(of: state.settings) { _, _ in
             state.settings.save()
         }
+        .onChange(of: state.splitRatio) { _, _ in
+            state.saveSplitRatio()
+        }
     }
 
     private func apiKeyCard(
@@ -576,6 +611,8 @@ struct SettingsView: View {
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 16) {
+                    let themeGalleryURL = URL(string: "https://windowsterminalthemes.dev/")!
+
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 120), spacing: 12)],
                         spacing: 12
@@ -604,9 +641,39 @@ struct SettingsView: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Add Custom Theme")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(theme.muted)
+                        HStack(spacing: 8) {
+                            Text("Add Custom Theme")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
+
+                            Spacer()
+
+                            Link(destination: themeGalleryURL) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "link")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("windowsterminalthemes.dev")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                            }
+                            .foregroundColor(theme.subtle)
+                            .buttonStyle(.plain)
+                            .help("Open theme gallery")
+
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(themeGalleryURL.absoluteString, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(theme.iris)
+                                    .frame(width: 22, height: 22)
+                                    .background(theme.overlay)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy link")
+                        }
 
                         ZStack(alignment: .topLeading) {
                             TextEditor(text: $themeImportText)

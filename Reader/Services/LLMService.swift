@@ -244,7 +244,7 @@ final class LLMService {
         settings: UserSettings
     ) async throws -> [Int: Bool] {
         let prompt = PromptLibrary.chapterClassificationPrompt(chapters: chapters)
-        let (provider, model, key) = selectClassificationModel(settings: settings)
+        let (provider, model, key) = classificationModelSelection(settings: settings)
 
         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LLMError.noAPIKey(provider)
@@ -275,7 +275,7 @@ final class LLMService {
     }
 
     /// Select the best model for classification (cheap and fast)
-    private func selectClassificationModel(settings: UserSettings) -> (LLMProvider, String, String) {
+    func classificationModelSelection(settings: UserSettings) -> (LLMProvider, String, String) {
         if !settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return (.google, "gemini-3-flash-preview", settings.googleAPIKey)
         }

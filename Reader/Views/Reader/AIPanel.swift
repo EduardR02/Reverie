@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AIPanel: View {
@@ -33,7 +34,6 @@ struct AIPanel: View {
 
     @State private var highlightedFootnoteId: String?
     @State private var showedSpeedPromptForChapter: Int64?  // Track which chapter we showed prompt for
-    @State private var isPromptAnimating = false  // Prevent layout chaos during popup animation
     @Binding var expandedImage: GeneratedImage?  // Image shown in fullscreen overlay (shown at ReaderView level)
 
     @Environment(\.theme) private var theme
@@ -86,8 +86,7 @@ struct AIPanel: View {
         .background(theme.surface)
         .onChange(of: currentAnnotationId) { _, newId in
             // Auto-expand the current annotation when scrolling through text
-            // Skip during popup animation to prevent chaotic layout
-            if let newId = newId, selectedTab == .insights, !isPromptAnimating {
+            if let newId = newId, selectedTab == .insights {
                 withAnimation(.easeOut(duration: 0.2)) {
                     expandedAnnotationId = newId
                 }
@@ -124,6 +123,9 @@ struct AIPanel: View {
         .onChange(of: selectedTab) { _, newTab in
             if newTab != .chat && isChatFocused {
                 isChatFocused = false
+            }
+            if newTab == .insights, let id = currentAnnotationId {
+                expandedAnnotationId = id
             }
         }
         .onChange(of: isChatFocused) { _, newValue in
@@ -167,47 +169,10 @@ struct AIPanel: View {
                         selectedTab = tab
                     }
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 12, weight: .medium))
-
-                        Text(tab.rawValue)
-                            .font(.system(size: 12, weight: .medium))
-
-                        // Badge for counts
-                        if tab == .insights && !annotations.isEmpty {
-                            Text("\(annotations.count)")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(selectedTab == tab ? theme.base : theme.rose)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(selectedTab == tab ? theme.rose : theme.rose.opacity(0.2))
-                                .clipShape(Capsule())
-                        } else if tab == .images && !images.isEmpty {
-                            Text("\(images.count)")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(selectedTab == tab ? theme.base : theme.iris)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(selectedTab == tab ? theme.iris : theme.iris.opacity(0.2))
-                                .clipShape(Capsule())
-                        } else if tab == .quiz && !quizzes.isEmpty {
-                            Text("\(quizzes.count)")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(selectedTab == tab ? theme.base : theme.rose)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(selectedTab == tab ? theme.rose : theme.rose.opacity(0.2))
-                                .clipShape(Capsule())
-                        } else if tab == .footnotes && !footnotes.isEmpty {
-                            Text("\(footnotes.count)")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(selectedTab == tab ? theme.base : theme.foam)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(selectedTab == tab ? theme.foam : theme.foam.opacity(0.2))
-                            .clipShape(Capsule())
-                        }
+                    ViewThatFits(in: .horizontal) {
+                        tabLabelRow(for: tab)
+                            .fixedSize(horizontal: true, vertical: false)
+                        tabLabelStacked(for: tab)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 8)
@@ -221,6 +186,62 @@ struct AIPanel: View {
         }
         .frame(height: ReaderMetrics.headerHeight)
         .background(theme.surface)
+    }
+
+    private func tabLabelRow(for tab: Tab) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: tab.icon)
+                .font(.system(size: 12, weight: .medium))
+
+            tabLabelText(tab)
+
+            tabBadge(for: tab)
+        }
+    }
+
+    private func tabLabelStacked(for tab: Tab) -> some View {
+        VStack(spacing: 4) {
+            tabLabelText(tab)
+
+            HStack(spacing: 6) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 11, weight: .medium))
+
+                tabBadge(for: tab)
+            }
+        }
+    }
+
+    private func tabLabelText(_ tab: Tab) -> some View {
+        Text(tab.rawValue)
+            .font(.system(size: 12, weight: .medium))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+    }
+
+    @ViewBuilder
+    private func tabBadge(for tab: Tab) -> some View {
+        if tab == .insights && !annotations.isEmpty {
+            badge(text: "\(annotations.count)", color: theme.rose, isSelected: selectedTab == tab)
+        } else if tab == .images && !images.isEmpty {
+            badge(text: "\(images.count)", color: theme.iris, isSelected: selectedTab == tab)
+        } else if tab == .quiz && !quizzes.isEmpty {
+            badge(text: "\(quizzes.count)", color: theme.rose, isSelected: selectedTab == tab)
+        } else if tab == .footnotes && !footnotes.isEmpty {
+            badge(text: "\(footnotes.count)", color: theme.foam, isSelected: selectedTab == tab)
+        } else {
+            EmptyView()
+        }
+    }
+
+    private func badge(text: String, color: Color, isSelected: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundColor(isSelected ? theme.base : color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(isSelected ? color : color.opacity(0.2))
+            .clipShape(Capsule())
     }
 
     // MARK: - Insights Tab
@@ -316,9 +337,17 @@ struct AIPanel: View {
             }
             .onChange(of: currentAnnotationId) { oldValue, newValue in
                 // Auto-scroll to current insight and expand it
-                // Skip during popup animation to prevent chaotic layout
                 // Use .top anchor so insights near top of list can still be scrolled to
-                if let id = newValue, !isPromptAnimating {
+                if let id = newValue {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo(id, anchor: .top)
+                        expandedAnnotationId = id
+                    }
+                }
+            }
+            .onAppear {
+                guard let id = currentAnnotationId else { return }
+                DispatchQueue.main.async {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(id, anchor: .top)
                         expandedAnnotationId = id
@@ -1029,29 +1058,31 @@ struct ChatBubble: View {
                         .buttonStyle(.plain)
 
                         if showThinking {
-                            Text(thinking)
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.subtle)
-                                .italic()
-                                .textSelection(.enabled)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(theme.base.opacity(0.3))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            SelectableText(
+                                thinking,
+                                fontSize: 12,
+                                color: theme.subtle,
+                                isItalic: true
+                            )
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(theme.base.opacity(0.3))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }
                 }
 
                 // Main content
-                Text(message.content)
-                    .font(.system(size: 14))
-                    .foregroundColor(message.role == .user ? theme.base : theme.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(message.role == .user ? theme.rose : theme.overlay)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                SelectableText(
+                    message.content,
+                    fontSize: 14,
+                    color: message.role == .user ? theme.base : theme.text
+                )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(message.role == .user ? theme.rose : theme.overlay)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
 
             if message.role == .assistant { Spacer(minLength: 40) }
@@ -1111,11 +1142,12 @@ struct AnnotationCard: View {
                     Divider()
                         .background(theme.overlay)
 
-                    Text(annotation.content)
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.text)
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
+                    SelectableText(
+                        annotation.content,
+                        fontSize: 13,
+                        color: theme.text,
+                        lineSpacing: 4
+                    )
 
                     // Jump to source
                     Button(action: onScrollTo) {
@@ -1158,22 +1190,25 @@ struct QuizCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Question
-            Text(quiz.question)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(theme.text)
-                .textSelection(.enabled)
+            SelectableText(
+                quiz.question,
+                fontSize: 14,
+                fontWeight: .medium,
+                color: theme.text
+            )
 
             if showAnswer {
                 // Answer
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(quiz.answer)
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.text)
-                        .textSelection(.enabled)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(theme.overlay)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    SelectableText(
+                        quiz.answer,
+                        fontSize: 13,
+                        color: theme.text
+                    )
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.overlay)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
 
                     Button(action: onScrollTo) {
                         HStack(spacing: 4) {
@@ -1295,11 +1330,12 @@ struct FootnoteCard: View {
             }
 
             // Footnote content
-            Text(footnote.content)
-                .font(.system(size: 13))
-                .foregroundColor(theme.text)
-                .lineSpacing(4)
-                .textSelection(.enabled)
+            SelectableText(
+                footnote.content,
+                fontSize: 13,
+                color: theme.text,
+                lineSpacing: 4
+            )
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

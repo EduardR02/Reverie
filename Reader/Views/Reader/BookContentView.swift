@@ -20,6 +20,7 @@ struct BookContentView: NSViewRepresentable {
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
     let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ focusType: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
+    let onBottomTug: () -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
     @Binding var scrollToOffset: Double?
@@ -193,12 +194,6 @@ struct BookContentView: NSViewRepresentable {
         // Inject markers (always)
         content = injectContextMarkers(content, annotations: annotations, images: images, blocks: blocks)
 
-        let selectionColor = selectionColorHexString(
-            foreground: theme.rose,
-            background: theme.base,
-            enforcedAlpha: 0.3
-        )
-
         return """
         <!DOCTYPE html>
         <html>
@@ -214,7 +209,7 @@ struct BookContentView: NSViewRepresentable {
                     --muted: \(theme.muted.hexString);
                     --rose: \(theme.rose.hexString);
                     --iris: \(theme.iris.hexString);
-                    --selection: \(selectionColor);
+                    --selection: \(theme.rose.hexString);
                 }
 
                 * {
@@ -236,6 +231,29 @@ struct BookContentView: NSViewRepresentable {
                     padding: 32px 48px;
                     max-width: none;
                     margin: 0;
+                    position: relative;
+                }
+
+                #readerContent {
+                    position: relative;
+                    z-index: 1;
+                }
+
+                .selection-overlay {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 0;
+                    pointer-events: none;
+                    overflow: visible;
+                    z-index: 0;
+                }
+
+                .selection-rect {
+                    position: absolute;
+                    background: var(--selection);
+                    border-radius: 2px;
                 }
 
                 h1, h2, h3, h4, h5, h6 {
@@ -316,17 +334,32 @@ struct BookContentView: NSViewRepresentable {
                     box-shadow: 0 4px 20px rgba(0,0,0,0.3);
                 }
 
-                /* Selection - compensate for WebKit's forced alpha */
+                /* Selection */
                 ::selection {
-                    background-color: var(--selection) !important;
-                    color: var(--text) !important;
+                    background-color: transparent !important;
+                    color: var(--base) !important;
                 }
                 ::-webkit-selection {
-                    background-color: var(--selection) !important;
-                    color: var(--text) !important;
+                    background-color: transparent !important;
+                    color: var(--base) !important;
                 }
                 * {
                     -webkit-tap-highlight-color: var(--rose);
+                }
+
+                .block-inline-highlight {
+                    background: var(--rose);
+                    color: var(--base);
+                    border-radius: 2px;
+                    padding: 0 1px;
+                    box-decoration-break: clone;
+                    -webkit-box-decoration-break: clone;
+                    transition: background 0.45s ease, color 0.45s ease;
+                }
+
+                .block-inline-highlight.fade {
+                    background: transparent;
+                    color: inherit;
                 }
 
                 /* Word popup */
@@ -362,7 +395,10 @@ struct BookContentView: NSViewRepresentable {
             </style>
         </head>
         <body>
-            \(content)
+            <div id="selectionOverlay" class="selection-overlay"></div>
+            <div id="readerContent">
+                \(content)
+            </div>
 
             <div id="wordPopup" class="word-popup">
                 <button onclick="handleExplain()">Explain</button>
@@ -375,6 +411,8 @@ struct BookContentView: NSViewRepresentable {
                 let selectedContext = '';
                 let selectedBlockId = 0;
                 let lastSelectionRange = null;
+                let selectionActive = false;
+                const selectionOverlay = document.getElementById('selectionOverlay');
                 const footnoteSelectors = [
                     'a[epub\\\\:type="noteref"]',
                     'a[role="doc-noteref"]',
@@ -407,6 +445,66 @@ struct BookContentView: NSViewRepresentable {
                     // Hide popup when clicking outside
                     if (!e.target.closest('.word-popup')) {
                         document.getElementById('wordPopup').style.display = 'none';
+                    }
+                });
+
+                function clearSelectionOverlay() {
+                    if (!selectionOverlay) { return; }
+                    selectionOverlay.innerHTML = '';
+                }
+
+                function isSelectionInPopup(range) {
+                    const container = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+                        ? range.commonAncestorContainer
+                        : range.commonAncestorContainer.parentElement;
+                    return container ? Boolean(container.closest('.word-popup')) : false;
+                }
+
+                function updateSelectionOverlay() {
+                    if (!selectionOverlay) { return; }
+                    const selection = window.getSelection();
+                    const hasSelection = selection && !selection.isCollapsed && selection.rangeCount > 0;
+                    if (!hasSelection) {
+                        selectionActive = false;
+                        clearSelectionOverlay();
+                        return;
+                    }
+
+                    const range = selection.getRangeAt(0);
+                    if (isSelectionInPopup(range)) {
+                        selectionActive = false;
+                        clearSelectionOverlay();
+                        return;
+                    }
+
+                    const rects = Array.from(range.getClientRects())
+                        .filter(rect => rect.width > 0 && rect.height > 0);
+                    if (!rects.length) {
+                        selectionActive = false;
+                        clearSelectionOverlay();
+                        return;
+                    }
+
+                    selectionActive = true;
+                    clearSelectionOverlay();
+                    rects.forEach(rect => {
+                        const highlight = document.createElement('div');
+                        highlight.className = 'selection-rect';
+                        highlight.style.left = (rect.left + window.scrollX) + 'px';
+                        highlight.style.top = (rect.top + window.scrollY) + 'px';
+                        highlight.style.width = rect.width + 'px';
+                        highlight.style.height = rect.height + 'px';
+                        selectionOverlay.appendChild(highlight);
+                    });
+                }
+
+                document.addEventListener('selectionchange', () => {
+                    updateSelectionOverlay();
+                });
+
+                window.addEventListener('resize', () => {
+                    if (selectionActive) {
+                        updateSelectionOverlay();
                     }
                 });
 
@@ -545,8 +643,145 @@ struct BookContentView: NSViewRepresentable {
                 });
 
                 // Scroll tracking
-                let lastScrollPosition = 0;
+                const focusState = {
+                    annotationId: null,
+                    imageId: null,
+                    footnoteRefId: null
+                };
                 let scrollTicking = false;
+                let bottomTugAccumulated = 0;
+                let lastBottomTugAt = 0;
+                const bottomTugThreshold = 80;
+                const bottomTugCooldownMs = 700;
+                const bottomTugBuffer = 12;
+
+                function clamp(value, min, max) {
+                    return Math.min(Math.max(value, min), max);
+                }
+
+                function resetBottomTug() {
+                    bottomTugAccumulated = 0;
+                }
+
+                window.addEventListener('wheel', (event) => {
+                    const docHeight = document.documentElement.scrollHeight;
+                    const viewportHeight = window.innerHeight;
+                    const maxScroll = Math.max(0, docHeight - viewportHeight);
+                    if (maxScroll <= 0) {
+                        resetBottomTug();
+                        return;
+                    }
+
+                    if (event.deltaY <= 0) {
+                        resetBottomTug();
+                        return;
+                    }
+
+                    const scrollY = window.scrollY;
+                    if (scrollY < maxScroll - bottomTugBuffer) {
+                        resetBottomTug();
+                        return;
+                    }
+
+                    bottomTugAccumulated += event.deltaY;
+                    const now = Date.now();
+                    if (bottomTugAccumulated >= bottomTugThreshold && now - lastBottomTugAt > bottomTugCooldownMs) {
+                        lastBottomTugAt = now;
+                        resetBottomTug();
+                        webkit.messageHandlers.readerBridge.postMessage({
+                            type: 'bottomTug'
+                        });
+                    }
+                }, { passive: true });
+
+                function computeFocusMetrics(scrollY, maxScroll, viewportHeight) {
+                    const edgeZone = Math.max(160, viewportHeight * 0.35);
+                    const topT = clamp(scrollY / edgeZone, 0, 1);
+                    const bottomT = clamp((maxScroll - scrollY) / edgeZone, 0, 1);
+                    let focusRatio = 0.5;
+                    const focusTop = 0.35;
+                    const focusBottom = 0.65;
+
+                    if (scrollY < edgeZone) {
+                        focusRatio = focusTop + (0.5 - focusTop) * topT;
+                    } else if (maxScroll - scrollY < edgeZone) {
+                        focusRatio = focusBottom - (focusBottom - 0.5) * bottomT;
+                    }
+
+                    let bandTopRatio = 0.2;
+                    let bandBottomRatio = 0.8;
+                    if (scrollY < edgeZone) {
+                        bandTopRatio = 0.0;
+                    } else if (maxScroll - scrollY < edgeZone) {
+                        bandBottomRatio = 1.0;
+                    }
+
+                    const focusLine = scrollY + viewportHeight * focusRatio;
+                    const bandTop = scrollY + viewportHeight * bandTopRatio;
+                    const bandBottom = scrollY + viewportHeight * bandBottomRatio;
+                    const bandPenalty = viewportHeight * 0.35;
+                    return { focusLine, bandTop, bandBottom, bandPenalty };
+                }
+
+                function collectMarkerEntries(markers, scrollY, focusLine, bandTop, bandBottom, bandPenalty, step, idGetter) {
+                    const entries = [];
+                    const blockCounts = {};
+                    markers.forEach(marker => {
+                        const rect = marker.getBoundingClientRect();
+                        const baseY = rect.top + scrollY;
+                        const blockId = marker.dataset.blockId;
+                        let offset = 0;
+                        if (blockId) {
+                            offset = (blockCounts[blockId] || 0) * step;
+                            blockCounts[blockId] = (blockCounts[blockId] || 0) + 1;
+                        }
+                        const virtualY = baseY + offset;
+                        const inBand = virtualY >= bandTop && virtualY <= bandBottom;
+                        const distanceToBand = inBand
+                            ? Math.abs(virtualY - focusLine)
+                            : Math.abs(virtualY - (virtualY < bandTop ? bandTop : bandBottom));
+                        const distanceScore = distanceToBand + (inBand ? 0 : bandPenalty);
+                        const id = idGetter(marker);
+                        if (id) {
+                            entries.push({
+                                marker,
+                                id,
+                                inBand,
+                                distanceToBand,
+                                distanceScore
+                            });
+                        }
+                    });
+                    return entries;
+                }
+
+                function pickCandidate(entries, maxDistance) {
+                    let candidate = null;
+                    entries.forEach(entry => {
+                        if (!candidate || entry.distanceScore < candidate.distanceScore) {
+                            candidate = entry;
+                        }
+                    });
+                    if (!candidate || candidate.distanceToBand > maxDistance) {
+                        return null;
+                    }
+                    return candidate;
+                }
+
+                function applyHysteresis(candidate, entries, lastId, hysteresisPx) {
+                    if (!candidate || !lastId || candidate.id === lastId) {
+                        return candidate;
+                    }
+                    const lastEntry = entries.find(entry => entry.id === lastId);
+                    if (!lastEntry || !lastEntry.inBand) {
+                        return candidate;
+                    }
+                    if (lastEntry.distanceScore <= candidate.distanceScore + hysteresisPx) {
+                        return lastEntry;
+                    }
+                    return candidate;
+                }
+
                 window.addEventListener('scroll', () => {
                     if (scrollTicking) { return; }
                     scrollTicking = true;
@@ -557,76 +792,88 @@ struct BookContentView: NSViewRepresentable {
                         const viewportHeight = window.innerHeight;
                         const maxScroll = Math.max(0, docHeight - viewportHeight);
                         const scrollPercent = maxScroll > 0 ? (scrollY / maxScroll) : 0;
+                        if (scrollY < maxScroll - bottomTugBuffer) {
+                            resetBottomTug();
+                        }
+                        const { focusLine, bandTop, bandBottom, bandPenalty } = computeFocusMetrics(
+                            scrollY,
+                            maxScroll,
+                            viewportHeight
+                        );
+                        const maxDistance = Math.max(220, viewportHeight * 0.45);
+                        const markerStep = 12;
 
-                        // Find which annotation marker is closest to viewport center
-                        const markers = document.querySelectorAll('.annotation-marker');
-                        const viewportCenter = scrollY + viewportHeight / 2;
+                        const annotationEntries = collectMarkerEntries(
+                            document.querySelectorAll('.annotation-marker'),
+                            scrollY,
+                            focusLine,
+                            bandTop,
+                            bandBottom,
+                            bandPenalty,
+                            markerStep,
+                            marker => marker.dataset.annotationId
+                        );
+                        let annotationCandidate = pickCandidate(annotationEntries, maxDistance);
+                        annotationCandidate = applyHysteresis(
+                            annotationCandidate,
+                            annotationEntries,
+                            focusState.annotationId,
+                            20
+                        );
+                        const annotationId = annotationCandidate ? annotationCandidate.id : null;
 
-                        let closestMarker = null;
-                        let closestDistance = Infinity;
+                        const imageEntries = collectMarkerEntries(
+                            document.querySelectorAll('.image-marker'),
+                            scrollY,
+                            focusLine,
+                            bandTop,
+                            bandBottom,
+                            bandPenalty,
+                            markerStep,
+                            marker => marker.dataset.imageId
+                        );
+                        let imageCandidate = pickCandidate(imageEntries, maxDistance);
+                        imageCandidate = applyHysteresis(
+                            imageCandidate,
+                            imageEntries,
+                            focusState.imageId,
+                            20
+                        );
+                        const imageId = imageCandidate ? imageCandidate.id : null;
 
-                        markers.forEach(marker => {
-                            const rect = marker.getBoundingClientRect();
-                            const markerY = rect.top + scrollY;
-                            const distance = Math.abs(markerY - viewportCenter);
-                            if (distance < closestDistance) {
-                                closestDistance = distance;
-                                closestMarker = marker;
-                            }
-                        });
+                        const footnoteEntries = collectMarkerEntries(
+                            document.querySelectorAll('.footnote-ref'),
+                            scrollY,
+                            focusLine,
+                            bandTop,
+                            bandBottom,
+                            bandPenalty,
+                            markerStep,
+                            link => getFootnoteRefId(link)
+                        );
+                        let footnoteCandidate = pickCandidate(footnoteEntries, maxDistance);
+                        footnoteCandidate = applyHysteresis(
+                            footnoteCandidate,
+                            footnoteEntries,
+                            focusState.footnoteRefId,
+                            16
+                        );
+                        const footnoteRefId = footnoteCandidate ? footnoteCandidate.id : null;
 
-                        const annotationId = closestMarker && closestDistance < 300
-                            ? closestMarker.dataset.annotationId
-                            : null;
-
-                        // Find which image marker is closest to viewport center
-                        const imageMarkers = document.querySelectorAll('.image-marker');
-                        let closestImage = null;
-                        let closestImageDistance = Infinity;
-
-                        imageMarkers.forEach(marker => {
-                            const rect = marker.getBoundingClientRect();
-                            const markerY = rect.top + scrollY;
-                            const distance = Math.abs(markerY - viewportCenter);
-                            if (distance < closestImageDistance) {
-                                closestImageDistance = distance;
-                                closestImage = marker;
-                            }
-                        });
-
-                        const imageId = closestImage && closestImageDistance < 300
-                            ? closestImage.dataset.imageId
-                            : null;
-
-                        // Find which footnote reference is closest to viewport center
-                        const footnoteLinks = document.querySelectorAll('.footnote-ref');
-                        let closestFootnote = null;
-                        let closestFootnoteDistance = Infinity;
-
-                        footnoteLinks.forEach(link => {
-                            const rect = link.getBoundingClientRect();
-                            const linkY = rect.top + scrollY;
-                            const distance = Math.abs(linkY - viewportCenter);
-                            if (distance < closestFootnoteDistance) {
-                                closestFootnoteDistance = distance;
-                                closestFootnote = link;
-                            }
-                        });
-
-                        const footnoteRefId = closestFootnote && closestFootnoteDistance < 300
-                            ? getFootnoteRefId(closestFootnote)
-                            : null;
+                        focusState.annotationId = annotationId;
+                        focusState.imageId = imageId;
+                        focusState.footnoteRefId = footnoteRefId;
 
                         let focusType = null;
-                        const annotationDistance = annotationId ? closestDistance : Infinity;
-                        const imageDistance = imageId ? closestImageDistance : Infinity;
-                        const footnoteDistance = footnoteRefId ? closestFootnoteDistance : Infinity;
+                        const annotationDistance = annotationCandidate ? annotationCandidate.distanceScore : Infinity;
+                        const imageDistance = imageCandidate ? imageCandidate.distanceScore : Infinity;
+                        const footnoteDistance = footnoteCandidate ? footnoteCandidate.distanceScore : Infinity;
                         if (annotationDistance <= imageDistance && annotationDistance <= footnoteDistance) {
-                            focusType = 'annotation';
+                            focusType = annotationId ? 'annotation' : null;
                         } else if (imageDistance <= footnoteDistance) {
-                            focusType = 'image';
+                            focusType = imageId ? 'image' : null;
                         } else if (footnoteDistance < Infinity) {
-                            focusType = 'footnote';
+                            focusType = footnoteRefId ? 'footnote' : null;
                         }
 
                         webkit.messageHandlers.readerBridge.postMessage({
@@ -708,6 +955,85 @@ struct BookContentView: NSViewRepresentable {
                     window.scrollBy({ top: pixels, behavior: 'smooth' });
                 }
 
+                function findHighlightTextNode(element, preferEnd) {
+                    const walker = document.createTreeWalker(
+                        element,
+                        NodeFilter.SHOW_TEXT,
+                        {
+                            acceptNode: node => {
+                                if (!node.textContent) { return NodeFilter.FILTER_SKIP; }
+                                return node.textContent.trim().length > 0
+                                    ? NodeFilter.FILTER_ACCEPT
+                                    : NodeFilter.FILTER_SKIP;
+                            }
+                        }
+                    );
+
+                    let node = null;
+                    if (preferEnd) {
+                        while (walker.nextNode()) {
+                            node = walker.currentNode;
+                        }
+                        return node;
+                    }
+
+                    return walker.nextNode();
+                }
+
+                function highlightTextInNode(node, preferEnd) {
+                    if (!node || !node.textContent) { return; }
+                    const text = node.textContent;
+                    const firstNonSpace = text.search(/\\S/);
+                    if (firstNonSpace === -1) { return; }
+
+                    let lastNonSpace = text.length - 1;
+                    while (lastNonSpace >= 0 && /\\s/.test(text[lastNonSpace])) {
+                        lastNonSpace -= 1;
+                    }
+                    if (lastNonSpace < firstNonSpace) { return; }
+
+                    const maxLength = 140;
+                    let start = firstNonSpace;
+                    let end = Math.min(text.length, start + maxLength);
+
+                    if (preferEnd) {
+                        end = Math.min(text.length, lastNonSpace + 1);
+                        start = Math.max(firstNonSpace, end - maxLength);
+                    }
+
+                    if (end <= start) { return; }
+
+                    const range = document.createRange();
+                    range.setStart(node, start);
+                    range.setEnd(node, end);
+
+                    const highlight = document.createElement('span');
+                    highlight.className = 'block-inline-highlight';
+                    try {
+                        range.surroundContents(highlight);
+                    } catch (error) {
+                        return;
+                    }
+
+                    setTimeout(() => {
+                        highlight.classList.add('fade');
+                    }, 60);
+
+                    setTimeout(() => {
+                        if (highlight.parentNode) {
+                            const textNode = document.createTextNode(highlight.textContent);
+                            highlight.parentNode.replaceChild(textNode, highlight);
+                        }
+                    }, 700);
+                }
+
+                function highlightBlockText(element, preferEnd) {
+                    const node = findHighlightTextNode(element, preferEnd);
+                    if (node) {
+                        highlightTextInNode(node, preferEnd);
+                    }
+                }
+
                 // Scroll to a specific block by ID
                 function scrollToBlock(blockId) {
                     // First try to find a marker with this block ID
@@ -715,14 +1041,9 @@ struct BookContentView: NSViewRepresentable {
                     if (marker) {
                         marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
-                        // Highlight the parent element
                         const parent = marker.parentElement;
                         if (parent) {
-                            parent.style.backgroundColor = 'rgba(235, 188, 186, 0.3)';
-                            parent.style.transition = 'background-color 2s ease';
-                            setTimeout(() => {
-                                parent.style.backgroundColor = '';
-                            }, 2000);
+                            highlightBlockText(parent, true);
                         }
                         return;
                     }
@@ -733,12 +1054,7 @@ struct BookContentView: NSViewRepresentable {
                         const element = blockElements[blockId - 1];
                         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
-                        // Add temporary highlight
-                        element.style.backgroundColor = 'rgba(235, 188, 186, 0.3)';
-                        element.style.transition = 'background-color 2s ease';
-                        setTimeout(() => {
-                            element.style.backgroundColor = '';
-                        }, 2000);
+                        highlightBlockText(element, false);
                     }
                 }
 
@@ -1021,28 +1337,6 @@ struct BookContentView: NSViewRepresentable {
         url.hasDirectoryPath ? url : url.appendingPathComponent("", isDirectory: true)
     }
 
-    private func selectionColorHexString(
-        foreground: Color,
-        background: Color,
-        enforcedAlpha: Double = 0.75
-    ) -> String {
-        let fg = NSColor(foreground).usingColorSpace(.sRGB) ?? NSColor.white
-        let bg = NSColor(background).usingColorSpace(.sRGB) ?? NSColor.black
-        let alpha = CGFloat(enforcedAlpha)
-
-        func adjust(_ channel: CGFloat, _ base: CGFloat) -> CGFloat {
-            guard alpha > 0 else { return channel }
-            let value = (channel - (1 - alpha) * base) / alpha
-            return min(max(value, 0), 1)
-        }
-
-        let r = adjust(fg.redComponent, bg.redComponent)
-        let g = adjust(fg.greenComponent, bg.greenComponent)
-        let b = adjust(fg.blueComponent, bg.blueComponent)
-
-        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
-    }
-
     private func relativePath(from baseURL: URL, to targetURL: URL) -> String? {
         let baseComponents = baseURL.standardizedFileURL.pathComponents
         let targetComponents = targetURL.standardizedFileURL.pathComponents
@@ -1185,6 +1479,9 @@ struct BookContentView: NSViewRepresentable {
                 lastScrollOffset = scrollY
                 lastScrollPercent = scrollPercent
                 parent.onScrollPositionChange(annotationId, footnoteRefId, imageId, focusType, scrollPercent, scrollY, viewportHeight)
+
+            case "bottomTug":
+                parent.onBottomTug()
 
             default:
                 break

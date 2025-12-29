@@ -15,6 +15,10 @@ struct HomeView: View {
     @State private var isProcessingBook = false
     @State private var processingProgress: Double = 0
     @State private var processingChapter: String = ""
+    @State private var processingBookId: Int64?
+    @State private var processingTotalChapters: Int = 0
+    @State private var processingCompletedChapters: Int = 0
+    @State private var processingTask: Task<Void, Never>?
 
     // Import error handling
     @State private var importError: String?
@@ -62,11 +66,14 @@ struct HomeView: View {
                 isProcessing: $isProcessingBook,
                 progress: $processingProgress,
                 currentChapter: $processingChapter,
-                onProcess: {
-                    Task { await processFullBook(book) }
+                onStart: {
+                    startProcessing(book)
                 },
-                onCancel: {
+                onClose: {
                     bookToProcess = nil
+                },
+                onStop: {
+                    cancelProcessing()
                 }
             )
         }
@@ -213,10 +220,13 @@ struct HomeView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 24) {
                 ForEach(books) { book in
-                    BookCard(book: book) {
+                    BookCard(
+                        book: book,
+                        processingStatus: processingStatus(for: book)
+                    ) {
                         appState.openBook(book)
                     } onProcess: {
-                        bookToProcess = book
+                        handleProcessRequest(book)
                     } onDelete: {
                         deleteBook(book)
                     }
@@ -299,6 +309,45 @@ struct HomeView: View {
         } catch {
             print("Failed to load books: \(error)")
         }
+    }
+
+    private func processingStatus(for book: Book) -> BookProcessingStatus? {
+        guard isProcessingBook,
+              let bookId = book.id,
+              bookId == processingBookId else {
+            return nil
+        }
+
+        return BookProcessingStatus(
+            progress: processingProgress,
+            completedChapters: processingCompletedChapters,
+            totalChapters: processingTotalChapters
+        )
+    }
+
+    private func handleProcessRequest(_ book: Book) {
+        if isProcessingBook {
+            if let activeId = processingBookId,
+               let activeBook = books.first(where: { $0.id == activeId }) {
+                bookToProcess = activeBook
+            } else {
+                bookToProcess = book
+            }
+            return
+        }
+
+        bookToProcess = book
+    }
+
+    private func startProcessing(_ book: Book) {
+        guard !isProcessingBook else { return }
+        processingTask?.cancel()
+        processingTask = Task { await processFullBook(book) }
+    }
+
+    private func cancelProcessing() {
+        processingChapter = "Stopping..."
+        processingTask?.cancel()
     }
 
     private func deleteBook(_ book: Book) {
@@ -552,18 +601,37 @@ struct HomeView: View {
 
     private func processFullBook(_ book: Book) async {
         isProcessingBook = true
+        processingBookId = book.id
         processingProgress = 0
+        processingChapter = "Preparing..."
+        processingCompletedChapters = 0
+        processingTotalChapters = 0
+        defer {
+            isProcessingBook = false
+            processingTask = nil
+            processingBookId = nil
+        }
+        var didCancel = false
 
         do {
             let chapters = try appState.database.fetchChapters(for: book)
             var rollingSummary: String? = nil
+            let chaptersToProcess = chapters.filter { !$0.processed && !$0.shouldSkipAutoProcessing }
+            processingTotalChapters = chaptersToProcess.count
 
-            for (index, chapter) in chapters.enumerated() {
-                // Skip already processed chapters
-                if chapter.processed { continue }
+            if chaptersToProcess.isEmpty {
+                processingProgress = 1.0
+                processingChapter = "Complete!"
+            }
+
+            for (index, chapter) in chaptersToProcess.enumerated() {
+                if Task.isCancelled {
+                    didCancel = true
+                    break
+                }
 
                 processingChapter = chapter.title
-                processingProgress = Double(index) / Double(chapters.count)
+                processingProgress = Double(index) / Double(max(1, chaptersToProcess.count))
 
                 // Parse chapter into blocks
                 let blockParser = ContentBlockParser()
@@ -575,6 +643,11 @@ struct HomeView: View {
                     rollingSummary: rollingSummary,
                     settings: appState.settings
                 )
+
+                if Task.isCancelled {
+                    didCancel = true
+                    break
+                }
 
                 // Save annotations
                 for data in analysis.annotations {
@@ -607,12 +680,22 @@ struct HomeView: View {
                     appState.readingStats.recordQuizGenerated(count: analysis.quizQuestions.count)
                 }
 
+                if Task.isCancelled {
+                    didCancel = true
+                    break
+                }
+
                 await generateSuggestedImages(
                     analysis.imageSuggestions,
                     blockCount: blocks.count,
                     bookId: book.id!,
                     chapterId: chapter.id!
                 )
+
+                if Task.isCancelled {
+                    didCancel = true
+                    break
+                }
 
                 // Update chapter with block info
                 var updatedChapter = chapter
@@ -623,6 +706,9 @@ struct HomeView: View {
                 updatedChapter.blockCount = blocks.count
                 try appState.database.saveChapter(&updatedChapter)
 
+                processingCompletedChapters += 1
+                processingProgress = Double(processingCompletedChapters) / Double(max(1, chaptersToProcess.count))
+
                 // Build rolling summary for next chapter
                 if let summary = rollingSummary {
                     rollingSummary = summary + "\n\n" + analysis.summary
@@ -631,25 +717,30 @@ struct HomeView: View {
                 }
             }
 
-            // Mark book as fully processed
-            var updatedBook = book
-            updatedBook.processedFully = true
-            try appState.database.saveBook(&updatedBook)
+            if didCancel {
+                processingChapter = "Cancelled"
+                return
+            }
+
+            // Mark book as fully processed if all eligible chapters were done
+            if processingCompletedChapters == chaptersToProcess.count {
+                var updatedBook = book
+                updatedBook.processedFully = true
+                try appState.database.saveBook(&updatedBook)
+            }
 
             processingProgress = 1.0
             processingChapter = "Complete!"
 
-            // Wait a moment then close
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            bookToProcess = nil
-
             await loadBooks()
 
         } catch {
+            if error is CancellationError {
+                processingChapter = "Cancelled"
+                return
+            }
             print("Failed to process book: \(error)")
         }
-
-        isProcessingBook = false
     }
 
     private func generateSuggestedImages(
@@ -737,106 +828,217 @@ struct ProcessBookSheet: View {
     @Binding var isProcessing: Bool
     @Binding var progress: Double
     @Binding var currentChapter: String
-    let onProcess: () -> Void
-    let onCancel: () -> Void
+    let onStart: () -> Void
+    let onClose: () -> Void
+    let onStop: () -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
 
-    @State private var totalWordCount: Int = 0
+    @State private var chapterStats = ChapterEstimateStats()
+    @State private var classificationStatus: ClassificationStatus = .pending
+    @State private var classificationError: String?
+    @State private var isClassifying = false
 
     var body: some View {
-        VStack(spacing: 20) {
-            // Header
-            VStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundColor(theme.rose)
+        VStack(spacing: 16) {
+            header
 
-                Text("Process Full Book")
-                    .font(.system(size: 18, weight: .semibold))
+            if isProcessing {
+                progressSection
+            } else {
+                estimateSection
+            }
+
+            actionRow
+
+            if apiKeyMissing && !isProcessing {
+                Text("Set up API keys in Settings first")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.love)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .background(theme.surface)
+        .onAppear {
+            classificationStatus = book.classificationStatus
+            classificationError = book.classificationError
+            refreshEstimateStats()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 26, weight: .light))
+                .foregroundColor(theme.rose)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Process Book")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(theme.text)
 
                 Text(book.title)
-                    .font(.system(size: 14))
+                    .font(.system(size: 12))
                     .foregroundColor(theme.muted)
                     .lineLimit(1)
             }
 
-            Divider()
+            Spacer()
+        }
+    }
 
-            if isProcessing {
-                // Progress view
-                VStack(spacing: 12) {
-                    ProgressView(value: progress)
-                        .tint(theme.rose)
+    private var progressSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ProgressView(value: progress)
+                .tint(theme.rose)
 
-                    Text(currentChapter)
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.subtle)
+            HStack {
+                Text(currentChapter.isEmpty ? "Working..." : currentChapter)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.subtle)
+                    .lineLimit(1)
 
-                    Text("\(Int(progress * 100))%")
-                        .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                        .foregroundColor(theme.text)
-                }
-                .padding(.vertical, 20)
-            } else {
-                // Cost estimate
-                VStack(alignment: .leading, spacing: 12) {
-                    costRow("Chapters", "\(book.chapterCount)")
-                    costRow("Words", formatWordCount(totalWordCount))
-                    costRow("Est. tokens", estimatedTokens)
-                    costRow("Est. cost", estimatedCost)
+                Spacer()
 
-                    Text("This will generate insights, quiz questions, and summaries for all chapters.")
-                        .font(.system(size: 12))
-                        .foregroundColor(theme.muted)
-                        .padding(.top, 8)
-                }
-                .padding(.vertical, 12)
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(theme.text)
+            }
+        }
+        .padding(12)
+        .background(theme.base)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var estimateSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            estimateCard
+            classificationCard
+        }
+    }
+
+    private var estimateCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("Estimate")
+
+            VStack(spacing: 6) {
+                costRow("Chapters", chapterCountLabel)
+                costRow("Words", formatWordCount(estimatedWordCount))
+                costRow("Tokens in", formatTokenCount(estimatedInputTokens))
+                costRow("Tokens out", formatTokenRange(estimatedOutputTokensRange))
+                costRow(appState.settings.imagesEnabled ? "Text total" : "Total", formatCostRange(textCostRange))
             }
 
-            // Actions
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    onCancel()
+            if appState.settings.imagesEnabled {
+                Divider()
+                    .padding(.vertical, 4)
+
+                sectionLabel("Images")
+
+                VStack(spacing: 6) {
+                    costRow("Images", "\(formatDecimal(estimatedImageCount)) @ \(formatDecimal(imagesPerChapter))/chap")
+                    costRow("Image total", formatCost(estimatedImageCost))
+                    costRow("Total", formatCostRange(totalCostRangeWithImages))
+                }
+            }
+
+            Text("Assumes 2-4k output tokens per chapter.")
+                .font(.system(size: 10))
+                .foregroundColor(theme.subtle)
+        }
+        .padding(12)
+        .background(theme.base)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var classificationCard: some View {
+        let selection = appState.llmService.classificationModelSelection(settings: appState.settings)
+        let provider = selection.0
+        let model = selection.1
+        let modelLabel = "\(provider.displayName) \(provider.modelName(for: model))"
+        let estimateLabel = formatCost(classificationCostEstimate)
+        let actionTitle = classificationStatus == .completed ? "Re-run" : "Classify"
+        let actionLabel = "\(actionTitle) (\(estimateLabel))"
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                sectionLabel("Garbage filter")
+                Spacer()
+                Button(actionLabel) {
+                    Task { await classifyBookForEstimate() }
                 }
                 .buttonStyle(SecondaryButtonStyle())
-                .disabled(isProcessing)
-
-                Button(isProcessing ? "Processing..." : "Process") {
-                    onProcess()
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(isProcessing || apiKeyMissing)
+                .disabled(isClassifying || classificationKeyMissing)
             }
 
-            if apiKeyMissing {
-                Text("Set up API keys in Settings first")
-                    .font(.system(size: 12))
+            Text("Model: \(modelLabel)")
+                .font(.system(size: 10))
+                .foregroundColor(theme.subtle)
+
+            if isClassifying {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .tint(theme.rose)
+            }
+
+            if classificationKeyMissing {
+                Text("Add an API key to run classification.")
+                    .font(.system(size: 10))
+                    .foregroundColor(theme.love)
+            } else if let classificationError {
+                Text(classificationError)
+                    .font(.system(size: 10))
                     .foregroundColor(theme.love)
             }
         }
-        .padding(24)
-        .frame(width: 360)
-        .background(theme.surface)
-        .onAppear {
-            do {
-                totalWordCount = try appState.database.fetchTotalWordCount(for: book)
-            } catch {
-                print("Failed to fetch word count: \(error)")
+        .padding(12)
+        .background(theme.base)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 12) {
+            if isProcessing {
+                Button("Close") {
+                    onClose()
+                }
+                .buttonStyle(SecondaryButtonStyle())
+
+                Button("Stop") {
+                    onStop()
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            } else {
+                Button("Cancel") {
+                    onClose()
+                }
+                .buttonStyle(SecondaryButtonStyle())
+
+                Button("Process") {
+                    onStart()
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(apiKeyMissing)
             }
         }
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(theme.subtle)
     }
 
     private func costRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundColor(theme.muted)
             Spacer()
             Text(value)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(theme.text)
         }
     }
@@ -851,9 +1053,91 @@ struct ProcessBookSheet: View {
         }
     }
 
-    private var estimatedTokens: String {
-        // 1.3 tokens per word (average)
-        let tokens = Double(totalWordCount) * 1.3
+    private var usesGarbageFilter: Bool {
+        classificationStatus == .completed
+    }
+
+    private var estimatedChapterCount: Int {
+        usesGarbageFilter ? chapterStats.includedChapters : chapterStats.totalChapters
+    }
+
+    private var estimatedWordCount: Int {
+        usesGarbageFilter ? chapterStats.includedWords : chapterStats.totalWords
+    }
+
+    private var estimatedInputTokens: Double {
+        Double(estimatedWordCount) * CostEstimates.tokensPerWord
+    }
+
+    private var estimatedOutputTokensRange: ClosedRange<Double> {
+        let perChapter = CostEstimates.analysisOutputTokensPerChapterRange
+        let minTokens = Double(estimatedChapterCount * perChapter.lowerBound)
+        let maxTokens = Double(estimatedChapterCount * perChapter.upperBound)
+        return minTokens...maxTokens
+    }
+
+    private var textCostRange: ClosedRange<Double>? {
+        guard let pricing = PricingCatalog.textPricing(for: appState.settings.llmModel) else { return nil }
+        let inputCost = (estimatedInputTokens / 1_000_000) * pricing.inputPerMToken
+        let minOutputCost = (estimatedOutputTokensRange.lowerBound / 1_000_000) * pricing.outputPerMToken
+        let maxOutputCost = (estimatedOutputTokensRange.upperBound / 1_000_000) * pricing.outputPerMToken
+        return (inputCost + minOutputCost)...(inputCost + maxOutputCost)
+    }
+
+    private var imagesPerChapter: Double {
+        CostEstimates.imagesPerChapter(for: appState.settings.imageDensity)
+    }
+
+    private var estimatedImageCount: Double {
+        Double(estimatedChapterCount) * imagesPerChapter
+    }
+
+    private var estimatedImageCost: Double? {
+        guard appState.settings.imagesEnabled else { return nil }
+        let pricing = PricingCatalog.imagePricing(for: appState.settings.imageModel)
+        let promptTokens = Double(CostEstimates.imagePromptTokensPerImage) * estimatedImageCount
+        let inputCost = (promptTokens / 1_000_000) * pricing.inputPerMToken
+
+        if let perImage = pricing.outputPerImage {
+            return inputCost + (perImage * estimatedImageCount)
+        }
+        if let outputPerMToken = pricing.outputPerMToken {
+            let outputTokens = Double(CostEstimates.imageOutputTokensPerImage) * estimatedImageCount
+            return inputCost + (outputTokens / 1_000_000) * outputPerMToken
+        }
+
+        return inputCost
+    }
+
+    private var totalCostRangeWithImages: ClosedRange<Double>? {
+        guard appState.settings.imagesEnabled else { return textCostRange }
+        guard let textCostRange, let imageCost = estimatedImageCost else { return nil }
+        return (textCostRange.lowerBound + imageCost)...(textCostRange.upperBound + imageCost)
+    }
+
+    private var chapterCountLabel: String {
+        guard usesGarbageFilter, chapterStats.excludedChapters > 0 else {
+            return "\(estimatedChapterCount)"
+        }
+        return "\(estimatedChapterCount)/\(chapterStats.totalChapters)"
+    }
+
+    private var classificationKeyMissing: Bool {
+        let selection = appState.llmService.classificationModelSelection(settings: appState.settings)
+        return selection.2.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var classificationCostEstimate: Double? {
+        let selection = appState.llmService.classificationModelSelection(settings: appState.settings)
+        guard let pricing = PricingCatalog.textPricing(for: selection.1) else { return nil }
+        let inputTokens = Double(chapterStats.classificationPreviewWords) * CostEstimates.tokensPerWord
+        let outputTokens = Double(chapterStats.totalChapters * CostEstimates.classificationOutputTokensPerChapter)
+        let inputCost = (inputTokens / 1_000_000) * pricing.inputPerMToken
+        let outputCost = (outputTokens / 1_000_000) * pricing.outputPerMToken
+        return inputCost + outputCost
+    }
+
+    private func formatTokenCount(_ tokens: Double) -> String {
         if tokens > 1_000_000 {
             return String(format: "%.1fM", tokens / 1_000_000)
         } else if tokens > 1_000 {
@@ -863,12 +1147,111 @@ struct ProcessBookSheet: View {
         }
     }
 
-    private var estimatedCost: String {
-        // Based on Gemini Flash pricing ($0.075/1M input, $0.30/1M output)
-        let inputTokens = Double(totalWordCount) * 1.3
-        let outputTokens = Double(book.chapterCount) * 300  // ~300 tokens output per chapter
-        let cost = (inputTokens * 0.000000075) + (outputTokens * 0.0000003)
-        return String(format: "$%.2f", max(0.01, cost))
+    private func formatTokenRange(_ range: ClosedRange<Double>) -> String {
+        let minText = formatTokenCount(range.lowerBound)
+        let maxText = formatTokenCount(range.upperBound)
+        if minText == maxText {
+            return minText
+        }
+        return "\(minText)-\(maxText)"
+    }
+
+    private func formatCost(_ value: Double?) -> String {
+        guard let value else { return "N/A" }
+        return String(format: "$%.2f", max(0.01, value))
+    }
+
+    private func formatCostRange(_ range: ClosedRange<Double>?) -> String {
+        guard let range else { return "N/A" }
+        let minValue = max(0.01, range.lowerBound)
+        let maxValue = max(0.01, range.upperBound)
+        if abs(minValue - maxValue) < 0.005 {
+            return String(format: "$%.2f", minValue)
+        }
+        return String(format: "$%.2f-$%.2f", minValue, maxValue)
+    }
+
+    private func formatDecimal(_ value: Double) -> String {
+        if abs(value.rounded() - value) < 0.05 {
+            return String(format: "%.0f", value)
+        }
+        return String(format: "%.1f", value)
+    }
+
+    private func refreshEstimateStats() {
+        do {
+            let chapters = try appState.database.fetchChapters(for: book)
+            let totalWords = chapters.reduce(0) { $0 + $1.wordCount }
+            let excluded = chapters.filter { $0.shouldSkipAutoProcessing }
+            let included = chapters.filter { !$0.shouldSkipAutoProcessing }
+            let includedWords = included.reduce(0) { $0 + $1.wordCount }
+            let previewWords = chapters.reduce(0) { total, chapter in
+                total + min(chapter.wordCount, CostEstimates.classificationPreviewWordLimit)
+            }
+
+            chapterStats = ChapterEstimateStats(
+                totalWords: totalWords,
+                totalChapters: chapters.count,
+                excludedChapters: excluded.count,
+                includedWords: includedWords,
+                includedChapters: included.count,
+                classificationPreviewWords: previewWords
+            )
+        } catch {
+            print("Failed to fetch chapters for estimate: \(error)")
+        }
+    }
+
+    private func classifyBookForEstimate() async {
+        guard !isClassifying else { return }
+
+        isClassifying = true
+        classificationError = nil
+        classificationStatus = .inProgress
+
+        var updatedBook = book
+        updatedBook.classificationStatus = .inProgress
+        updatedBook.classificationError = nil
+        try? appState.database.saveBook(&updatedBook)
+
+        do {
+            let chapters = try appState.database.fetchChapters(for: book)
+            let chapterData: [(index: Int, title: String, preview: String)] = chapters.map { chapter in
+                let plainText = chapter.contentHTML
+                    .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (index: chapter.index, title: chapter.title, preview: plainText)
+            }
+
+            let classifications = try await appState.llmService.classifyChapters(
+                chapters: chapterData,
+                settings: appState.settings
+            )
+
+            for chapter in chapters {
+                var updatedChapter = chapter
+                updatedChapter.isGarbage = classifications[chapter.index] ?? false
+                try appState.database.saveChapter(&updatedChapter)
+            }
+
+            classificationStatus = .completed
+            classificationError = nil
+
+            updatedBook.classificationStatus = .completed
+            updatedBook.classificationError = nil
+            try appState.database.saveBook(&updatedBook)
+        } catch {
+            classificationStatus = .failed
+            classificationError = error.localizedDescription
+
+            updatedBook.classificationStatus = .failed
+            updatedBook.classificationError = error.localizedDescription
+            try? appState.database.saveBook(&updatedBook)
+        }
+
+        isClassifying = false
+        refreshEstimateStats()
     }
 
     private var apiKeyMissing: Bool {
@@ -878,6 +1261,15 @@ struct ProcessBookSheet: View {
         case .anthropic: return appState.settings.anthropicAPIKey.isEmpty
         }
     }
+}
+
+private struct ChapterEstimateStats {
+    var totalWords: Int = 0
+    var totalChapters: Int = 0
+    var excludedChapters: Int = 0
+    var includedWords: Int = 0
+    var includedChapters: Int = 0
+    var classificationPreviewWords: Int = 0
 }
 
 // MARK: - EPUB UTType Extension

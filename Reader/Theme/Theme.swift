@@ -99,6 +99,7 @@ final class ThemeManager {
         availableThemes = builtInThemes + customThemes
     }
 
+
     private func loadCustomThemes() {
         guard let data = UserDefaults.standard.data(forKey: customThemesKey),
               let decoded = try? JSONDecoder().decode([CustomTheme].self, from: data) else {
@@ -280,6 +281,8 @@ extension EnvironmentValues {
 
 extension View {
     func themed() -> some View {
-        self.environment(\.theme, ThemeManager.shared.current)
+        self
+            .environment(\.theme, ThemeManager.shared.current)
+            .tint(ThemeManager.shared.current.rose)
     }
 }
