@@ -374,6 +374,7 @@ struct UserSettings: Codable, Equatable {
     var autoSwitchContextTabs: Bool = true
     var autoSwitchFromChatOnScroll: Bool = true
     var smartAutoScrollEnabled: Bool = true
+    var autoScrollHighlightEnabled: Bool = true
     var showReadingSpeedFooter: Bool = true
     var useCheapestModelForClassification: Bool = true
 

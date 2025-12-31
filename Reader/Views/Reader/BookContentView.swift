@@ -21,7 +21,8 @@ struct BookContentView: NSViewRepresentable {
     let onAnnotationClick: (Annotation) -> Void
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
-    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ blockId: Int?, _ distances: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
+    let onImageMarkerDblClick: (Int64) -> Void
+    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ blockId: Int?, _ distances: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double, _ isProgrammatic: Bool) -> Void
     let onBottomTug: () -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
@@ -172,6 +173,16 @@ struct BookContentView: NSViewRepresentable {
                 .word-popup { position: fixed; background: var(--surface); border: 1px solid var(--rose); border-radius: 8px; padding: 8px; display: none; z-index: 1000; }
                 .word-popup button { display: block; width: 100%; padding: 8px; background: transparent; border: none; color: var(--text); cursor: pointer; text-align: left; }
                 .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
+                
+                /* Highlight animations */
+                .highlight-active { transition: background-color 0s !important; }
+                .marker-highlight { 
+                    transform: scale(1.6) !important;
+                    background-color: var(--highlight-color) !important;
+                    box-shadow: 0 0 15px 3px var(--highlight-color) !important;
+                    z-index: 100 !important;
+                    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.4s !important;
+                }
             </style>
         </head>
         <body>
@@ -265,6 +276,10 @@ struct BookContentView: NSViewRepresentable {
                 if let id = (body["id"] as? String).flatMap(Int64.init) { 
                     parent.onImageMarkerClick(id) 
                 }
+            case "imageMarkerDblClick":
+                if let id = (body["id"] as? String).flatMap(Int64.init) {
+                    parent.onImageMarkerDblClick(id)
+                }
             case "explain":
                 if let word = body["word"] as? String, let context = body["context"] as? String, let bId = body["blockId"] as? Int {
                     parent.onWordClick(word, context, bId, .explain)
@@ -285,7 +300,8 @@ struct BookContentView: NSViewRepresentable {
                 let sY = (body["scrollY"] as? Double) ?? 0
                 let sP = (body["scrollPercent"] as? Double) ?? 0
                 let vH = (body["viewportHeight"] as? Double) ?? 0
-                parent.onScrollPositionChange(aId, fId, iId, bId, "\(aD),\(iD),\(fD)", sP, sY, vH)
+                let isP = (body["isProgrammatic"] as? Bool) ?? false
+                parent.onScrollPositionChange(aId, fId, iId, bId, "\(aD),\(iD),\(fD)", sP, sY, vH, isP)
             default: break
             }
         }

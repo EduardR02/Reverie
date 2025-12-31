@@ -331,6 +331,14 @@ struct SettingsView: View {
 
                     Divider().background(theme.overlay)
 
+                    Toggle(isOn: $state.settings.autoScrollHighlightEnabled) {
+                        toggleLabel(title: "Auto-scroll Highlighting", subtitle: "Outline active items while scrolling")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
                     Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
                         toggleLabel(title: "Smart Chat Return", subtitle: "Back to context when scrolling text")
                     }

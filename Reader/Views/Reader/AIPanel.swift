@@ -24,6 +24,8 @@ struct AIPanel: View {
     let onGenerateMoreQuestions: () -> Void
     let onForceProcess: () -> Void  // Force process garbage chapter
     let onRetryClassification: () -> Void  // Retry failed classification
+    let autoScrollHighlightEnabled: Bool
+    let isProgrammaticScroll: Bool
     @Binding var externalTabSelection: Tab?  // External control for tab switching
     @Binding var selectedTab: Tab
     @Binding var pendingChatPrompt: String?
@@ -309,6 +311,7 @@ struct AIPanel: View {
                                     annotation: annotation,
                                     isExpanded: expandedAnnotationId == annotationId,
                                     isCurrent: currentAnnotationId == annotationId,
+                                    isAutoScroll: !isProgrammaticScroll,
                                     onToggle: {
                                         withAnimation(.easeOut(duration: 0.2)) {
                                             if expandedAnnotationId == annotationId {
@@ -415,6 +418,7 @@ struct AIPanel: View {
                             ImageCard(
                                 image: image,
                                 isHighlighted: image.id == currentImageId,
+                                isAutoScroll: !isProgrammaticScroll,
                                 onScrollTo: {
                                     if let id = image.id {
                                         onScrollToBlockId(image.sourceBlockId, id)
@@ -540,6 +544,7 @@ struct AIPanel: View {
                             FootnoteCard(
                                 footnote: footnote,
                                 isHighlighted: highlightedFootnoteId == footnote.refId,
+                                isAutoScroll: !isProgrammaticScroll,
                                 onScrollTo: {
                                     onScrollToFootnote(footnote.refId)
                                     externalScrollRequest = (footnote.refId, .footnotes)
@@ -1201,11 +1206,18 @@ struct AnnotationCard: View {
     let annotation: Annotation
     let isExpanded: Bool
     let isCurrent: Bool
+    let isAutoScroll: Bool
     let onToggle: () -> Void
     let onScrollTo: () -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
+
+    private var showHighlight: Bool {
+        if !isCurrent { return false }
+        if !isAutoScroll { return true }
+        return appState.settings.autoScrollHighlightEnabled
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1278,13 +1290,13 @@ struct AnnotationCard: View {
                 .padding(.bottom, 12)
             }
         }
-        .background(isCurrent ? theme.overlay : theme.base)
+        .background(showHighlight ? theme.overlay : theme.base)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isCurrent ? theme.rose : theme.overlay, lineWidth: isCurrent ? 2 : 1)
+                .stroke(showHighlight ? theme.rose : theme.overlay, lineWidth: showHighlight ? 2 : 1)
         }
-        .animation(.easeOut(duration: 0.2), value: isCurrent)
+        .animation(.easeOut(duration: 0.2), value: showHighlight)
     }
 }
 
@@ -1415,9 +1427,17 @@ struct QuizCard: View {
 struct FootnoteCard: View {
     let footnote: Footnote
     let isHighlighted: Bool
+    let isAutoScroll: Bool
     let onScrollTo: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(AppState.self) private var appState
+
+    private var showHighlight: Bool {
+        if !isHighlighted { return false }
+        if !isAutoScroll { return true }
+        return appState.settings.autoScrollHighlightEnabled
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1458,13 +1478,13 @@ struct FootnoteCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHighlighted ? theme.foam.opacity(0.15) : theme.base)
+        .background(showHighlight ? theme.foam.opacity(0.15) : theme.base)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isHighlighted ? theme.foam : theme.overlay, lineWidth: isHighlighted ? 2 : 1)
+                .stroke(showHighlight ? theme.foam : theme.overlay, lineWidth: showHighlight ? 2 : 1)
         }
-        .animation(.easeOut(duration: 0.3), value: isHighlighted)
+        .animation(.easeOut(duration: 0.3), value: showHighlight)
     }
 }
 
@@ -1853,10 +1873,18 @@ struct CompactReadingSpeedPrompt: View {
 struct ImageCard: View {
     let image: GeneratedImage
     let isHighlighted: Bool
+    let isAutoScroll: Bool
     let onScrollTo: () -> Void
     let onExpand: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(AppState.self) private var appState
+
+    private var showHighlight: Bool {
+        if !isHighlighted { return false }
+        if !isAutoScroll { return true }
+        return appState.settings.autoScrollHighlightEnabled
+    }
 
     var body: some View {
         Button {
@@ -1925,14 +1953,17 @@ struct ImageCard: View {
                 .padding(10)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isHighlighted ? theme.iris.opacity(0.08) : theme.base)
+            .background(showHighlight ? theme.iris.opacity(0.08) : theme.base)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(isHighlighted ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+                    .stroke(showHighlight ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            onExpand()
+        })
         .contextMenu {
             Button {
                 onExpand()
