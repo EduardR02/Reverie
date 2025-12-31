@@ -16,7 +16,6 @@ struct BookCard: View {
             // Cover with hover overlays
             ZStack(alignment: .topTrailing) {
                 coverView
-                    .frame(height: 260)
                     .clipped()
 
                 // Top Toolbar (Process + Status)
@@ -175,29 +174,34 @@ struct BookCard: View {
 
     @ViewBuilder
     private var coverView: some View {
-        if let coverURL = book.coverURL,
-           let image = NSImage(contentsOf: coverURL) {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            // Placeholder
-            ZStack {
-                theme.overlay
+        ZStack {
+            if let coverURL = book.coverURL,
+               let image = NSImage(contentsOf: coverURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                // Placeholder
+                ZStack {
+                    theme.overlay
 
-                VStack(spacing: 8) {
-                    Image(systemName: "book.closed")
-                        .font(.system(size: 32, weight: .light))
-                        .foregroundColor(theme.muted)
+                    VStack(spacing: 8) {
+                        Image(systemName: "book.closed")
+                            .font(.system(size: 32, weight: .light))
+                            .foregroundColor(theme.muted)
 
-                    Text(book.title)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(theme.subtle)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                        .padding(.horizontal, 12)
+                        Text(book.title)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(theme.subtle)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .padding(.horizontal, 12)
+                    }
                 }
             }
         }
+        .aspectRatio(2/3, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(theme.overlay)
     }
 }

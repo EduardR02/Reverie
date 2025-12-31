@@ -25,7 +25,7 @@ struct HomeView: View {
     @State private var showImportError = false
 
     private let columns = [
-        GridItem(.adaptive(minimum: 180, maximum: 220), spacing: 24)
+        GridItem(.adaptive(minimum: 160, maximum: 180), spacing: 24)
     ]
 
     var body: some View {

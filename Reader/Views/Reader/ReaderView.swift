@@ -909,7 +909,8 @@ struct ReaderView: View {
     }
 
     private func processChapter(_ chapter: Chapter) async {
-        let chapterId = chapter.id!  // Capture ID to check after async call
+        guard let bookId = appState.currentBook?.id else { return }
+        let chapterId = chapter.id!
         
         // Avoid duplicate processing
         if processingChapterId == chapterId { return }
@@ -936,55 +937,45 @@ struct ReaderView: View {
                 rollingSummary: chapter.rollingSummary,
                 settings: appState.settings
             )
+            
+            if Task.isCancelled { return }
 
-            // Check if user is still on the same chapter
+            // Check if user is still on the same chapter for UI updates
             let stillOnSameChapter = currentChapter?.id == chapterId
 
             // Save annotations to DB (always), append to array only if still on same chapter
             var injections: [MarkerInjection] = []
             for data in analysis.annotations {
                 let type = AnnotationType(rawValue: data.type) ?? .science
-                // Validate block ID is in range
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
                     ? data.sourceBlockId : 1
 
-                                var annotation = Annotation(
+                var annotation = Annotation(
+                    chapterId: chapterId,
+                    type: type,
+                    title: data.title,
+                    content: data.content,
+                    sourceBlockId: validBlockId
+                )
 
-                                    chapterId: chapterId,
+                try appState.database.saveAnnotation(&annotation)
 
-                                    type: type,
-
-                                    title: data.title,
-
-                                    content: data.content,
-
-                                    sourceBlockId: validBlockId
-
-                                )
-
-                                try appState.database.saveAnnotation(&annotation)
-
-                                if stillOnSameChapter {
-
-                                    annotations.append(annotation)
-                    // Queue marker injection for WebView
+                if stillOnSameChapter {
+                    annotations.append(annotation)
                     if let id = annotation.id {
                         injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId))
                     }
                 }
             }
 
-            // Trigger marker injection in WebView
             if stillOnSameChapter && !injections.isEmpty {
                 await MainActor.run {
                     pendingMarkerInjections = injections
                 }
             }
 
-            // --- Analysis is done, show insights now! ---
             if stillOnSameChapter {
                 isProcessingInsights = false
-                // No need to clear processingChapterId yet as image gen might start
             }
 
             // Save quizzes
@@ -1008,9 +999,12 @@ struct ReaderView: View {
                 isProcessingImages = true
             }
 
+            if Task.isCancelled { return }
+
             await generateSuggestedImages(
                 analysis.imageSuggestions,
                 blockCount: blocks.count,
+                bookId: bookId,
                 chapterId: chapterId,
                 stillOnSameChapter: stillOnSameChapter
             )
@@ -1026,12 +1020,10 @@ struct ReaderView: View {
             updatedChapter.blockCount = blocks.count
             try appState.database.saveChapter(&updatedChapter)
 
-            // Only update current view state if still on same chapter
             if stillOnSameChapter {
                 currentChapter = updatedChapter
             }
 
-            // Update in chapters array
             if let idx = chapters.firstIndex(where: { $0.id == chapterId }) {
                 chapters[idx] = updatedChapter
             }
@@ -1047,16 +1039,14 @@ struct ReaderView: View {
     private func generateSuggestedImages(
         _ suggestions: [LLMService.ImageSuggestion],
         blockCount: Int,
+        bookId: Int64,
         chapterId: Int64,
         stillOnSameChapter: Bool
     ) async {
         guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
 
         let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            print("Skipping image generation: missing Google API key.")
-            return
-        }
+        guard !trimmedKey.isEmpty else { return }
 
         imageGenerating = true
         defer { imageGenerating = false }
@@ -1073,8 +1063,11 @@ struct ReaderView: View {
             maxConcurrent: 5
         )
 
+        if Task.isCancelled { return }
+
         await storeGeneratedImages(
             results,
+            bookId: bookId,
             chapterId: chapterId,
             stillOnSameChapter: stillOnSameChapter
         )
@@ -1100,12 +1093,12 @@ struct ReaderView: View {
 
     private func storeGeneratedImages(
         _ results: [ImageService.GeneratedImageResult],
+        bookId: Int64,
         chapterId: Int64,
         stillOnSameChapter: Bool
     ) async {
         for result in results {
             do {
-                guard let bookId = appState.currentBook?.id else { continue }
                 let imagePath = try appState.imageService.saveImage(
                     result.imageData,
                     for: bookId,
