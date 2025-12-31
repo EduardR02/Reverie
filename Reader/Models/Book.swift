@@ -8,8 +8,10 @@ enum ClassificationStatus: String, Codable {
     case failed       // Failed, will retry on next open
 }
 
-struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
+struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, Equatable {
     var id: Int64?
+    // ... rest of properties ...
+    // (I will keep properties as they are but ensure Equatable is there)
     var title: String
     var author: String
     var coverPath: String?
@@ -60,10 +62,9 @@ extension Book {
              createdAt, lastReadAt, classificationStatus, classificationError, isFinished
     }
 
-    /// Whether classification needs to run (pending, failed, or stuck in-progress)
+    /// Whether classification needs to run (pending or failed)
     var needsClassification: Bool {
         classificationStatus == .pending
             || classificationStatus == .failed
-            || classificationStatus == .inProgress
     }
 }

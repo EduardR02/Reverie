@@ -48,8 +48,8 @@ struct ContentView: View {
             case .stats:
                 StatsView()
                     .transition(.move(edge: .trailing).combined(with: .opacity))
-            case .reader(let book):
-                ReaderView(book: book)
+            case .reader:
+                ReaderView()
                     .transition(.opacity)
             }
         }

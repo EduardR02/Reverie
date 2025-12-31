@@ -10,10 +10,12 @@ struct AIPanel: View {
     let currentAnnotationId: Int64?
     let currentImageId: Int64?
     let currentFootnoteRefId: String?
-    let isProcessing: Bool
+    let isProcessingInsights: Bool
+    let isProcessingImages: Bool
     let isGeneratingMore: Bool
     let isClassifying: Bool
     let classificationError: String?
+    let analysisError: String?
     let onScrollTo: (Int64) -> Void  // Scroll to annotation by ID
     let onScrollToQuote: (String) -> Void  // Scroll to quote text (for quizzes)
     let onScrollToFootnote: (String) -> Void  // Scroll to footnote reference by refId
@@ -47,10 +49,24 @@ struct AIPanel: View {
     @State private var chatContentMetrics = ChatContentMetrics(height: 0, minY: 0)
     @State private var chatAutoScrollEnabled = true
     @State private var chatScrollTick = 0
+    @State private var scrollRequestCount = 0
+    @State private var externalScrollRequest: (id: AnyHashable, tab: Tab)?
     @FocusState private var isChatFocused: Bool
 
     private let chatScrollSpace = "chat-scroll"
     private let chatBottomId = "chat-bottom"
+
+    private var sortedAnnotations: [Annotation] {
+        annotations.sorted { $0.sourceBlockId < $1.sourceBlockId }
+    }
+
+    private var sortedQuizzes: [Quiz] {
+        quizzes.sorted { $0.sourceBlockId < $1.sourceBlockId }
+    }
+
+    private var sortedImages: [GeneratedImage] {
+        images.sorted { $0.sourceBlockId < $1.sourceBlockId }
+    }
 
     enum Tab: String, CaseIterable {
         case insights = "Insights"
@@ -265,24 +281,29 @@ struct AIPanel: View {
                         classificationErrorBanner
                     }
 
+                    // Analysis error banner
+                    if let analysisError {
+                        analysisErrorBanner(error: analysisError)
+                    }
+
                     // Garbage chapter banner (show when chapter is garbage and not yet processed)
                     if let chapter = chapter, chapter.shouldSkipAutoProcessing && !chapter.processed {
                         garbageChapterBanner
                     }
 
                     // Processing indicator
-                    if isProcessing {
+                    if isProcessingInsights {
                         processingBanner(text: "Generating insights...")
                     }
 
-                    if annotations.isEmpty && !isProcessing && !isClassifying && (chapter?.shouldSkipAutoProcessing != true) {
+                    if annotations.isEmpty && !isProcessingInsights && !isClassifying && (chapter?.shouldSkipAutoProcessing != true) {
                         emptyState(
                             icon: "lightbulb",
                             title: "No insights yet",
                             subtitle: "Insights will appear as you read"
                         )
                     } else if !annotations.isEmpty {
-                        ForEach(annotations) { annotation in
+                        ForEach(sortedAnnotations) { annotation in
                             if let annotationId = annotation.id {
                                 AnnotationCard(
                                     annotation: annotation,
@@ -296,11 +317,15 @@ struct AIPanel: View {
                                                 expandedAnnotationId = annotationId
                                                 // Auto-scroll to passage when expanding
                                                 onScrollTo(annotationId)
+                                                externalScrollRequest = (annotationId, .insights)
+                                                scrollRequestCount += 1
                                             }
                                         }
                                     },
                                     onScrollTo: {
                                         onScrollTo(annotationId)
+                                        externalScrollRequest = (annotationId, .insights)
+                                        scrollRequestCount += 1
                                     }
                                 )
                                 .id(annotationId)
@@ -309,7 +334,7 @@ struct AIPanel: View {
                     }
 
                     // More insights button
-                    if !annotations.isEmpty && !isProcessing {
+                    if !annotations.isEmpty && !isProcessingInsights {
                         Button {
                             onGenerateMoreInsights()
                         } label: {
@@ -340,12 +365,18 @@ struct AIPanel: View {
                 }
                 .padding(16)
             }
+            .onChange(of: scrollRequestCount) { _, _ in
+                guard let req = externalScrollRequest, req.tab == .insights else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    proxy.scrollTo(req.id, anchor: UnitPoint(x: 0.5, y: 0.2))
+                }
+            }
             .onChange(of: currentAnnotationId) { oldValue, newValue in
                 // Auto-scroll to current insight and expand it
                 // Use .top anchor so insights near top of list can still be scrolled to
                 if let id = newValue {
                     withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(id, anchor: .top)
+                        proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.2))
                         expandedAnnotationId = id
                     }
                 }
@@ -354,7 +385,7 @@ struct AIPanel: View {
                 guard let id = currentAnnotationId else { return }
                 DispatchQueue.main.async {
                     withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(id, anchor: .top)
+                        proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.2))
                         expandedAnnotationId = id
                     }
                 }
@@ -369,19 +400,27 @@ struct AIPanel: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    if images.isEmpty {
+                    if isProcessingImages {
+                        processingBanner(text: "Generating images...")
+                    }
+
+                    if images.isEmpty && !isProcessingImages {
                         emptyState(
                             icon: "photo",
                             title: "No images yet",
                             subtitle: "Images will appear as they're generated"
                         )
                     } else {
-                        ForEach(images) { image in
+                        ForEach(sortedImages) { image in
                             ImageCard(
                                 image: image,
                                 isHighlighted: image.id == currentImageId,
                                 onScrollTo: {
-                                    onScrollToBlockId(image.sourceBlockId, image.id)
+                                    if let id = image.id {
+                                        onScrollToBlockId(image.sourceBlockId, id)
+                                        externalScrollRequest = (id, .images)
+                                        scrollRequestCount += 1
+                                    }
                                 },
                                 onExpand: {
                                     withAnimation(.easeOut(duration: 0.2)) {
@@ -394,6 +433,12 @@ struct AIPanel: View {
                     }
                 }
                 .padding(16)
+            }
+            .onChange(of: scrollRequestCount) { _, _ in
+                guard let req = externalScrollRequest, req.tab == .images else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    proxy.scrollTo(req.id, anchor: autoScrollAnchor)
+                }
             }
             .onChange(of: currentImageId) { _, newId in
                 guard let id = newId else { return }
@@ -424,18 +469,22 @@ struct AIPanel: View {
                 }
 
                 // Processing indicator
-                if isProcessing {
+                if isProcessingInsights {
                     processingBanner(text: "Generating questions...")
                 }
 
-                if quizzes.isEmpty && !isProcessing {
+                if let analysisError {
+                    analysisErrorBanner(error: analysisError)
+                }
+
+                if quizzes.isEmpty && !isProcessingInsights {
                     emptyState(
                         icon: "checkmark.circle",
                         title: "No quiz yet",
                         subtitle: "Quiz questions will appear at chapter end"
                     )
                 } else if !quizzes.isEmpty {
-                    ForEach(quizzes) { quiz in
+                    ForEach(sortedQuizzes) { quiz in
                         QuizCard(
                             quiz: quiz,
                             onScrollTo: {
@@ -445,7 +494,7 @@ struct AIPanel: View {
                     }
 
                     // More questions button
-                    if !isProcessing {
+                    if !isProcessingInsights {
                         Button {
                             onGenerateMoreQuestions()
                         } label: {
@@ -493,6 +542,8 @@ struct AIPanel: View {
                                 isHighlighted: highlightedFootnoteId == footnote.refId,
                                 onScrollTo: {
                                     onScrollToFootnote(footnote.refId)
+                                    externalScrollRequest = (footnote.refId, .footnotes)
+                                    scrollRequestCount += 1
                                 }
                             )
                             .id(footnote.refId)
@@ -500,6 +551,12 @@ struct AIPanel: View {
                     }
                 }
                 .padding(16)
+            }
+            .onChange(of: scrollRequestCount) { _, _ in
+                guard let req = externalScrollRequest, req.tab == .footnotes else { return }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    proxy.scrollTo(req.id, anchor: .center)
+                }
             }
             .onChange(of: highlightedFootnoteId) { _, newId in
                 if let id = newId {
@@ -771,6 +828,48 @@ struct AIPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    private func analysisErrorBanner(error: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(theme.love)
+
+                Text("Analysis Failed")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.text)
+            }
+
+            Text(error)
+                .font(.system(size: 12))
+                .foregroundColor(theme.muted)
+                .lineSpacing(3)
+
+            Button {
+                if chapter != nil {
+                    // Triggers processChapter in ReaderView via onForceProcess
+                    onForceProcess()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Retry Analysis")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(theme.love)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(theme.love.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(theme.love.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     /// Banner shown for garbage chapters (front/back matter)
     private var garbageChapterBanner: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1012,7 +1111,7 @@ private struct ChatContentMetrics: Equatable {
 }
 
 private struct ChatContentMetricsKey: PreferenceKey {
-    static var defaultValue = ChatContentMetrics(height: 0, minY: 0)
+    static let defaultValue = ChatContentMetrics(height: 0, minY: 0)
 
     static func reduce(value: inout ChatContentMetrics, nextValue: () -> ChatContentMetrics) {
         value = nextValue()
@@ -1020,7 +1119,7 @@ private struct ChatContentMetricsKey: PreferenceKey {
 }
 
 private struct ChatScrollViewHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
@@ -1760,94 +1859,92 @@ struct ImageCard: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Image preview - full width with natural height per aspect ratio
-            AsyncImage(url: image.imageURL) { phase in
-                switch phase {
-                case .success(let loadedImage):
-                    loadedImage
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .background(theme.overlay.opacity(0.3))
-                case .failure:
-                    VStack(spacing: 8) {
-                        Image(systemName: "photo.badge.exclamationmark")
-                            .font(.system(size: 24))
-                        Text("Failed to load")
-                            .font(.system(size: 12))
-                    }
-                    .foregroundColor(theme.muted)
-                    .frame(height: 120)
-                    .frame(maxWidth: .infinity)
-                    .background(theme.overlay)
-                case .empty:
-                    ProgressView()
+        Button {
+            onScrollTo()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                // Image preview - full width with natural height per aspect ratio
+                AsyncImage(url: image.imageURL) { phase in
+                    switch phase {
+                    case .success(let loadedImage):
+                        loadedImage
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                            .background(theme.overlay.opacity(0.3))
+                    case .failure:
+                        VStack(spacing: 8) {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .font(.system(size: 24))
+                            Text("Failed to load")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundColor(theme.muted)
                         .frame(height: 120)
                         .frame(maxWidth: .infinity)
                         .background(theme.overlay)
-                @unknown default:
-                    EmptyView()
+                    case .empty:
+                        ProgressView()
+                            .frame(height: 120)
+                            .frame(maxWidth: .infinity)
+                            .background(theme.overlay)
+                    @unknown default:
+                        EmptyView()
+                    }
                 }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                onExpand()
-            }
-            .onTapGesture(count: 1) {
-                onScrollTo()
-            }
-            .contextMenu {
-                Button {
-                    onExpand()
-                } label: {
-                    Label("View Full Size", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                Button {
-                    onScrollTo()
-                } label: {
-                    Label("Go to Source", systemImage: "arrow.right.circle")
-                }
-            }
+                // Caption/prompt
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(image.prompt)
+                        .font(.system(size: 12))
+                        .foregroundColor(theme.text)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
 
-            // Caption/prompt
-            VStack(alignment: .leading, spacing: 6) {
-                Text(image.prompt)
-                    .font(.system(size: 12))
-                    .foregroundColor(theme.text)
-                    .lineLimit(2)
-
-                HStack(spacing: 8) {
-                    Button(action: onScrollTo) {
+                    HStack(spacing: 8) {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.right.circle")
                             Text("Go to source")
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(theme.iris)
-                    }
-                    .buttonStyle(.plain)
 
-                    Spacer()
+                        Spacer()
 
-                    Button(action: onExpand) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 11))
-                            .foregroundColor(theme.muted)
+                        Button {
+                            onExpand()
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.muted)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(10)
             }
-            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isHighlighted ? theme.iris.opacity(0.08) : theme.base)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isHighlighted ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHighlighted ? theme.iris.opacity(0.08) : theme.base)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isHighlighted ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                onExpand()
+            } label: {
+                Label("View Full Size", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+
+            Button {
+                onScrollTo()
+            } label: {
+                Label("Go to Source", systemImage: "arrow.right.circle")
+            }
         }
     }
 }

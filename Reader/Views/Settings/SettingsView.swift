@@ -393,7 +393,7 @@ struct SettingsView: View {
                             Text("Enable AI Images")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(theme.text)
-                            Text("Generate illustrations for scenes (uses Imagen API)")
+                            Text("Generate illustrations for scenes (uses Gemini 3 Pro Images)")
                                 .font(.system(size: 12))
                                 .foregroundColor(theme.muted)
                         }
@@ -512,7 +512,7 @@ struct SettingsView: View {
             // Google
             apiKeyCard(
                 title: "Gemini",
-                subtitle: "For Gemini and image generation",
+                subtitle: "For Gemini 3 and image generation",
                 key: $state.settings.googleAPIKey,
                 linkURL: "https://aistudio.google.com/apikey",
                 linkText: "Get API Key"
@@ -521,7 +521,7 @@ struct SettingsView: View {
             // OpenAI
             apiKeyCard(
                 title: "OpenAI",
-                subtitle: "For OpenAI",
+                subtitle: "For GPT 5.2",
                 key: $state.settings.openAIAPIKey,
                 linkURL: "https://platform.openai.com/api-keys",
                 linkText: "Get API Key"
@@ -530,7 +530,7 @@ struct SettingsView: View {
             // Anthropic
             apiKeyCard(
                 title: "Claude",
-                subtitle: "For Claude",
+                subtitle: "For Claude 4.5",
                 key: $state.settings.anthropicAPIKey,
                 linkURL: "https://console.anthropic.com/settings/keys",
                 linkText: "Get API Key"

@@ -1,11 +1,26 @@
 import Foundation
 
+@MainActor
 final class LLMService {
     typealias StreamChunk = LLMStreamChunk
     private weak var appState: AppState?
+    
+    // Set to true to capture real API responses into Documents/Reader/Captures
+    var recordMode: Bool = false
 
-    init(appState: AppState? = nil) {
+    private let session: URLSession
+
+    init(appState: AppState? = nil, session: URLSession? = nil) {
         self.appState = appState
+        
+        if let session = session {
+            self.session = session
+        } else {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 600 // 10 minutes
+            config.timeoutIntervalForResource = 600
+            self.session = URLSession(configuration: config)
+        }
     }
 
     func setAppState(_ appState: AppState) {
@@ -104,7 +119,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: settings.insightReasoningLevel
+            reasoning: settings.insightReasoningLevel,
+            nameHint: "chapter_analysis"
         )
     }
 
@@ -128,7 +144,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: .off
+            reasoning: .off,
+            nameHint: "explain_word"
         )
     }
 
@@ -147,7 +164,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: .off
+            reasoning: .off,
+            nameHint: "image_prompt"
         )
     }
 
@@ -171,7 +189,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: settings.chatReasoningLevel
+            reasoning: settings.chatReasoningLevel,
+            nameHint: "chat"
         )
     }
 
@@ -195,7 +214,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: settings.chatReasoningLevel
+            reasoning: settings.chatReasoningLevel,
+            nameHint: "chat_stream"
         )
     }
 
@@ -221,7 +241,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: settings.insightReasoningLevel
+            reasoning: settings.insightReasoningLevel,
+            nameHint: "more_insights"
         )
 
         return analysis.annotations
@@ -246,7 +267,8 @@ final class LLMService {
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
-            reasoning: settings.insightReasoningLevel
+            reasoning: settings.insightReasoningLevel,
+            nameHint: "more_questions"
         )
 
         return analysis.quizQuestions
@@ -272,7 +294,8 @@ final class LLMService {
             model: model,
             apiKey: key,
             temperature: 0.3,
-            reasoning: .off
+            reasoning: .off,
+            nameHint: "chapter_classification"
         )
 
         var result: [Int: Bool] = [:]
@@ -291,18 +314,47 @@ final class LLMService {
 
     /// Select the best model for classification (cheap and fast)
     func classificationModelSelection(settings: UserSettings) -> (LLMProvider, String, String) {
-        if !settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if settings.useCheapestModelForClassification {
+            // 1. If Google Key exists -> ALWAYS prefer Gemini Flash
+            let googleKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !googleKey.isEmpty {
+                return (.google, "gemini-3-flash-preview", googleKey)
+            }
+            
+            // 2. Otherwise, use the cheapest model from the CURRENT provider
+            let provider = settings.llmProvider
+            let currentKey = apiKey(for: provider, settings: settings).trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if !currentKey.isEmpty {
+                switch provider {
+                case .google: return (.google, "gemini-3-flash-preview", currentKey)
+                case .openai: return (.openai, "gpt-5.2", currentKey)
+                case .anthropic: return (.anthropic, "claude-haiku-4-5", currentKey)
+                }
+            }
+            
+            // 3. Fallback to any other key in order of "cheapness"
+            if !settings.anthropicAPIKey.isEmpty {
+                return (.anthropic, "claude-haiku-4-5", settings.anthropicAPIKey)
+            }
+            if !settings.openAIAPIKey.isEmpty {
+                return (.openai, "gpt-5.2", settings.openAIAPIKey)
+            }
+        }
+        
+        // If setting is OFF, use CURRENTLY SELECTED model
+        let currentProvider = settings.llmProvider
+        let currentKey = apiKey(for: currentProvider, settings: settings).trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !currentKey.isEmpty {
+            return (currentProvider, settings.llmModel, currentKey)
+        }
+
+        // Final fallback
+        if !settings.googleAPIKey.isEmpty {
             return (.google, "gemini-3-flash-preview", settings.googleAPIKey)
         }
-
-        if !settings.anthropicAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return (.anthropic, "claude-4.5-haiku", settings.anthropicAPIKey)
-        }
-
-        if !settings.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return (.openai, settings.llmModel, settings.openAIAPIKey)
-        }
-
+        
         return (.google, "gemini-3-flash-preview", "")
     }
 
@@ -314,7 +366,8 @@ final class LLMService {
         model: String,
         apiKey: String,
         temperature: Double,
-        reasoning: ReasoningLevel
+        reasoning: ReasoningLevel,
+        nameHint: String? = nil
     ) async throws -> String {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
@@ -333,6 +386,8 @@ final class LLMService {
         )
 
         let data = try await performRequest(request)
+        if recordMode { recordResponse(data, name: nameHint ?? "text_response") }
+        
         let (text, usage) = try client.parseResponseText(from: data)
         if let usage { recordUsage(usage) }
         return text
@@ -345,7 +400,8 @@ final class LLMService {
         model: String,
         apiKey: String,
         temperature: Double,
-        reasoning: ReasoningLevel
+        reasoning: ReasoningLevel,
+        nameHint: String? = nil
     ) async throws -> T {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
@@ -364,6 +420,8 @@ final class LLMService {
         )
 
         let data = try await performRequest(request)
+        if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
+        
         let (text, usage) = try client.parseResponseText(from: data)
         if let usage { recordUsage(usage) }
         return try decodeStructured(T.self, from: text)
@@ -372,7 +430,7 @@ final class LLMService {
     private func recordUsage(_ usage: TokenUsage) {
         guard let appState = self.appState else { return }
         Task { @MainActor in
-            appState.readingStats.addTokens(
+            appState.addTokens(
                 input: usage.input,
                 reasoning: usage.reasoning ?? 0,
                 output: usage.output
@@ -380,8 +438,33 @@ final class LLMService {
         }
     }
 
+    private func recordResponse(_ data: Data, name: String) {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let captureDir = docs.appendingPathComponent("Reader/Captures", isDirectory: true)
+        
+        try? fm.createDirectory(at: captureDir, withIntermediateDirectories: true)
+        
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let fileURL = captureDir.appendingPathComponent("\(name)_\(timestamp).json")
+        try? data.write(to: fileURL)
+        print("Captured API response to: \(fileURL.path)")
+    }
+
     private func decodeStructured<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
-        guard let data = text.data(using: .utf8) else {
+        var cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Remove markdown code blocks if present
+        if cleanText.hasPrefix("```") {
+            let lines = cleanText.components(separatedBy: .newlines)
+            if lines.count >= 2 {
+                // Drop first line (```json) and last line (```)
+                let middleLines = lines.dropFirst().dropLast()
+                cleanText = middleLines.joined(separator: "\n")
+            }
+        }
+        
+        guard let data = cleanText.data(using: .utf8) else {
             throw LLMError.invalidResponse
         }
         return try JSONDecoder().decode(T.self, from: data)
@@ -399,7 +482,7 @@ final class LLMService {
     }
 
     private func performRequest(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMError.invalidResponse
         }
@@ -433,7 +516,8 @@ final class LLMService {
         model: String,
         apiKey: String,
         temperature: Double,
-        reasoning: ReasoningLevel
+        reasoning: ReasoningLevel,
+        nameHint: String? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -455,7 +539,7 @@ final class LLMService {
                         stream: true
                     )
 
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await session.bytes(for: request)
                     guard let httpResponse = response as? HTTPURLResponse else {
                         throw LLMError.invalidResponse
                     }

@@ -12,7 +12,7 @@ enum AppScreen {
 
 // MARK: - App State
 
-@Observable
+@Observable @MainActor
 final class AppState {
     // Navigation
     var currentScreen: AppScreen = .home
@@ -51,14 +51,16 @@ final class AppState {
     // Throttled Progress Save
     private var pendingProgressSaveTask: Task<Void, Never>?
 
-    init() {
-        self.database = DatabaseService.shared
+    @MainActor
+    init(database: DatabaseService? = nil) {
+        let db = database ?? DatabaseService.shared
+        self.database = db
         self.imageService = ImageService()
         self.readingSpeedTracker = ReadingSpeedTracker()
         self.settings = UserSettings.load()
         
         // Load stats from Database instead of UserDefaults
-        self.readingStats = (try? database.fetchLifetimeStats()) ?? ReadingStats()
+        self.readingStats = (try? db.fetchLifetimeStats()) ?? ReadingStats()
         
         let llm = LLMService()
         self.llmService = llm
@@ -355,7 +357,7 @@ struct UserSettings: Codable, Equatable {
     var anthropicAPIKey: String = ""
     var llmProvider: LLMProvider = .google
     var llmModel: String = "gemini-3-flash-preview"
-    var imageModel: ImageModel = .nanoBanana
+    var imageModel: ImageModel = .gemini25Flash
     var fontSize: CGFloat = 15
     var fontFamily: String = "SF Pro Text"
     var lineSpacing: CGFloat = 1.2
@@ -373,6 +375,7 @@ struct UserSettings: Codable, Equatable {
     var autoSwitchFromChatOnScroll: Bool = true
     var smartAutoScrollEnabled: Bool = true
     var showReadingSpeedFooter: Bool = true
+    var useCheapestModelForClassification: Bool = true
 
     static func load() -> UserSettings {
         guard let data = UserDefaults.standard.data(forKey: "userSettings"),
@@ -411,42 +414,82 @@ enum LLMProvider: String, Codable, CaseIterable {
         models.first { $0.id == id }?.name ?? id
     }
 
-    var models: [LLMModel] {
-        switch self {
-        case .google:
-            return [
-                LLMModel(id: "gemini-3-flash-preview", name: "Gemini 3 Flash"),
-                LLMModel(id: "gemini-3-pro-preview", name: "Gemini 3 Pro")
-            ]
-        case .openai:
-            return [
-                LLMModel(id: "gpt-5.2", name: "GPT 5.2")
-            ]
-        case .anthropic:
-            return [
-                LLMModel(id: "claude-haiku-4-5", name: "Haiku 4.5"),
-                LLMModel(id: "claude-sonnet-4-5", name: "Sonnet 4.5"),
-                LLMModel(id: "claude-opus-4-5", name: "Opus 4.5")
-            ]
-        }
-    }
-}
+        var models: [LLMModel] {
 
-enum ImageModel: String, Codable, CaseIterable {
-    case nanoBananaPro = "Nano Banana Pro"
-    case nanoBanana = "Nano Banana"
+            switch self {
 
-    var apiModel: String {
-        switch self {
-        case .nanoBananaPro: return "gemini-3-pro-image-preview"
-        case .nanoBanana: return "gemini-2.5-flash-image"
+            case .google:
+
+                return [
+
+                    LLMModel(id: "gemini-3-flash-preview", name: "Gemini 3 Flash"),
+
+                    LLMModel(id: "gemini-3-pro-preview", name: "Gemini 3 Pro")
+
+                ]
+
+            case .openai:
+
+                return [
+
+                    LLMModel(id: "gpt-5.2", name: "GPT 5.2")
+
+                ]
+
+            case .anthropic:
+
+                return [
+
+                    LLMModel(id: "claude-haiku-4-5", name: "Claude 4.5 Haiku"),
+
+                    LLMModel(id: "claude-sonnet-4-5", name: "Claude 4.5 Sonnet"),
+
+                    LLMModel(id: "claude-opus-4-5", name: "Claude 4.5 Opus")
+
+                ]
+
+            }
+
         }
+
     }
 
-    var description: String {
-        switch self {
-        case .nanoBananaPro: return "Best quality, slower"
-        case .nanoBanana: return "Fast, good quality"
+    
+
+    enum ImageModel: String, Codable, CaseIterable {
+
+        case gemini3Pro = "Gemini 3 Pro"
+
+        case gemini25Flash = "Gemini 2.5 Flash"
+
+    
+
+        var apiModel: String {
+
+            switch self {
+
+            case .gemini3Pro: return "gemini-3-pro-image-preview"
+
+            case .gemini25Flash: return "gemini-2.5-flash-image"
+
+            }
+
         }
+
+    
+
+        var description: String {
+
+            switch self {
+
+            case .gemini3Pro: return "Best quality, slower"
+
+            case .gemini25Flash: return "Fast, good quality"
+
+            }
+
+        }
+
     }
-}
+
+    

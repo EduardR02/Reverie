@@ -2,12 +2,6 @@ import AppKit
 import SwiftUI
 
 struct ReaderView: View {
-    @State private var book: Book
-
-    init(book: Book) {
-        self._book = State(initialValue: book)
-    }
-
     @Environment(AppState.self) private var appState
     @Environment(\.theme) private var theme
 
@@ -19,8 +13,11 @@ struct ReaderView: View {
     @State private var images: [GeneratedImage] = []
 
     @State private var showChapterList = false
-    @State private var isProcessing = false
+    @State private var isProcessingInsights = false
+    @State private var isProcessingImages = false
+    @State private var processingChapterId: Int64?
     @State private var isGeneratingMore = false
+    @State private var analysisError: String?
 
     // Scroll sync
     @State private var currentAnnotationId: Int64?
@@ -29,7 +26,7 @@ struct ReaderView: View {
     @State private var scrollToAnnotationId: Int64?
     @State private var scrollToPercent: Double?
     @State private var scrollToOffset: Double?
-    @State private var scrollToBlockId: Int?  // Block ID for scrolling
+    @State private var scrollToBlockId: (Int, Int64?, String?)?
     @State private var scrollToQuote: String?
     @State private var pendingMarkerInjections: [MarkerInjection] = []
     @State private var pendingImageMarkerInjections: [ImageMarkerInjection] = []
@@ -65,7 +62,36 @@ struct ReaderView: View {
 
     // Chapter classification
     @State private var isClassifying = false
+    @State private var hasAttemptedClassification = false
     @State private var classificationError: String?
+
+    // Navigation Intent (to break feedback loop)
+    @State private var navigationIntent: NavigationIntent?
+
+    private struct NavigationIntent: Equatable {
+        let targetId: String 
+        let timestamp: TimeInterval
+        
+        static func annotation(_ id: Int64) -> NavigationIntent {
+            .init(targetId: "annotation-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
+        }
+        
+        static func image(_ id: Int64) -> NavigationIntent {
+            .init(targetId: "image-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
+        }
+        
+        static func footnote(_ id: String) -> NavigationIntent {
+            .init(targetId: "footnote-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
+        }
+        
+        static func block(_ id: Int) -> NavigationIntent {
+            .init(targetId: "block-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
+        }
+        
+        var isExpired: Bool {
+            Date().timeIntervalSinceReferenceDate - timestamp > 2.5 // Slightly longer for complex scrolls
+        }
+    }
 
     private enum BackAnchorState {
         case inactive
@@ -94,20 +120,25 @@ struct ReaderView: View {
                     currentAnnotationId: currentAnnotationId,
                     currentImageId: currentImageId,
                     currentFootnoteRefId: currentFootnoteRefId,
-                    isProcessing: isProcessing,
+                    isProcessingInsights: isProcessingInsights,
+                    isProcessingImages: isProcessingImages,
                     isGeneratingMore: isGeneratingMore,
                     isClassifying: isClassifying,
                     classificationError: classificationError,
+                    analysisError: analysisError,
                 onScrollTo: { annotationId in
+                    navigationIntent = .annotation(annotationId)
                     suppressContextAutoSwitch()
                     currentAnnotationId = annotationId
                     setBackAnchor()
                     scrollToAnnotationId = annotationId
                 },
                 onScrollToQuote: { quote in
+                    navigationIntent = nil // Quotes are fuzzy, don't lock
                     scrollToQuote = quote
                 },
                 onScrollToFootnote: { refId in
+                    navigationIntent = .footnote(refId)
                     suppressContextAutoSwitch()
                     currentFootnoteRefId = refId
                     setBackAnchor()
@@ -115,12 +146,16 @@ struct ReaderView: View {
                     scrollToQuote = refId  // Will be handled by JS to find the footnote link
                 },
                 onScrollToBlockId: { blockId, imageId in
-                    suppressContextAutoSwitch()
-                    if let imageId = imageId {
-                        currentImageId = imageId
+                    if let iid = imageId {
+                        navigationIntent = .image(iid)
+                        currentImageId = iid
+                    } else {
+                        navigationIntent = .block(blockId)
                     }
+                    suppressContextAutoSwitch()
                     setBackAnchor()
-                    scrollToBlockId = blockId
+                    let type = imageId != nil ? "image" : nil
+                    scrollToBlockId = (blockId, imageId, type)
                 },
                     onGenerateMoreInsights: {
                         Task { await generateMoreInsights() }
@@ -288,44 +323,46 @@ struct ReaderView: View {
                         chapter: chapter,
                         annotations: annotations,
                         images: images,
+                        selectedTab: aiPanelSelectedTab,
                         onWordClick: handleWordClick,
                         onAnnotationClick: handleAnnotationClick,
                         onImageMarkerClick: handleImageMarkerClick,
                         onFootnoteClick: handleFootnoteClick,
-                        onScrollPositionChange: { annotationId, footnoteRefId, imageId, focusType, scrollPercent, scrollOffset, viewportHeight in
-                            currentAnnotationId = annotationId
-                            if let imageId = imageId,
-                               images.contains(where: { $0.id == imageId }) {
+                        onScrollPositionChange: { annotationId, footnoteRefId, imageId, blockId, distances, scrollPercent, scrollOffset, viewportHeight in
+                            // Selection Lock logic: release if ANY reported ID matches the intent
+                            let isLocked: Bool = {
+                                if let intent = navigationIntent, !intent.isExpired {
+                                    let targets = [
+                                        annotationId.map { "annotation-\($0)" },
+                                        footnoteRefId.map { "footnote-\($0)" },
+                                        imageId.map { "image-\($0)" },
+                                        blockId.map { "block-\($0)" }
+                                    ].compactMap { $0 }
+                                    
+                                    if targets.contains(intent.targetId) {
+                                        navigationIntent = nil
+                                        return false
+                                    }
+                                    return true
+                                }
+                                return false
+                            }()
+
+                            if !isLocked {
+                                currentAnnotationId = annotationId
                                 currentImageId = imageId
-                            } else {
-                                currentImageId = nil
+                                currentFootnoteRefId = footnoteRefId
                             }
-                            if let refId = footnoteRefId,
-                               footnotes.contains(where: { $0.refId == refId }) {
-                                currentFootnoteRefId = refId
-                            } else {
-                                currentFootnoteRefId = nil
-                            }
+
                             lastScrollPercent = scrollPercent
                             lastScrollOffset = scrollOffset
                             
-                            // Centralized throttled progress tracking
-                            appState.updateChapterProgress(
-                                chapter: chapter,
-                                scrollPercent: scrollPercent,
-                                scrollOffset: scrollOffset
-                            )
-
-                            // Update reading speed session (in-memory only)
+                            appState.updateChapterProgress(chapter: chapter, scrollPercent: scrollPercent, scrollOffset: scrollOffset)
                             appState.readingSpeedTracker.updateSession(scrollPercent: scrollPercent)
-
-                            updateBackAnchor(
-                                scrollOffset: scrollOffset,
-                                viewportHeight: viewportHeight
-                            )
+                            updateBackAnchor(scrollOffset: scrollOffset, viewportHeight: viewportHeight)
 
                             handleAutoSwitch(
-                                focusType: focusType,
+                                distances: distances,
                                 annotationId: annotationId,
                                 imageId: imageId,
                                 footnoteRefId: footnoteRefId
@@ -603,7 +640,7 @@ struct ReaderView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
-            Text(book.title)
+            Text(appState.currentBook?.title ?? "")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(theme.text)
         }
@@ -611,13 +648,25 @@ struct ReaderView: View {
 
     // MARK: - Data Loading
 
+    @MainActor
     private func loadChapters() async {
         isLoadingChapters = true
         loadError = nil
         didRestoreInitialPosition = false
 
+        guard let currentBook = appState.currentBook else {
+            loadError = "No book loaded"
+            isLoadingChapters = false
+            return
+        }
+
         do {
-            chapters = try appState.database.fetchChapters(for: book)
+            // Re-fetch from DB to ensure fresh status
+            if let bookId = currentBook.id, let fresh = try? appState.database.fetchAllBooks().first(where: { $0.id == bookId }) {
+                appState.currentBook = fresh
+            }
+            
+            chapters = try appState.database.fetchChapters(for: appState.currentBook!)
 
             if chapters.isEmpty {
                 loadError = "No chapters were found in this book. The EPUB may be corrupted or in an unsupported format."
@@ -641,18 +690,21 @@ struct ReaderView: View {
         }
     }
 
+    @MainActor
     private func startClassificationIfNeeded() {
-        guard book.needsClassification, !isClassifying else { return }
+        guard var currentBook = appState.currentBook, currentBook.needsClassification, !isClassifying, !hasAttemptedClassification else { return }
 
+        hasAttemptedClassification = true
         isClassifying = true
         classificationError = nil
-        book.classificationStatus = .inProgress
-        try? appState.database.saveBook(&book)
+        currentBook.classificationStatus = .inProgress
+        try? appState.database.saveBook(&currentBook)
+        appState.currentBook = currentBook
 
         Task {
             await classifyBookChapters()
 
-            if let updatedChapters = try? appState.database.fetchChapters(for: book) {
+            if let updatedChapters = try? appState.database.fetchChapters(for: appState.currentBook!) {
                 await MainActor.run {
                     chapters = updatedChapters
                     refreshCurrentChapterFromChapters()
@@ -670,7 +722,9 @@ struct ReaderView: View {
     }
 
     /// Classify all chapters in the book using LLM
+    @MainActor
     private func classifyBookChapters() async {
+        guard var currentBook = appState.currentBook else { return }
         do {
             // Prepare chapter data for classification
             let chapterData: [(index: Int, title: String, preview: String)] = chapters.map { chapter in
@@ -697,15 +751,17 @@ struct ReaderView: View {
             }
 
             // Mark book as classified - update local state AND save to DB
-            book.classificationStatus = .completed
-            book.classificationError = nil
-            try appState.database.saveBook(&book)
+            currentBook.classificationStatus = .completed
+            currentBook.classificationError = nil
+            try appState.database.saveBook(&currentBook)
+            appState.currentBook = currentBook
 
         } catch {
             // Store error for retry - update local state AND save to DB
-            book.classificationStatus = .failed
-            book.classificationError = error.localizedDescription
-            try? appState.database.saveBook(&book)
+            currentBook.classificationStatus = .failed
+            currentBook.classificationError = error.localizedDescription
+            try? appState.database.saveBook(&currentBook)
+            appState.currentBook = currentBook
             classificationError = error.localizedDescription
         }
 
@@ -724,11 +780,11 @@ struct ReaderView: View {
     }
 
     private func processCurrentChapterIfReady() {
-        guard let chapter = currentChapter, shouldAutoProcess(chapter) else { return }
+        guard let chapter = currentChapter, let currentBook = appState.currentBook, shouldAutoProcess(chapter, in: currentBook) else { return }
         Task { await processChapter(chapter) }
     }
 
-    private func shouldAutoProcess(_ chapter: Chapter) -> Bool {
+    private func shouldAutoProcess(_ chapter: Chapter, in book: Book) -> Bool {
         hasLLMKey
             && book.classificationStatus == .completed
             && !chapter.processed
@@ -736,7 +792,7 @@ struct ReaderView: View {
     }
 
     private func loadChapter(at index: Int) async {
-        guard index >= 0, index < chapters.count else { return }
+        guard index >= 0, index < chapters.count, let currentBook = appState.currentBook else { return }
 
         // End previous reading session
         if let result = appState.readingSpeedTracker.endSession() {
@@ -768,18 +824,18 @@ struct ReaderView: View {
             appState.readingSpeedTracker.startSession(chapterId: chapter.id!, wordCount: wordCount)
         }
 
-        let shouldRestore = !didRestoreInitialPosition && index == book.currentChapter
+        let shouldRestore = !didRestoreInitialPosition && index == currentBook.currentChapter
         if shouldRestore {
-            let percent = min(max(book.currentScrollPercent, 0), 1)
-            if book.currentScrollOffset > 0 {
-                scrollToOffset = book.currentScrollOffset
+            let percent = min(max(currentBook.currentScrollPercent, 0), 1)
+            if currentBook.currentScrollOffset > 0 {
+                scrollToOffset = currentBook.currentScrollOffset
                 scrollToPercent = nil
             } else {
                 scrollToPercent = percent
                 scrollToOffset = nil
             }
             lastScrollPercent = percent
-            lastScrollOffset = book.currentScrollOffset
+            lastScrollOffset = currentBook.currentScrollOffset
             didRestoreInitialPosition = true
         } else {
             scrollToPercent = 0
@@ -808,7 +864,7 @@ struct ReaderView: View {
         }
 
         // Process chapter if not already processed, not garbage, and classification is complete
-        if shouldAutoProcess(chapter) {
+        if shouldAutoProcess(chapter, in: currentBook) {
             await processChapter(chapter)
         }
     }
@@ -840,8 +896,21 @@ struct ReaderView: View {
 
     private func processChapter(_ chapter: Chapter) async {
         let chapterId = chapter.id!  // Capture ID to check after async call
-        isProcessing = true
-        defer { isProcessing = false }
+        
+        // Avoid duplicate processing
+        if processingChapterId == chapterId { return }
+        
+        analysisError = nil
+        processingChapterId = chapterId
+        isProcessingInsights = true
+        defer { 
+            // Final cleanup
+            if processingChapterId == chapterId {
+                isProcessingInsights = false
+                isProcessingImages = false
+                processingChapterId = nil
+            }
+        }
 
         do {
             // Parse HTML into numbered blocks
@@ -898,6 +967,12 @@ struct ReaderView: View {
                 }
             }
 
+            // --- Analysis is done, show insights now! ---
+            if stillOnSameChapter {
+                isProcessingInsights = false
+                // No need to clear processingChapterId yet as image gen might start
+            }
+
             // Save quizzes
             for data in analysis.quizQuestions {
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
@@ -915,12 +990,19 @@ struct ReaderView: View {
                 }
             }
 
+            if stillOnSameChapter && appState.settings.imagesEnabled && !analysis.imageSuggestions.isEmpty {
+                isProcessingImages = true
+            }
+
             await generateSuggestedImages(
                 analysis.imageSuggestions,
                 blockCount: blocks.count,
                 chapterId: chapterId,
                 stillOnSameChapter: stillOnSameChapter
             )
+            
+            isProcessingImages = false
+            processingChapterId = nil
 
             // Update chapter as processed with block info
             var updatedChapter = chapter
@@ -942,6 +1024,9 @@ struct ReaderView: View {
 
         } catch {
             print("Failed to process chapter: \(error)")
+            if currentChapter?.id == chapterId {
+                analysisError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 
@@ -1006,9 +1091,10 @@ struct ReaderView: View {
     ) async {
         for result in results {
             do {
+                guard let bookId = appState.currentBook?.id else { continue }
                 let imagePath = try appState.imageService.saveImage(
                     result.imageData,
-                    for: book.id!,
+                    for: bookId,
                     chapterId: chapterId
                 )
                 var image = GeneratedImage(
@@ -1090,7 +1176,7 @@ struct ReaderView: View {
                     }
                 }
             }
-
+            
             // Trigger marker injection in WebView only if on same chapter
             if stillOnSameChapter {
                 await MainActor.run {
@@ -1258,9 +1344,10 @@ struct ReaderView: View {
                     )
 
                     // Save image
+                    guard let bookId = appState.currentBook?.id else { return }
                     let imagePath = try appState.imageService.saveImage(
                         imageData,
-                        for: book.id!,
+                        for: bookId,
                         chapterId: chapter.id!
                     )
 
@@ -1296,52 +1383,79 @@ struct ReaderView: View {
 
     private func handleImageMarkerClick(_ imageId: Int64) {
         guard images.contains(where: { $0.id == imageId }) else { return }
+        navigationIntent = nil // User clicked directly, no travel lock needed
         currentImageId = imageId
         externalTabSelection = .images
     }
 
     private func handleFootnoteClick(_ refId: String) {
         guard footnotes.contains(where: { $0.refId == refId }) else { return }
+        navigationIntent = nil
         currentFootnoteRefId = refId
         externalTabSelection = .footnotes
     }
 
     private func handleAutoSwitch(
-        focusType: String?,
+        distances: String?, // "annotationDist,imageDist,footnoteDist"
         annotationId: Int64?,
         imageId: Int64?,
         footnoteRefId: String?
     ) {
-        guard appState.settings.autoSwitchContextTabs,
-              let focusType = focusType else {
-            return
-        }
+        guard appState.settings.autoSwitchContextTabs, let distStr = distances else { return }
+        
+        let parts = distStr.components(separatedBy: ",")
+        guard parts.count == 3 else { return }
+        
+        let annotationDist = Double(parts[0]) ?? .infinity
+        let imageDist = Double(parts[1]) ?? .infinity
+        let footnoteDist = Double(parts[2]) ?? .infinity
 
         let now = Date().timeIntervalSinceReferenceDate
         if now < suppressContextAutoSwitchUntil { return }
 
-        let targetTab: AIPanel.Tab?
-        switch focusType {
-        case "annotation":
-            targetTab = annotationId != nil ? .insights : nil
-        case "image":
-            targetTab = (imageId != nil && currentImageId != nil) ? .images : nil
-        case "footnote":
-            targetTab = (footnoteRefId != nil && currentFootnoteRefId != nil) ? .footnotes : nil
-        default:
-            targetTab = nil
+        // --- Competitive Tab Logic ---
+        // 1. Current tab distance
+        let currentDist: Double = {
+            switch aiPanelSelectedTab {
+            case .insights: return annotationDist
+            case .images: return imageDist
+            case .footnotes: return footnoteDist
+            default: return .infinity
+            }
+        }()
+        
+        // 2. Best alternative
+        let candidates: [(tab: AIPanel.Tab, dist: Double)] = [
+            (.images, imageDist),
+            (.insights, annotationDist),
+            (.footnotes, footnoteDist)
+        ]
+        
+        let winner = candidates.min { a, b in
+            if abs(a.dist - b.dist) < 10 {
+                // Tie-breaker: Images > Insights > Notes
+                let priority: [AIPanel.Tab: Int] = [.images: 0, .insights: 1, .footnotes: 2]
+                return (priority[a.tab] ?? 99) < (priority[b.tab] ?? 99)
+            }
+            return a.dist < b.dist
         }
+        
+        guard let best = winner, best.dist < .infinity else { return }
+        if best.tab == aiPanelSelectedTab { return }
 
-        guard let tab = targetTab else { return }
+        // 3. Hysteresis check: only switch if best is significantly better than current
+        let switchThreshold: Double = 40.0
+        if best.dist > (currentDist - switchThreshold) { return }
 
-        if aiPanelSelectedTab == tab { return }
-        if aiPanelSelectedTab == .quiz { return }
-        if aiPanelSelectedTab == .chat && !appState.settings.autoSwitchFromChatOnScroll { return }
+        // Final safety guards
+        if aiPanelSelectedTab == .quiz || aiPanelSelectedTab == .chat { return }
 
-        if now - lastAutoSwitchAt < 0.35 { return }
+        if now - lastAutoSwitchAt < 0.4 { return }
 
         lastAutoSwitchAt = now
-        externalTabSelection = tab
+        withAnimation(.easeOut(duration: 0.2)) {
+            aiPanelSelectedTab = best.tab
+        }
     }
 
     private func suppressContextAutoSwitch(for duration: TimeInterval = 2.0) {

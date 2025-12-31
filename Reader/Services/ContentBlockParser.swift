@@ -4,6 +4,8 @@ struct ContentBlock {
     let id: Int
     let text: String
     let htmlStartOffset: Int
+    let contentStartOffset: Int // Position right after the opening tag
+    let contentEndOffset: Int   // Position right before the closing tag
     let htmlEndOffset: Int
 }
 
@@ -16,13 +18,21 @@ final class ContentBlockParser {
         var blockId = 1
 
         // Find all block-level elements and their positions
-        let blockPattern = #"<(p|h[1-6]|blockquote|li|div|section|article)(\s[^>]*)?>[\s\S]*?</\1>"#
+        // Use a more refined pattern that captures the common block elements
+        let blockPattern = #"<(p|h[1-6]|blockquote|li)(\s[^>]*)?>([\s\S]*?)</\1>"#
 
         guard let regex = try? NSRegularExpression(pattern: blockPattern, options: [.caseInsensitive]) else {
             // Fallback: treat entire content as one block
             let stripped = stripHTML(html)
             if !stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                blocks.append(ContentBlock(id: 1, text: stripped, htmlStartOffset: 0, htmlEndOffset: html.count))
+                blocks.append(ContentBlock(
+                    id: 1,
+                    text: stripped,
+                    htmlStartOffset: 0,
+                    contentStartOffset: 0,
+                    contentEndOffset: html.count,
+                    htmlEndOffset: html.count
+                ))
                 cleanLines.append("[1] \(stripped)")
             }
             return (blocks, cleanLines.joined(separator: "\n\n"))
@@ -35,6 +45,24 @@ final class ContentBlockParser {
             guard let range = Range(match.range, in: html) else { continue }
 
             let blockHTML = String(html[range])
+            
+            // Find the end of the opening tag (first '>')
+            let startOffset = html.distance(from: html.startIndex, to: range.lowerBound)
+            let endOffset = html.distance(from: html.startIndex, to: range.upperBound)
+            
+            var contentStartOffset = startOffset
+            if let tagEndIndex = blockHTML.firstIndex(of: ">") {
+                let tagEndOffset = blockHTML.distance(from: blockHTML.startIndex, to: tagEndIndex) + 1
+                contentStartOffset = startOffset + tagEndOffset
+            }
+
+            // Find the start of the closing tag (last '</' before the end)
+            var contentEndOffset = endOffset
+            if let closingTagRange = blockHTML.range(of: "</", options: .backwards) {
+                let closingTagOffset = blockHTML.distance(from: blockHTML.startIndex, to: closingTagRange.lowerBound)
+                contentEndOffset = startOffset + closingTagOffset
+            }
+
             let strippedText = stripHTML(blockHTML)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -44,13 +72,12 @@ final class ContentBlockParser {
             // Skip very short blocks that are likely noise (page numbers, etc.)
             guard strippedText.count > 3 else { continue }
 
-            let startOffset = html.distance(from: html.startIndex, to: range.lowerBound)
-            let endOffset = html.distance(from: html.startIndex, to: range.upperBound)
-
             blocks.append(ContentBlock(
                 id: blockId,
                 text: strippedText,
                 htmlStartOffset: startOffset,
+                contentStartOffset: contentStartOffset,
+                contentEndOffset: contentEndOffset,
                 htmlEndOffset: endOffset
             ))
 
@@ -83,6 +110,8 @@ final class ContentBlockParser {
                 id: blockId,
                 text: para,
                 htmlStartOffset: 0,
+                contentStartOffset: 0,
+                contentEndOffset: html.count,
                 htmlEndOffset: html.count
             ))
             cleanLines.append("[\(blockId)] \(para)")
@@ -104,6 +133,76 @@ final class ContentBlockParser {
     func blockId(at offset: Int, in html: String) -> Int? {
         let (blocks, _) = parse(html: html)
         return blocks.first { offset >= $0.htmlStartOffset && offset < $0.htmlEndOffset }?.id
+    }
+
+    // MARK: - Augmentation
+
+    struct Injection {
+        enum Kind {
+            case annotation(id: Int64)
+            case imageMarker(id: Int64)
+            case inlineImage(url: URL)
+        }
+        let kind: Kind
+        let sourceBlockId: Int
+    }
+
+    /// Augments HTML with block IDs, markers, and inline images in a single robust pass.
+    func augment(html: String, injections: [Injection]) -> String {
+        let (blocks, _) = parse(html: html)
+        var content = html
+        
+        // Process blocks BACKWARDS to keep offsets valid
+        for block in blocks.reversed() {
+            let bId = block.id
+            
+            // 1. Inline Images (After block)
+            let blockInlines = injections.filter { 
+                if case .inlineImage = $0.kind, $0.sourceBlockId == bId { return true }
+                return false
+            }
+            if !blockInlines.isEmpty {
+                var htmlInjections = ""
+                for inj in blockInlines {
+                    if case .inlineImage(let url) = inj.kind {
+                        htmlInjections += "<img src=\"\(url.lastPathComponent)\" class=\"generated-image\" data-block-id=\"\(bId)\" alt=\"AI Image\">"
+                    }
+                }
+                let insertIdx = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
+                content.insert(contentsOf: htmlInjections, at: insertIdx)
+            }
+            
+            // 2. Markers (End of content)
+            let blockMarkers = injections.filter {
+                switch $0.kind {
+                case .annotation, .imageMarker: return $0.sourceBlockId == bId
+                default: return false
+                }
+            }
+            if !blockMarkers.isEmpty && block.contentEndOffset > 0 {
+                var markerHtml = ""
+                for marker in blockMarkers {
+                    switch marker.kind {
+                    case .annotation(let id):
+                        markerHtml += "<span class=\"annotation-marker\" data-annotation-id=\"\(id)\" data-block-id=\"\(bId)\"></span>"
+                    case .imageMarker(let id):
+                        markerHtml += "<span class=\"image-marker\" data-image-id=\"\(id)\" data-block-id=\"\(bId)\"></span>"
+                    default: break
+                    }
+                }
+                let insertIdx = content.index(content.startIndex, offsetBy: block.contentEndOffset)
+                content.insert(contentsOf: markerHtml, at: insertIdx)
+            }
+            
+            // 3. Block ID Attribute (Opening tag)
+            if block.contentStartOffset > 0 {
+                let idAttr = " id=\"block-\(bId)\""
+                let insertIdx = content.index(content.startIndex, offsetBy: block.contentStartOffset - 1)
+                content.insert(contentsOf: idAttr, at: insertIdx)
+            }
+        }
+        
+        return content
     }
 
     // MARK: - HTML Stripping
@@ -140,9 +239,9 @@ final class ContentBlockParser {
             options: .regularExpression
         )
 
-        // Collapse multiple whitespace
+        // Collapse multiple horizontal whitespace, but preserve vertical ones
         result = result.replacingOccurrences(
-            of: #"\s+"#,
+            of: #"[ \t]+"#,
             with: " ",
             options: .regularExpression
         )

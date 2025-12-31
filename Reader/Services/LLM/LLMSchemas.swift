@@ -47,6 +47,7 @@ enum JSONSchemaBuilder {
     }
 }
 
+@MainActor
 enum SchemaLibrary {
     private static let annotation = JSONSchemaBuilder.object(
         properties: [

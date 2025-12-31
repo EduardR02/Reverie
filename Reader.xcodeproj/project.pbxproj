@@ -3,10 +3,11 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 90;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB007F5D2F057A2000926C8E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = BB007F5C2F057A2000926C8E /* GRDB */; };
 		F001 /* ReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReaderApp.swift */; };
 		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002 /* AppState.swift */; };
 		F003 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = S003 /* Book.swift */; };
@@ -27,7 +28,6 @@
 		F018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S018 /* SettingsView.swift */; };
 		F019 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = S019 /* Theme.swift */; };
 		F020 /* RosePine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S020 /* RosePine.swift */; };
-		F021 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = P001 /* GRDB */; };
 		F022 /* Footnote.swift in Sources */ = {isa = PBXBuildFile; fileRef = S022 /* Footnote.swift */; };
 		F023 /* ReadingSpeedTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = S023 /* ReadingSpeedTracker.swift */; };
 		F024 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S024 /* StatsView.swift */; };
@@ -42,6 +42,8 @@
 		F033 /* BookProcessingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = S033 /* BookProcessingStatus.swift */; };
 		F034 /* SelectableText.swift in Sources */ = {isa = PBXBuildFile; fileRef = S034 /* SelectableText.swift */; };
 		F035 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = S035 /* ReadingStats.swift */; };
+		F036 /* ProcessBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S036 /* ProcessBookView.swift */; };
+		F037 /* ReaderBridge.js in Resources */ = {isa = PBXBuildFile; fileRef = S037 /* ReaderBridge.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -80,16 +82,16 @@
 		S033 /* BookProcessingStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessingStatus.swift; sourceTree = "<group>"; };
 		S034 /* SelectableText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableText.swift; sourceTree = "<group>"; };
 		S035 /* ReadingStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStats.swift; sourceTree = "<group>"; };
+		S036 /* ProcessBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessBookView.swift; sourceTree = "<group>"; };
+		S037 /* ReaderBridge.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ReaderBridge.js; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		FRMWK /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
-				F021 /* GRDB in Frameworks */,
+				BB007F5D2F057A2000926C8E /* GRDB in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -133,8 +135,17 @@
 				SERVICES /* Services */,
 				VIEWS /* Views */,
 				THEME /* Theme */,
+				RESOURCES /* Resources */,
 			);
 			path = Reader;
+			sourceTree = "<group>";
+		};
+		RESOURCES /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				S037 /* ReaderBridge.js */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 		ROOT = {
@@ -199,6 +210,7 @@
 				S012 /* HomeView.swift */,
 				S013 /* BookCard.swift */,
 				S014 /* ImportSheet.swift */,
+				S036 /* ProcessBookView.swift */,
 				S033 /* BookProcessingStatus.swift */,
 			);
 			path = Home;
@@ -223,20 +235,20 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
-		VIEWS_STATS /* Stats */ = {
-			isa = PBXGroup;
-			children = (
-				S024 /* StatsView.swift */,
-			);
-			path = Stats;
-			sourceTree = "<group>";
-		};
 		VIEWS_SHARED /* Shared */ = {
 			isa = PBXGroup;
 			children = (
 				S034 /* SelectableText.swift */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		VIEWS_STATS /* Stats */ = {
+			isa = PBXGroup;
+			children = (
+				S024 /* StatsView.swift */,
+			);
+			path = Stats;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -248,14 +260,13 @@
 			buildPhases = (
 				SOURCES /* Sources */,
 				FRMWK /* Frameworks */,
+				RES001 /* Resources */,
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			name = Reader;
 			packageProductDependencies = (
-				P001 /* GRDB */,
+				BB007F5C2F057A2000926C8E /* GRDB */,
 			);
 			productName = Reader;
 			productReference = PROD /* Reader.app */;
@@ -272,7 +283,6 @@
 				LastUpgradeCheck = 2600;
 			};
 			buildConfigurationList = CFGLIST_PROJECT /* Build configuration list for PBXProject "Reader" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -281,8 +291,9 @@
 			);
 			mainGroup = ROOT;
 			packageReferences = (
-				PKG001 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				BB007F5B2F057A2000926C8E /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
+			preferredProjectObjectVersion = 90;
 			productRefGroup = PRODUCTS /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -292,10 +303,18 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		RES001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				F037 /* ReaderBridge.js in Resources */,
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		SOURCES /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				F001 /* ReaderApp.swift in Sources */,
 				F002 /* AppState.swift in Sources */,
@@ -316,6 +335,7 @@
 				F012 /* HomeView.swift in Sources */,
 				F013 /* BookCard.swift in Sources */,
 				F014 /* ImportSheet.swift in Sources */,
+				F036 /* ProcessBookView.swift in Sources */,
 				F033 /* BookProcessingStatus.swift in Sources */,
 				F015 /* ReaderView.swift in Sources */,
 				F016 /* BookContentView.swift in Sources */,
@@ -332,12 +352,11 @@
 				F031 /* ContentBlockParser.swift in Sources */,
 				F032 /* CostEstimation.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		CFG_DEBUG_PROJECT /* Debug */ = {
+		CFG_DEBUG_PROJECT /* Debug configuration for PBXProject "Reader" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -380,18 +399,18 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
-		CFG_DEBUG_TARGET /* Debug */ = {
+		CFG_DEBUG_TARGET /* Debug configuration for PBXNativeTarget "Reader" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -413,11 +432,11 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.reader.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
-		CFG_RELEASE_PROJECT /* Release */ = {
+		CFG_RELEASE_PROJECT /* Release configuration for PBXProject "Reader" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -454,17 +473,17 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = macosx;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
-		CFG_RELEASE_TARGET /* Release */ = {
+		CFG_RELEASE_TARGET /* Release configuration for PBXNativeTarget "Reader" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -486,7 +505,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.reader.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -496,38 +515,36 @@
 		CFGLIST_PROJECT /* Build configuration list for PBXProject "Reader" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CFG_DEBUG_PROJECT /* Debug */,
-				CFG_RELEASE_PROJECT /* Release */,
+				CFG_DEBUG_PROJECT /* Debug configuration for PBXProject "Reader" */,
+				CFG_RELEASE_PROJECT /* Release configuration for PBXProject "Reader" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		CFGLIST_TARGET /* Build configuration list for PBXNativeTarget "Reader" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CFG_DEBUG_TARGET /* Debug */,
-				CFG_RELEASE_TARGET /* Release */,
+				CFG_DEBUG_TARGET /* Debug configuration for PBXNativeTarget "Reader" */,
+				CFG_RELEASE_TARGET /* Release configuration for PBXNativeTarget "Reader" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		PKG001 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+		BB007F5B2F057A2000926C8E /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/groue/GRDB.swift.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 6.24.0;
+				branch = master;
+				kind = branch;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		P001 /* GRDB */ = {
+		BB007F5C2F057A2000926C8E /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = PKG001 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = BB007F5B2F057A2000926C8E /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = GRDB;
 		};
 /* End XCSwiftPackageProductDependency section */

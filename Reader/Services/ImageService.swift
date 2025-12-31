@@ -1,8 +1,17 @@
 import Foundation
 import AppKit
 
-/// Image generation service using Google Imagen (Nano Banana)
+/// Image generation service using Google Gemini (Image Generation)
+@MainActor
 final class ImageService {
+    private let session: URLSession
+
+    init() {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 600 // 10 minutes
+        config.timeoutIntervalForResource = 600
+        self.session = URLSession(configuration: config)
+    }
 
     struct ImageSuggestionInput {
         let excerpt: String
@@ -61,7 +70,7 @@ final class ImageService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
@@ -233,10 +242,10 @@ final class ImageService {
         return nil
     }
 
-    private func mapWithConcurrency<T, U>(
+    private func mapWithConcurrency<T: Sendable, U: Sendable>(
         items: [T],
         maxConcurrent: Int,
-        transform: @escaping (T) async -> U?
+        transform: @Sendable @escaping (T) async -> U?
     ) async -> [U?] {
         var results = Array<U?>(repeating: nil, count: items.count)
         var nextIndex = 0

@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Foundation
 
 struct MarkerInjection: Equatable {
     let annotationId: Int64
@@ -15,16 +16,17 @@ struct BookContentView: NSViewRepresentable {
     let chapter: Chapter
     let annotations: [Annotation]
     let images: [GeneratedImage]
-    let onWordClick: (String, String, Int, WordAction) -> Void  // word, context, blockId, action
+    let selectedTab: AIPanel.Tab
+    let onWordClick: (String, String, Int, WordAction) -> Void 
     let onAnnotationClick: (Annotation) -> Void
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
-    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ focusType: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
+    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ blockId: Int?, _ distances: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double) -> Void
     let onBottomTug: () -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
     @Binding var scrollToOffset: Double?
-    @Binding var scrollToBlockId: Int?
+    @Binding var scrollToBlockId: (Int, Int64?, String?)? // blockId, markerId, type
     @Binding var scrollToQuote: String?
     @Binding var pendingMarkerInjections: [MarkerInjection]
     @Binding var pendingImageMarkerInjections: [ImageMarkerInjection]
@@ -33,1332 +35,204 @@ struct BookContentView: NSViewRepresentable {
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
 
-    enum WordAction {
-        case explain
-        case generateImage
-    }
+    enum WordAction { case explain, generateImage }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.userContentController.add(context.coordinator, name: "readerBridge")
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
+        
         let inlineSetting = appState.settings.inlineAIImages
-        let chapterChanged = context.coordinator.currentChapterId != chapter.id
-        let inlineChanged = context.coordinator.currentInlineAIImages != inlineSetting
-
-        // Reload when chapter changes or inline setting toggles
-        if chapterChanged || inlineChanged {
+        if context.coordinator.currentChapterId != chapter.id || context.coordinator.currentInlineAIImages != inlineSetting {
             context.coordinator.currentChapterId = chapter.id
             context.coordinator.currentInlineAIImages = inlineSetting
             context.coordinator.isContentLoaded = false
-            if inlineChanged && !chapterChanged {
-                if let lastOffset = context.coordinator.lastScrollOffset {
-                    context.coordinator.pendingScrollOffset = lastOffset
-                } else if let lastPercent = context.coordinator.lastScrollPercent {
-                    context.coordinator.pendingScrollPercent = lastPercent
-                }
-            } else if chapterChanged {
-                context.coordinator.lastScrollOffset = nil
-                context.coordinator.lastScrollPercent = nil
-            }
-            let chapterBaseURL = chapterDirectoryURL()
-            let readerRootURL = readerRootDirectoryURL()
-            let html = buildHTML(baseHrefURL: chapterBaseURL)
-            loadHTML(html, on: webView, baseReadAccessURL: readerRootURL)
+            let html = buildHTML()
+            loadHTML(html, on: webView)
         }
 
-        // Scroll to annotation if requested
-        if let annotationId = scrollToAnnotationId {
-            let js = "scrollToAnnotation(\(annotationId));"
-            webView.evaluateJavaScript(js) { _, _ in
-                DispatchQueue.main.async {
-                    self.scrollToAnnotationId = nil
-                }
+        if let id = scrollToAnnotationId {
+            webView.evaluateJavaScript("scrollToAnnotation(\(id));") { _, _ in 
+                DispatchQueue.main.async { self.scrollToAnnotationId = nil }
             }
         }
-
-        // Scroll to quote if requested (for quizzes)
         if let quote = scrollToQuote {
-            let escapedQuote = quote
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "'", with: "\\'")
-                .replacingOccurrences(of: "\n", with: "\\n")
-            let js = "scrollToQuote('\(escapedQuote)');"
-            webView.evaluateJavaScript(js) { _, _ in
-                DispatchQueue.main.async {
-                    self.scrollToQuote = nil
-                }
+            let escaped = quote.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+            webView.evaluateJavaScript("scrollToQuote('\(escaped)');") { _, _ in 
+                DispatchQueue.main.async { self.scrollToQuote = nil }
             }
         }
-
-        // Scroll to block if requested (for images/quizzes)
-        if let blockId = scrollToBlockId {
-            let js = "scrollToBlock(\(blockId));"
-            webView.evaluateJavaScript(js) { _, _ in
-                DispatchQueue.main.async {
-                    self.scrollToBlockId = nil
-                }
+        if let (blockId, markerId, type) = scrollToBlockId {
+            let mId = markerId != nil ? "\(markerId!)" : "null"
+            let t = type != nil ? "'\(type!)'" : "null"
+            webView.evaluateJavaScript("scrollToBlock(\(blockId), \(mId), \(t));") { _, _ in 
+                DispatchQueue.main.async { self.scrollToBlockId = nil }
             }
         }
-
         if let offset = scrollToOffset {
-            context.coordinator.pendingScrollOffset = offset
             if context.coordinator.isContentLoaded {
-                let js = "scrollToOffset(\(offset));"
-                webView.evaluateJavaScript(js) { _, _ in
-                    DispatchQueue.main.async {
-                        self.scrollToOffset = nil
-                    }
+                webView.evaluateJavaScript("scrollToOffset(\(offset));") { _, _ in 
+                    DispatchQueue.main.async { self.scrollToOffset = nil }
                 }
-                context.coordinator.pendingScrollOffset = nil
-            }
+            } else { context.coordinator.pendingScrollOffset = offset }
         } else if let percent = scrollToPercent {
-            context.coordinator.pendingScrollPercent = percent
             if context.coordinator.isContentLoaded {
-                let clamped = max(0, min(percent, 1))
-                let js = "scrollToPercent(\(clamped));"
-                webView.evaluateJavaScript(js) { _, _ in
-                    DispatchQueue.main.async {
-                        self.scrollToPercent = nil
-                    }
+                webView.evaluateJavaScript("scrollToPercent(\(percent));") { _, _ in 
+                    DispatchQueue.main.async { self.scrollToPercent = nil }
                 }
-                context.coordinator.pendingScrollPercent = nil
-            }
+            } else { context.coordinator.pendingScrollPercent = percent }
         }
 
-        // Inject markers for newly generated insights
         if !pendingMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            for injection in pendingMarkerInjections {
-                let js = "injectMarkerAtBlock(\(injection.annotationId), \(injection.sourceBlockId));"
-                webView.evaluateJavaScript(js) { _, _ in }
-            }
-            DispatchQueue.main.async {
-                self.pendingMarkerInjections = []
-            }
+            for inj in pendingMarkerInjections { 
+                webView.evaluateJavaScript("injectMarkerAtBlock(\(inj.annotationId), \(inj.sourceBlockId));") { _, _ in } 
+            } 
+            DispatchQueue.main.async { self.pendingMarkerInjections = [] }
         }
-
-        // Inject markers for newly generated images
         if !pendingImageMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            for injection in pendingImageMarkerInjections {
-                let js = "injectImageMarker(\(injection.imageId), \(injection.sourceBlockId));"
-                webView.evaluateJavaScript(js) { _, _ in }
-            }
-            DispatchQueue.main.async {
-                self.pendingImageMarkerInjections = []
-            }
+            for inj in pendingImageMarkerInjections { 
+                webView.evaluateJavaScript("injectImageMarker(\(inj.imageId), \(inj.sourceBlockId));") { _, _ in } 
+            } 
+            DispatchQueue.main.async { self.pendingImageMarkerInjections = [] }
         }
 
-        // Scroll by amount (for arrow key navigation)
-        if let amount = scrollByAmount, context.coordinator.isContentLoaded {
-            let js = "scrollByPixels(\(amount));"
-            webView.evaluateJavaScript(js) { _, _ in
-                DispatchQueue.main.async {
-                    self.scrollByAmount = nil
-                }
+        if let amount = scrollByAmount {
+            webView.evaluateJavaScript("window.scrollBy({top: \(amount), behavior: 'smooth'});") { _, _ in 
+                DispatchQueue.main.async { self.scrollByAmount = nil }
             }
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    // MARK: - Build HTML
-
-    private func buildHTML(baseHrefURL: URL) -> String {
+    private func buildHTML() -> String {
         let settings = appState.settings
-        let baseHref = baseHrefURL.absoluteString
-
-        // Parse chapter into blocks for injection
         let blockParser = ContentBlockParser()
-        let (blocks, _) = blockParser.parse(html: chapter.contentHTML)
-
-        // Inject annotation markers into content using block IDs
-        var content = chapter.contentHTML
-
-        // Inject images using block IDs
-        if settings.inlineAIImages {
-            for image in images.sorted(by: { $0.sourceBlockId > $1.sourceBlockId }) {
-                content = injectImageAtBlock(content, for: image, blocks: blocks, baseURL: baseHrefURL)
+        
+        // 1. Prepare injections
+        var injections: [ContentBlockParser.Injection] = []
+        
+        for ann in annotations {
+            injections.append(.init(kind: .annotation(id: ann.id ?? 0), sourceBlockId: ann.sourceBlockId))
+        }
+        
+        for img in images {
+            injections.append(.init(kind: .imageMarker(id: img.id ?? 0), sourceBlockId: img.sourceBlockId))
+            if settings.inlineAIImages {
+                injections.append(.init(kind: .inlineImage(url: img.imageURL), sourceBlockId: img.sourceBlockId))
             }
         }
+        
+        // 2. Perform single-pass augmentation
+        let content = blockParser.augment(html: chapter.contentHTML, injections: injections)
 
-        // Inject markers (always)
-        content = injectContextMarkers(content, annotations: annotations, images: images, blocks: blocks)
-
+        let themeBase = theme.base.hexString
+        let themeSurface = theme.surface.hexString
+        let themeText = theme.text.hexString
+        let themeMuted = theme.muted.hexString
+        let themeRose = theme.rose.hexString
+        let themeIris = theme.iris.hexString
+        let fontFamily = settings.fontFamily
+        let fontSize = settings.fontSize
+        let lineSpacing = settings.lineSpacing
+        let baseHref = chapterDirectoryURL().absoluteString
+        
         return """
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <base href="\(baseHref)">
             <style>
                 :root {
-                    --base: \(theme.base.hexString);
-                    --surface: \(theme.surface.hexString);
-                    --text: \(theme.text.hexString);
-                    --muted: \(theme.muted.hexString);
-                    --rose: \(theme.rose.hexString);
-                    --iris: \(theme.iris.hexString);
-                    --selection: \(theme.rose.hexString);
+                    --base: \(themeBase);
+                    --surface: \(themeSurface);
+                    --text: \(themeText);
+                    --muted: \(themeMuted);
+                    --rose: \(themeRose);
+                    --iris: \(themeIris);
                 }
-
-                * {
-                    box-sizing: border-box;
-                    -webkit-font-smoothing: antialiased;
+                html, body { margin: 0; padding: 0; background: var(--base); color: var(--text); 
+                             font-family: "\(fontFamily)", sans-serif; font-size: \(fontSize)px; line-height: \(lineSpacing); }
+                body { padding: 40px 60px; position: relative; }
+                .annotation-marker, .image-marker { 
+                    display: inline-block; width: 10px; height: 10px; border-radius: 50%; 
+                    margin-left: 6px; cursor: pointer; vertical-align: middle; transition: transform 0.2s, background-color 0.2s;
                 }
-
-                html, body {
-                    margin: 0;
-                    padding: 0;
-                    background: var(--base);
-                    color: var(--text);
-                    font-family: "\(settings.fontFamily)", -apple-system, sans-serif;
-                    font-size: \(settings.fontSize)px;
-                    line-height: \(settings.lineSpacing);
-                }
-
-                body {
-                    padding: 32px 48px;
-                    max-width: none;
-                    margin: 0;
-                    position: relative;
-                }
-
-                #readerContent {
-                    position: relative;
-                    z-index: 1;
-                }
-
-                .selection-overlay {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 0;
-                    pointer-events: none;
-                    overflow: visible;
-                    z-index: 0;
-                }
-
-                .selection-rect {
-                    position: absolute;
-                    background: var(--selection);
-                    border-radius: 2px;
-                }
-
-                h1, h2, h3, h4, h5, h6 {
-                    color: var(--text);
-                    margin-top: 1.5em;
-                    margin-bottom: 0.5em;
-                    font-weight: 600;
-                }
-
-                h1 { font-size: 1.8em; }
-                h2 { font-size: 1.4em; }
-                h3 { font-size: 1.2em; }
-
-                p {
-                    margin: 1em 0;
-                    text-align: justify;
-                    hyphens: auto;
-                }
-
-                a {
-                    color: var(--rose);
-                    text-decoration: none;
-                }
-
-                blockquote {
-                    border-left: 3px solid var(--rose);
-                    margin: 1.5em 0;
-                    padding-left: 1em;
-                    color: var(--muted);
-                    font-style: italic;
-                }
-
-                /* Annotation marker */
-                .annotation-marker {
-                    display: inline-block;
-                    width: 8px;
-                    height: 8px;
-                    background: var(--rose);
-                    border-radius: 50%;
-                    margin-left: 4px;
-                    cursor: pointer;
-                    opacity: 0.8;
-                    transition: all 0.15s ease;
-                    vertical-align: middle;
-                }
-
-                .annotation-marker:hover {
-                    opacity: 1;
-                    transform: scale(1.3);
-                    box-shadow: 0 0 8px var(--rose);
-                }
-
-                /* Image marker */
-                .image-marker {
-                    display: inline-block;
-                    width: 8px;
-                    height: 8px;
-                    background: var(--iris);
-                    border-radius: 50%;
-                    margin-left: 4px;
-                    cursor: pointer;
-                    opacity: 0.8;
-                    transition: all 0.15s ease;
-                    vertical-align: middle;
-                }
-
-                .image-marker:hover {
-                    opacity: 1;
-                    transform: scale(1.3);
-                    box-shadow: 0 0 8px var(--iris);
-                }
-
-                /* Inline image */
-                .generated-image {
-                    width: 100%;
-                    margin: 2em 0;
-                    border-radius: 8px;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                }
-
-                /* Selection */
-                ::selection {
-                    background-color: transparent !important;
-                    color: var(--base) !important;
-                }
-                ::-webkit-selection {
-                    background-color: transparent !important;
-                    color: var(--base) !important;
-                }
-                * {
-                    -webkit-tap-highlight-color: var(--rose);
-                }
-
-                .block-inline-highlight {
-                    background: var(--rose);
-                    color: var(--base);
-                    border-radius: 2px;
-                    padding: 0 1px;
-                    box-decoration-break: clone;
-                    -webkit-box-decoration-break: clone;
-                    transition: background 0.45s ease, color 0.45s ease;
-                }
-
-                .block-inline-highlight.fade {
-                    background: transparent;
-                    color: inherit;
-                }
-
-                /* Word popup */
-                .word-popup {
-                    position: fixed;
-                    background: var(--surface);
-                    border: 1px solid var(--rose);
-                    border-radius: 8px;
-                    padding: 8px;
-                    display: none;
-                    z-index: 1000;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                }
-
-                .word-popup button {
-                    display: block;
-                    width: 100%;
-                    padding: 8px 12px;
-                    margin: 4px 0;
-                    background: transparent;
-                    border: none;
-                    color: var(--text);
-                    font-size: 13px;
-                    cursor: pointer;
-                    border-radius: 4px;
-                    text-align: left;
-                }
-
-                .word-popup button:hover {
-                    background: var(--rose);
-                    color: var(--base);
-                }
+                .annotation-marker { background: var(--rose); }
+                .image-marker { background: var(--iris); }
+                .generated-image { width: 100%; margin: 2em 0; border-radius: 12px; }
+                .word-popup { position: fixed; background: var(--surface); border: 1px solid var(--rose); border-radius: 8px; padding: 8px; display: none; z-index: 1000; }
+                .word-popup button { display: block; width: 100%; padding: 8px; background: transparent; border: none; color: var(--text); cursor: pointer; text-align: left; }
+                .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
             </style>
         </head>
         <body>
-            <div id="selectionOverlay" class="selection-overlay"></div>
-            <div id="readerContent">
-                \(content)
-            </div>
-
+            <div id="readerContent">\(content)</div>
             <div id="wordPopup" class="word-popup">
                 <button onclick="handleExplain()">Explain</button>
                 <button onclick="handleGenerateImage()">Generate Image</button>
-                <button onclick="handleDefine()">Define</button>
             </div>
-
-            <script>
-                let selectedWord = '';
-                let selectedContext = '';
-                let selectedBlockId = 0;
-                let lastSelectionRange = null;
-                let selectionActive = false;
-                const selectionOverlay = document.getElementById('selectionOverlay');
-                const footnoteSelectors = [
-                    'a[epub\\\\:type="noteref"]',
-                    'a[role="doc-noteref"]',
-                    'a[class*="footnote"]',
-                    'sup a[href^="#fn"]',
-                    'sup a[href^="#note"]',
-                    'sup a[href^="#endnote"]',
-                    'a[href^="#fn"]',
-                    'a[href^="#note"]',
-                    'a[href^="#endnote"]'
-                ];
-
-                function tagFootnoteRefs() {
-                    const refs = new Set();
-                    footnoteSelectors.forEach((selector) => {
-                        document.querySelectorAll(selector).forEach((link) => refs.add(link));
-                    });
-                    refs.forEach((link) => link.classList.add('footnote-ref'));
-                }
-
-                function getFootnoteRefId(link) {
-                    const href = link.getAttribute('href') || '';
-                    const hashIndex = href.indexOf('#');
-                    if (hashIndex === -1) { return null; }
-                    const refId = href.slice(hashIndex + 1);
-                    return refId || null;
-                }
-
-                document.addEventListener('mousedown', (e) => {
-                    // Hide popup when clicking outside
-                    if (!e.target.closest('.word-popup')) {
-                        document.getElementById('wordPopup').style.display = 'none';
-                    }
-                });
-
-                function clearSelectionOverlay() {
-                    if (!selectionOverlay) { return; }
-                    selectionOverlay.innerHTML = '';
-                }
-
-                function isSelectionInPopup(range) {
-                    const container = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-                        ? range.commonAncestorContainer
-                        : range.commonAncestorContainer.parentElement;
-                    return container ? Boolean(container.closest('.word-popup')) : false;
-                }
-
-                function updateSelectionOverlay() {
-                    if (!selectionOverlay) { return; }
-                    const selection = window.getSelection();
-                    const hasSelection = selection && !selection.isCollapsed && selection.rangeCount > 0;
-                    if (!hasSelection) {
-                        selectionActive = false;
-                        clearSelectionOverlay();
-                        return;
-                    }
-
-                    const range = selection.getRangeAt(0);
-                    if (isSelectionInPopup(range)) {
-                        selectionActive = false;
-                        clearSelectionOverlay();
-                        return;
-                    }
-
-                    const rects = Array.from(range.getClientRects())
-                        .filter(rect => rect.width > 0 && rect.height > 0);
-                    if (!rects.length) {
-                        selectionActive = false;
-                        clearSelectionOverlay();
-                        return;
-                    }
-
-                    selectionActive = true;
-                    clearSelectionOverlay();
-                    rects.forEach(rect => {
-                        const highlight = document.createElement('div');
-                        highlight.className = 'selection-rect';
-                        highlight.style.left = (rect.left + window.scrollX) + 'px';
-                        highlight.style.top = (rect.top + window.scrollY) + 'px';
-                        highlight.style.width = rect.width + 'px';
-                        highlight.style.height = rect.height + 'px';
-                        selectionOverlay.appendChild(highlight);
-                    });
-                }
-
-                document.addEventListener('selectionchange', () => {
-                    updateSelectionOverlay();
-                });
-
-                window.addEventListener('resize', () => {
-                    if (selectionActive) {
-                        updateSelectionOverlay();
-                    }
-                });
-
-                // Handle text selection
-                document.addEventListener('mouseup', (e) => {
-                    const selection = window.getSelection();
-                    const text = selection ? selection.toString().trim() : '';
-
-                    if (!selection || selection.isCollapsed || !text) {
-                        lastSelectionRange = null;
-                        return;
-                    }
-
-                    const range = selection.getRangeAt(0);
-                    if (lastSelectionRange &&
-                        range.startContainer === lastSelectionRange.startNode &&
-                        range.startOffset === lastSelectionRange.startOffset &&
-                        range.endContainer === lastSelectionRange.endNode &&
-                        range.endOffset === lastSelectionRange.endOffset) {
-                        return;
-                    }
-
-                    lastSelectionRange = {
-                        startNode: range.startContainer,
-                        startOffset: range.startOffset,
-                        endNode: range.endContainer,
-                        endOffset: range.endOffset
-                    };
-
-                    selectedWord = text;
-
-                    // Get surrounding context (paragraph)
-                    const container = range.startContainer.parentElement;
-                    selectedContext = container.textContent || '';
-
-                    // Get block ID from nearest marker or estimate from element
-                    selectedBlockId = getBlockIdForElement(container);
-
-                    // Show popup
-                    const popup = document.getElementById('wordPopup');
-                    popup.style.left = e.clientX + 'px';
-                    popup.style.top = (e.clientY + 10) + 'px';
-                    popup.style.display = 'block';
-                });
-
-                tagFootnoteRefs();
-
-                // Find block ID for an element by looking for nearby markers
-                function getBlockIdForElement(element) {
-                    // Check for data-block-id attribute on the element or ancestors
-                    let current = element;
-                    while (current && current !== document.body) {
-                        const blockId = current.dataset?.blockId;
-                        if (blockId) {
-                            return parseInt(blockId, 10);
-                        }
-                        // Check for nearby annotation marker
-                        const marker = current.querySelector('.annotation-marker, .image-marker');
-                        if (marker && marker.dataset.blockId) {
-                            return parseInt(marker.dataset.blockId, 10);
-                        }
-                        current = current.parentElement;
-                    }
-                    // Estimate based on paragraph position
-                    const paragraphs = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
-                    let blockNum = 1;
-                    for (const para of paragraphs) {
-                        if (para.contains(element) || para === element) {
-                            return blockNum;
-                        }
-                        blockNum++;
-                    }
-                    return 1;
-                }
-
-                function handleExplain() {
-                    webkit.messageHandlers.readerBridge.postMessage({
-                        type: 'explain',
-                        word: selectedWord,
-                        context: selectedContext,
-                        blockId: selectedBlockId
-                    });
-                    document.getElementById('wordPopup').style.display = 'none';
-                }
-
-                function handleGenerateImage() {
-                    webkit.messageHandlers.readerBridge.postMessage({
-                        type: 'generateImage',
-                        word: selectedWord,
-                        context: selectedContext,
-                        blockId: selectedBlockId
-                    });
-                    document.getElementById('wordPopup').style.display = 'none';
-                }
-
-                function handleDefine() {
-                    webkit.messageHandlers.readerBridge.postMessage({
-                        type: 'define',
-                        word: selectedWord
-                    });
-                    document.getElementById('wordPopup').style.display = 'none';
-                }
-
-                // Annotation marker click
-                document.addEventListener('click', (e) => {
-                    const footnoteLink = e.target.closest('a.footnote-ref');
-                    if (footnoteLink) {
-                        const refId = getFootnoteRefId(footnoteLink);
-                        if (refId) {
-                            webkit.messageHandlers.readerBridge.postMessage({
-                                type: 'footnoteClick',
-                                refId: refId
-                            });
-                        }
-                        e.preventDefault();
-                        return;
-                    }
-
-                    if (e.target.classList.contains('annotation-marker')) {
-                        const id = e.target.dataset.annotationId;
-                        webkit.messageHandlers.readerBridge.postMessage({
-                            type: 'annotationClick',
-                            id: id
-                        });
-                    }
-
-                    if (e.target.classList.contains('image-marker')) {
-                        const id = e.target.dataset.imageId;
-                        if (id) {
-                            webkit.messageHandlers.readerBridge.postMessage({
-                                type: 'imageMarkerClick',
-                                id: id
-                            });
-                        }
-                    }
-                });
-
-                // Scroll tracking
-                const focusState = {
-                    annotationId: null,
-                    imageId: null,
-                    footnoteRefId: null
-                };
-                let scrollTicking = false;
-                let bottomTugAccumulated = 0;
-                let lastBottomTugAt = 0;
-                const bottomTugThreshold = 80;
-                const bottomTugCooldownMs = 700;
-                const bottomTugBuffer = 12;
-
-                function clamp(value, min, max) {
-                    return Math.min(Math.max(value, min), max);
-                }
-
-                function resetBottomTug() {
-                    bottomTugAccumulated = 0;
-                }
-
-                window.addEventListener('wheel', (event) => {
-                    const docHeight = document.documentElement.scrollHeight;
-                    const viewportHeight = window.innerHeight;
-                    const maxScroll = Math.max(0, docHeight - viewportHeight);
-                    if (maxScroll <= 0) {
-                        resetBottomTug();
-                        return;
-                    }
-
-                    if (event.deltaY <= 0) {
-                        resetBottomTug();
-                        return;
-                    }
-
-                    const scrollY = window.scrollY;
-                    if (scrollY < maxScroll - bottomTugBuffer) {
-                        resetBottomTug();
-                        return;
-                    }
-
-                    bottomTugAccumulated += event.deltaY;
-                    const now = Date.now();
-                    if (bottomTugAccumulated >= bottomTugThreshold && now - lastBottomTugAt > bottomTugCooldownMs) {
-                        lastBottomTugAt = now;
-                        resetBottomTug();
-                        webkit.messageHandlers.readerBridge.postMessage({
-                            type: 'bottomTug'
-                        });
-                    }
-                }, { passive: true });
-
-                function computeFocusMetrics(scrollY, maxScroll, viewportHeight) {
-                    const edgeZone = Math.max(160, viewportHeight * 0.35);
-                    const topT = clamp(scrollY / edgeZone, 0, 1);
-                    const bottomT = clamp((maxScroll - scrollY) / edgeZone, 0, 1);
-                    let focusRatio = 0.5;
-                    const focusTop = 0.35;
-                    const focusBottom = 0.65;
-
-                    if (scrollY < edgeZone) {
-                        focusRatio = focusTop + (0.5 - focusTop) * topT;
-                    } else if (maxScroll - scrollY < edgeZone) {
-                        focusRatio = focusBottom - (focusBottom - 0.5) * bottomT;
-                    }
-
-                    let bandTopRatio = 0.2;
-                    let bandBottomRatio = 0.8;
-                    if (scrollY < edgeZone) {
-                        bandTopRatio = 0.0;
-                    } else if (maxScroll - scrollY < edgeZone) {
-                        bandBottomRatio = 1.0;
-                    }
-
-                    const focusLine = scrollY + viewportHeight * focusRatio;
-                    const bandTop = scrollY + viewportHeight * bandTopRatio;
-                    const bandBottom = scrollY + viewportHeight * bandBottomRatio;
-                    const bandPenalty = viewportHeight * 0.35;
-                    return { focusLine, bandTop, bandBottom, bandPenalty };
-                }
-
-                function collectMarkerEntries(markers, scrollY, focusLine, bandTop, bandBottom, bandPenalty, step, idGetter) {
-                    const entries = [];
-                    const blockCounts = {};
-                    markers.forEach(marker => {
-                        const rect = marker.getBoundingClientRect();
-                        const baseY = rect.top + scrollY;
-                        const blockId = marker.dataset.blockId;
-                        let offset = 0;
-                        if (blockId) {
-                            offset = (blockCounts[blockId] || 0) * step;
-                            blockCounts[blockId] = (blockCounts[blockId] || 0) + 1;
-                        }
-                        const virtualY = baseY + offset;
-                        const inBand = virtualY >= bandTop && virtualY <= bandBottom;
-                        const distanceToBand = inBand
-                            ? Math.abs(virtualY - focusLine)
-                            : Math.abs(virtualY - (virtualY < bandTop ? bandTop : bandBottom));
-                        const distanceScore = distanceToBand + (inBand ? 0 : bandPenalty);
-                        const id = idGetter(marker);
-                        if (id) {
-                            entries.push({
-                                marker,
-                                id,
-                                inBand,
-                                distanceToBand,
-                                distanceScore
-                            });
-                        }
-                    });
-                    return entries;
-                }
-
-                function pickCandidate(entries, maxDistance) {
-                    let candidate = null;
-                    entries.forEach(entry => {
-                        if (!candidate || entry.distanceScore < candidate.distanceScore) {
-                            candidate = entry;
-                        }
-                    });
-                    if (!candidate || candidate.distanceToBand > maxDistance) {
-                        return null;
-                    }
-                    return candidate;
-                }
-
-                function applyHysteresis(candidate, entries, lastId, hysteresisPx) {
-                    if (!candidate || !lastId || candidate.id === lastId) {
-                        return candidate;
-                    }
-                    const lastEntry = entries.find(entry => entry.id === lastId);
-                    if (!lastEntry || !lastEntry.inBand) {
-                        return candidate;
-                    }
-                    if (lastEntry.distanceScore <= candidate.distanceScore + hysteresisPx) {
-                        return lastEntry;
-                    }
-                    return candidate;
-                }
-
-                window.addEventListener('scroll', () => {
-                    if (scrollTicking) { return; }
-                    scrollTicking = true;
-
-                    window.requestAnimationFrame(() => {
-                        const scrollY = window.scrollY;
-                        const docHeight = document.documentElement.scrollHeight;
-                        const viewportHeight = window.innerHeight;
-                        const maxScroll = Math.max(0, docHeight - viewportHeight);
-                        const scrollPercent = maxScroll > 0 ? (scrollY / maxScroll) : 0;
-                        if (scrollY < maxScroll - bottomTugBuffer) {
-                            resetBottomTug();
-                        }
-                        const { focusLine, bandTop, bandBottom, bandPenalty } = computeFocusMetrics(
-                            scrollY,
-                            maxScroll,
-                            viewportHeight
-                        );
-                        const maxDistance = Math.max(220, viewportHeight * 0.45);
-                        const markerStep = 12;
-
-                        const annotationEntries = collectMarkerEntries(
-                            document.querySelectorAll('.annotation-marker'),
-                            scrollY,
-                            focusLine,
-                            bandTop,
-                            bandBottom,
-                            bandPenalty,
-                            markerStep,
-                            marker => marker.dataset.annotationId
-                        );
-                        let annotationCandidate = pickCandidate(annotationEntries, maxDistance);
-                        annotationCandidate = applyHysteresis(
-                            annotationCandidate,
-                            annotationEntries,
-                            focusState.annotationId,
-                            20
-                        );
-                        const annotationId = annotationCandidate ? annotationCandidate.id : null;
-
-                        const imageEntries = collectMarkerEntries(
-                            document.querySelectorAll('.image-marker'),
-                            scrollY,
-                            focusLine,
-                            bandTop,
-                            bandBottom,
-                            bandPenalty,
-                            markerStep,
-                            marker => marker.dataset.imageId
-                        );
-                        let imageCandidate = pickCandidate(imageEntries, maxDistance);
-                        imageCandidate = applyHysteresis(
-                            imageCandidate,
-                            imageEntries,
-                            focusState.imageId,
-                            20
-                        );
-                        const imageId = imageCandidate ? imageCandidate.id : null;
-
-                        const footnoteEntries = collectMarkerEntries(
-                            document.querySelectorAll('.footnote-ref'),
-                            scrollY,
-                            focusLine,
-                            bandTop,
-                            bandBottom,
-                            bandPenalty,
-                            markerStep,
-                            link => getFootnoteRefId(link)
-                        );
-                        let footnoteCandidate = pickCandidate(footnoteEntries, maxDistance);
-                        footnoteCandidate = applyHysteresis(
-                            footnoteCandidate,
-                            footnoteEntries,
-                            focusState.footnoteRefId,
-                            16
-                        );
-                        const footnoteRefId = footnoteCandidate ? footnoteCandidate.id : null;
-
-                        focusState.annotationId = annotationId;
-                        focusState.imageId = imageId;
-                        focusState.footnoteRefId = footnoteRefId;
-
-                        let focusType = null;
-                        const annotationDistance = annotationCandidate ? annotationCandidate.distanceScore : Infinity;
-                        const imageDistance = imageCandidate ? imageCandidate.distanceScore : Infinity;
-                        const footnoteDistance = footnoteCandidate ? footnoteCandidate.distanceScore : Infinity;
-                        if (annotationDistance <= imageDistance && annotationDistance <= footnoteDistance) {
-                            focusType = annotationId ? 'annotation' : null;
-                        } else if (imageDistance <= footnoteDistance) {
-                            focusType = imageId ? 'image' : null;
-                        } else if (footnoteDistance < Infinity) {
-                            focusType = footnoteRefId ? 'footnote' : null;
-                        }
-
-                        webkit.messageHandlers.readerBridge.postMessage({
-                            type: 'scrollPosition',
-                            annotationId: annotationId,
-                            footnoteRefId: footnoteRefId,
-                            imageId: imageId,
-                            focusType: focusType,
-                            scrollY: scrollY,
-                            scrollPercent: scrollPercent,
-                            viewportHeight: viewportHeight
-                        });
-
-                        scrollTicking = false;
-                    });
-                });
-
-                // Scroll to annotation - tries marker first, falls back to notifying Swift for quote-based scroll
-                function scrollToAnnotation(annotationId) {
-                    const marker = document.querySelector('[data-annotation-id="' + annotationId + '"]');
-                    if (marker) {
-                        const blockId = marker.dataset.blockId;
-                        let offset = 0;
-                        if (blockId) {
-                            const markersInBlock = Array.from(
-                                document.querySelectorAll('.annotation-marker[data-block-id="' + blockId + '"]')
-                            );
-                            const annotationIdStr = String(annotationId);
-                            const index = markersInBlock.findIndex(item => item.dataset.annotationId === annotationIdStr);
-                            if (index >= 0) {
-                                offset = Math.min(index, 4) * 12;
-                            }
-                        }
-
-                        const rect = marker.getBoundingClientRect();
-                        const target = window.scrollY + rect.top - (window.innerHeight * 0.4) + offset;
-                        window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-
-                        // Highlight the marker
-                        marker.style.transform = 'scale(2)';
-                        marker.style.boxShadow = '0 0 16px var(--rose)';
-                        setTimeout(() => {
-                            marker.style.transform = '';
-                            marker.style.boxShadow = '';
-                        }, 1500);
-
-                        // Also highlight the parent paragraph briefly
-                        const parent = marker.parentElement;
-                        if (parent) {
-                            parent.style.backgroundColor = 'rgba(235, 188, 186, 0.2)';  // Rose with opacity
-                            parent.style.transition = 'background-color 2s ease';
-                            setTimeout(() => {
-                                parent.style.backgroundColor = '';
-                            }, 100);  // Start fade immediately
-                        }
-                    } else {
-                        // Marker not found - notify Swift to try quote-based scroll
-                        webkit.messageHandlers.readerBridge.postMessage({
-                            type: 'scrollToAnnotationFailed',
-                            annotationId: annotationId
-                        });
-                    }
-                }
-
-                // Scroll to offset
-                function scrollToPercent(percent) {
-                    const docHeight = document.documentElement.scrollHeight;
-                    const viewportHeight = window.innerHeight;
-                    const maxScroll = Math.max(0, docHeight - viewportHeight);
-                    const target = maxScroll * percent;
-                    window.scrollTo({ top: target, behavior: 'auto' });
-                }
-
-                function scrollToOffset(offset) {
-                    window.scrollTo({ top: offset, behavior: 'auto' });
-                }
-
-                function scrollByPixels(pixels) {
-                    window.scrollBy({ top: pixels, behavior: 'smooth' });
-                }
-
-                function findHighlightTextNode(element, preferEnd) {
-                    const walker = document.createTreeWalker(
-                        element,
-                        NodeFilter.SHOW_TEXT,
-                        {
-                            acceptNode: node => {
-                                if (!node.textContent) { return NodeFilter.FILTER_SKIP; }
-                                return node.textContent.trim().length > 0
-                                    ? NodeFilter.FILTER_ACCEPT
-                                    : NodeFilter.FILTER_SKIP;
-                            }
-                        }
-                    );
-
-                    let node = null;
-                    if (preferEnd) {
-                        while (walker.nextNode()) {
-                            node = walker.currentNode;
-                        }
-                        return node;
-                    }
-
-                    return walker.nextNode();
-                }
-
-                function highlightTextInNode(node, preferEnd) {
-                    if (!node || !node.textContent) { return; }
-                    const text = node.textContent;
-                    const firstNonSpace = text.search(/\\S/);
-                    if (firstNonSpace === -1) { return; }
-
-                    let lastNonSpace = text.length - 1;
-                    while (lastNonSpace >= 0 && /\\s/.test(text[lastNonSpace])) {
-                        lastNonSpace -= 1;
-                    }
-                    if (lastNonSpace < firstNonSpace) { return; }
-
-                    const maxLength = 140;
-                    let start = firstNonSpace;
-                    let end = Math.min(text.length, start + maxLength);
-
-                    if (preferEnd) {
-                        end = Math.min(text.length, lastNonSpace + 1);
-                        start = Math.max(firstNonSpace, end - maxLength);
-                    }
-
-                    if (end <= start) { return; }
-
-                    const range = document.createRange();
-                    range.setStart(node, start);
-                    range.setEnd(node, end);
-
-                    const highlight = document.createElement('span');
-                    highlight.className = 'block-inline-highlight';
-                    try {
-                        range.surroundContents(highlight);
-                    } catch (error) {
-                        return;
-                    }
-
-                    setTimeout(() => {
-                        highlight.classList.add('fade');
-                    }, 60);
-
-                    setTimeout(() => {
-                        if (highlight.parentNode) {
-                            const textNode = document.createTextNode(highlight.textContent);
-                            highlight.parentNode.replaceChild(textNode, highlight);
-                        }
-                    }, 700);
-                }
-
-                function highlightBlockText(element, preferEnd) {
-                    const node = findHighlightTextNode(element, preferEnd);
-                    if (node) {
-                        highlightTextInNode(node, preferEnd);
-                    }
-                }
-
-                // Scroll to a specific block by ID
-                function scrollToBlock(blockId) {
-                    // First try to find a marker with this block ID
-                    const marker = document.querySelector('[data-block-id="' + blockId + '"]');
-                    if (marker) {
-                        marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-                        const parent = marker.parentElement;
-                        if (parent) {
-                            highlightBlockText(parent, true);
-                        }
-                        return;
-                    }
-
-                    // Fallback: find the Nth block element
-                    const blockElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
-                    if (blockId > 0 && blockId <= blockElements.length) {
-                        const element = blockElements[blockId - 1];
-                        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-                        highlightBlockText(element, false);
-                    }
-                }
-
-                // Inject marker at a specific block (for dynamically generated insights)
-                function injectMarkerAtBlock(annotationId, blockId) {
-                    // Check if marker already exists
-                    if (document.querySelector('[data-annotation-id="' + annotationId + '"]')) {
-                        return true;
-                    }
-
-                    // Find the block element
-                    const blockElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
-                    if (blockId > 0 && blockId <= blockElements.length) {
-                        const block = blockElements[blockId - 1];
-
-                        // Create and append marker
-                        const markerSpan = document.createElement('span');
-                        markerSpan.className = 'annotation-marker';
-                        markerSpan.dataset.annotationId = annotationId;
-                        markerSpan.dataset.blockId = blockId;
-                        block.appendChild(markerSpan);
-                        return true;
-                    }
-                    return false;
-                }
-
-                // Inject image marker at a specific block (for dynamically generated images)
-                function injectImageMarker(imageId, blockId) {
-                    if (document.querySelector('[data-image-id="' + imageId + '"]')) {
-                        return true;
-                    }
-
-                    const blockElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
-                    if (blockId > 0 && blockId <= blockElements.length) {
-                        const block = blockElements[blockId - 1];
-
-                        const markerSpan = document.createElement('span');
-                        markerSpan.className = 'image-marker';
-                        markerSpan.dataset.imageId = imageId;
-                        markerSpan.dataset.blockId = blockId;
-                        block.appendChild(markerSpan);
-                        return true;
-                    }
-                    return false;
-                }
-
-                // Scroll to quote text and highlight it
-                // Normalize text for matching (collapse whitespace, handle entities)
-                function normalizeText(text) {
-                    return text
-                        .replace(/&nbsp;/g, ' ')
-                        .replace(/\\s+/g, ' ')
-                        .trim();
-                }
-
-                // Find text using various matching strategies
-                function findTextInDocument(quote) {
-                    const normalizedQuote = normalizeText(quote);
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        null,
-                        false
-                    );
-
-                    // Strategy 1: Exact match
-                    walker.currentNode = document.body;
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const idx = node.textContent.indexOf(quote);
-                        if (idx !== -1) {
-                            return { node, idx, length: quote.length };
-                        }
-                    }
-
-                    // Strategy 2: Normalized match
-                    walker.currentNode = document.body;
-                    while (node = walker.nextNode()) {
-                        const normalizedContent = normalizeText(node.textContent);
-                        const idx = normalizedContent.indexOf(normalizedQuote);
-                        if (idx !== -1) {
-                            // Find approximate original index
-                            const origIdx = node.textContent.indexOf(normalizedQuote.substring(0, 20));
-                            if (origIdx !== -1) {
-                                return { node, idx: origIdx, length: Math.min(quote.length, node.textContent.length - origIdx) };
-                            }
-                        }
-                    }
-
-                    // Strategy 3: Partial match (first 40 chars)
-                    if (quote.length > 40) {
-                        const partial = normalizeText(quote.substring(0, 40));
-                        walker.currentNode = document.body;
-                        while (node = walker.nextNode()) {
-                            const normalizedContent = normalizeText(node.textContent);
-                            const idx = normalizedContent.indexOf(partial);
-                            if (idx !== -1) {
-                                const origIdx = node.textContent.search(new RegExp(partial.substring(0, 15).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'i'));
-                                if (origIdx !== -1) {
-                                    return { node, idx: origIdx, length: Math.min(50, node.textContent.length - origIdx) };
-                                }
-                            }
-                        }
-                    }
-
-                    // Strategy 4: First significant words (for very different quotes)
-                    const words = normalizedQuote.split(' ').filter(w => w.length > 3).slice(0, 4);
-                    if (words.length >= 2) {
-                        const searchPattern = words.join('.*?');
-                        const regex = new RegExp(searchPattern, 'i');
-                        walker.currentNode = document.body;
-                        while (node = walker.nextNode()) {
-                            const match = node.textContent.match(regex);
-                            if (match) {
-                                return { node, idx: match.index, length: match[0].length };
-                            }
-                        }
-                    }
-
-                    return null;
-                }
-
-                function scrollToQuote(quote) {
-                    const found = findTextInDocument(quote);
-                    if (!found) {
-                        console.log('[ScrollToQuote] Quote not found:', quote.substring(0, 50));
-                        return;
-                    }
-
-                    const { node, idx, length } = found;
-
-                    // Create a range and scroll to it
-                    const range = document.createRange();
-                    range.setStart(node, idx);
-                    range.setEnd(node, Math.min(idx + length, node.textContent.length));
-
-                    // Create highlight span
-                    const highlight = document.createElement('span');
-                    highlight.className = 'quote-highlight';
-                    highlight.style.cssText = 'background: var(--rose); color: var(--base); border-radius: 2px; transition: background 2s ease;';
-
-                    try {
-                        range.surroundContents(highlight);
-                        highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-                        // Fade out highlight
-                        setTimeout(() => {
-                            highlight.style.background = 'transparent';
-                            highlight.style.color = 'inherit';
-                        }, 100);
-
-                        // Remove highlight span after animation
-                        setTimeout(() => {
-                            const text = document.createTextNode(highlight.textContent);
-                            highlight.parentNode.replaceChild(text, highlight);
-                        }, 2500);
-                    } catch (e) {
-                        // If surroundContents fails (crosses element boundaries), just scroll
-                        node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
-                }
-
-            </script>
+            <script>\(Self.readerBridgeJS)</script>
         </body>
         </html>
-        """
+        """.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Block-Based Injection
-
-    private func injectContextMarkers(
-        _ content: String,
-        annotations: [Annotation],
-        images: [GeneratedImage],
-        blocks: [ContentBlock]
-    ) -> String {
-        var result = content
-        var markersByBlock: [Int: String] = [:]
-
-        for annotation in annotations {
-            let marker = "<span class=\"annotation-marker\" data-annotation-id=\"\(annotation.id ?? 0)\" data-block-id=\"\(annotation.sourceBlockId)\"></span>"
-            markersByBlock[annotation.sourceBlockId, default: ""].append(marker)
+    /// Cached JavaScript bridge content
+    private static let readerBridgeJS: String = {
+        let bundleCandidates: [Bundle] = {
+            var candidates = [Bundle.main, Bundle(for: Coordinator.self)]
+            #if SWIFT_PACKAGE
+            candidates.append(Bundle.module)
+            #endif
+            if let bundleURL = Bundle.main.url(forResource: "Reader_Reader", withExtension: "bundle"),
+               let b = Bundle(url: bundleURL) {
+                candidates.append(b)
+            }
+            return candidates
+        }()
+        
+        for bundle in bundleCandidates {
+            if let url = bundle.url(forResource: "ReaderBridge", withExtension: "js"),
+               let content = try? String(contentsOf: url, encoding: .utf8) {
+                return content
+            }
         }
-
-        for image in images {
-            guard let imageId = image.id else { continue }
-            let marker = "<span class=\"image-marker\" data-image-id=\"\(imageId)\" data-block-id=\"\(image.sourceBlockId)\"></span>"
-            markersByBlock[image.sourceBlockId, default: ""].append(marker)
-        }
-
-        for blockId in markersByBlock.keys.sorted(by: >) {
-            guard let markers = markersByBlock[blockId], !markers.isEmpty else { continue }
-            result = injectMarkersAtBlockEnd(result, markers: markers, blockId: blockId, blocks: blocks)
-        }
-
-        return result
-    }
-
-    private func injectMarkersAtBlockEnd(
-        _ content: String,
-        markers: String,
-        blockId: Int,
-        blocks: [ContentBlock]
-    ) -> String {
-        guard let block = blocks.first(where: { $0.id == blockId }),
-              block.htmlStartOffset < block.htmlEndOffset,
-              block.htmlEndOffset <= content.count else {
-            return content
-        }
-
-        let startIndex = content.index(content.startIndex, offsetBy: block.htmlStartOffset)
-        let endIndex = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
-        let blockHTML = content[startIndex..<endIndex]
-
-        if let closingTagRange = blockHTML.range(of: "</", options: .backwards) {
-            var result = content
-            result.insert(contentsOf: markers, at: closingTagRange.lowerBound)
-            return result
-        }
-
-        var result = content
-        result.insert(contentsOf: markers, at: endIndex)
-        return result
-    }
-
-    private func injectImageAtBlock(_ content: String, for image: GeneratedImage, blocks: [ContentBlock], baseURL: URL) -> String {
-        let imageURL = URL(fileURLWithPath: image.imagePath)
-        let relativePath = relativePath(from: baseURL, to: imageURL) ?? imageURL.path
-        let encodedPath = relativePath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? relativePath
-        let imgTag = """
-        <img class="generated-image" data-block-id="\(image.sourceBlockId)" src="\(encodedPath)" alt="Generated illustration">
-        """
-
-        // Find the block and inject image after it
-        guard let block = blocks.first(where: { $0.id == image.sourceBlockId }),
-              block.htmlEndOffset <= content.count else {
-            return content
-        }
-
-        let insertIndex = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
-        var result = content
-        result.insert(contentsOf: imgTag, at: insertIndex)
-        return result
-    }
+        return "console.error('ReaderBridge.js not found');"
+    }()
 
     private func chapterDirectoryURL() -> URL {
-        let publicationRoot = LibraryPaths.publicationDirectory(for: chapter.bookId)
-        guard let resourcePath = chapter.resourcePath, !resourcePath.isEmpty else {
-            return ensureDirectoryURL(publicationRoot)
-        }
-
-        let chapterURL = publicationRoot.appendingPathComponent(resourcePath)
-        let baseDir = chapterURL.deletingLastPathComponent()
-        return ensureDirectoryURL(baseDir)
+        let root = LibraryPaths.publicationDirectory(for: chapter.bookId)
+        if let path = chapter.resourcePath, !path.isEmpty { return root.appendingPathComponent(path).deletingLastPathComponent() }
+        return root
     }
+    private func readerRootDirectoryURL() -> URL { LibraryPaths.readerRoot }
 
-    private func readerRootDirectoryURL() -> URL {
-        ensureDirectoryURL(LibraryPaths.readerRoot)
+    private func loadHTML(_ html: String, on webView: WKWebView) {
+        let fileURL = renderedChapterURL()
+        let readerRootURL = readerRootDirectoryURL()
+        do {
+            try html.write(to: fileURL, atomically: true, encoding: .utf8)
+            webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
+        } catch {
+            webView.loadHTMLString(html, baseURL: readerRootURL)
+        }
     }
 
     private func renderedChapterURL() -> URL {
-        let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId)
-            .appendingPathComponent("_reader", isDirectory: true)
+        let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId).appendingPathComponent("_reader", isDirectory: true)
         try? LibraryPaths.ensureDirectory(renderDir)
         let idComponent = chapter.id.map(String.init) ?? "index-\(chapter.index)"
         return renderDir.appendingPathComponent("chapter-\(idComponent).html")
     }
-
-    private func loadHTML(_ html: String, on webView: WKWebView, baseReadAccessURL: URL) {
-        let fileURL = renderedChapterURL()
-        do {
-            try html.write(to: fileURL, atomically: true, encoding: .utf8)
-            webView.loadFileURL(fileURL, allowingReadAccessTo: baseReadAccessURL)
-        } catch {
-            webView.loadHTMLString(html, baseURL: baseReadAccessURL)
-        }
-    }
-
-    private func ensureDirectoryURL(_ url: URL) -> URL {
-        url.hasDirectoryPath ? url : url.appendingPathComponent("", isDirectory: true)
-    }
-
-    private func relativePath(from baseURL: URL, to targetURL: URL) -> String? {
-        let baseComponents = baseURL.standardizedFileURL.pathComponents
-        let targetComponents = targetURL.standardizedFileURL.pathComponents
-        guard !baseComponents.isEmpty, !targetComponents.isEmpty else { return nil }
-
-        var index = 0
-        while index < baseComponents.count,
-              index < targetComponents.count,
-              baseComponents[index] == targetComponents[index] {
-            index += 1
-        }
-
-        if index == 0 {
-            return nil
-        }
-
-        let upLevels = Array(repeating: "..", count: baseComponents.count - index)
-        let downLevels = Array(targetComponents[index...])
-        return (upLevels + downLevels).joined(separator: "/")
-    }
-
-    // MARK: - Coordinator
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: BookContentView
@@ -1369,146 +243,59 @@ struct BookContentView: NSViewRepresentable {
         var pendingScrollOffset: Double?
         var lastScrollPercent: Double?
         var lastScrollOffset: Double?
-
-        init(_ parent: BookContentView) {
-            self.parent = parent
-        }
-
+        init(parent: BookContentView) { self.parent = parent }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isContentLoaded = true
-
-            if let offset = pendingScrollOffset {
-                let js = "scrollToOffset(\(offset));"
-                webView.evaluateJavaScript(js) { _, _ in
-                    DispatchQueue.main.async {
-                        self.parent.scrollToOffset = nil
-                    }
-                }
-                pendingScrollOffset = nil
-            } else if let percent = pendingScrollPercent {
-                let clamped = max(0, min(percent, 1))
-                let js = "scrollToPercent(\(clamped));"
-                webView.evaluateJavaScript(js) { _, _ in
-                    DispatchQueue.main.async {
-                        self.parent.scrollToPercent = nil
-                    }
-                }
-                pendingScrollPercent = nil
+            if let o = pendingScrollOffset { 
+                webView.evaluateJavaScript("scrollToOffset(\(o))")
+                pendingScrollOffset = nil 
+            } else if let p = pendingScrollPercent { 
+                webView.evaluateJavaScript("scrollToPercent(\(p))")
+                pendingScrollPercent = nil 
             }
         }
-
-        func userContentController(
-            _ userContentController: WKUserContentController,
-            didReceive message: WKScriptMessage
-        ) {
-            guard let body = message.body as? [String: Any],
-                  let type = body["type"] as? String else { return }
-
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
             switch type {
+            case "annotationClick": 
+                if let id = (body["id"] as? String).flatMap(Int64.init), let a = parent.annotations.first(where: { $0.id == id }) { 
+                    parent.onAnnotationClick(a) 
+                }
+            case "imageMarkerClick": 
+                if let id = (body["id"] as? String).flatMap(Int64.init) { 
+                    parent.onImageMarkerClick(id) 
+                }
             case "explain":
-                if let word = body["word"] as? String,
-                   let context = body["context"] as? String,
-                   let blockId = body["blockId"] as? Int {
-                    parent.onWordClick(word, context, blockId, .explain)
+                if let word = body["word"] as? String, let context = body["context"] as? String, let bId = body["blockId"] as? Int {
+                    parent.onWordClick(word, context, bId, .explain)
                 }
-
             case "generateImage":
-                if let word = body["word"] as? String,
-                   let context = body["context"] as? String,
-                   let blockId = body["blockId"] as? Int {
-                    parent.onWordClick(word, context, blockId, .generateImage)
+                if let word = body["word"] as? String, let context = body["context"] as? String, let bId = body["blockId" ] as? Int {
+                    parent.onWordClick(word, context, bId, .generateImage)
                 }
-
-            case "define":
-                if let word = body["word"] as? String {
-                    // Use macOS Dictionary
-                    NSWorkspace.shared.open(
-                        URL(string: "dict://\(word.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? word)")!
-                    )
-                }
-
-            case "annotationClick":
-                if let idString = body["id"] as? String,
-                   let id = Int64(idString),
-                   let annotation = parent.annotations.first(where: { $0.id == id }) {
-                    parent.onAnnotationClick(annotation)
-                }
-
-            case "imageMarkerClick":
-                if let idString = body["id"] as? String,
-                   let id = Int64(idString) {
-                    parent.onImageMarkerClick(id)
-                }
-
-            case "scrollToAnnotationFailed":
-                // Marker not found, fall back to block-based scroll
-                if let annotationId = body["annotationId"] as? Int,
-                   let annotation = self.parent.annotations.first(where: { $0.id == Int64(annotationId) }) {
-                    DispatchQueue.main.async { [self] in
-                        self.parent.scrollToBlockId = annotation.sourceBlockId
-                    }
-                }
-
-            case "footnoteClick":
-                if let refId = body["refId"] as? String {
-                    parent.onFootnoteClick(refId)
-                }
-
+            case "bottomTug": parent.onBottomTug()
             case "scrollPosition":
-                let annotationId: Int64?
-                if let idString = body["annotationId"] as? String,
-                   let id = Int64(idString) {
-                    annotationId = id
-                } else {
-                    annotationId = nil
-                }
-
-                let footnoteRefId = body["footnoteRefId"] as? String
-                let imageId: Int64?
-                if let idString = body["imageId"] as? String, let id = Int64(idString) {
-                    imageId = id
-                } else if let idNumber = body["imageId"] as? NSNumber {
-                    imageId = idNumber.int64Value
-                } else {
-                    imageId = nil
-                }
-                let focusType = body["focusType"] as? String
-                let scrollY = (body["scrollY"] as? Double) ?? (body["scrollY"] as? NSNumber)?.doubleValue ?? 0
-                let scrollPercent = (body["scrollPercent"] as? Double) ?? (body["scrollPercent"] as? NSNumber)?.doubleValue ?? 0
-                let viewportHeight = (body["viewportHeight"] as? Double) ?? (body["viewportHeight"] as? NSNumber)?.doubleValue ?? 0
-                lastScrollOffset = scrollY
-                lastScrollPercent = scrollPercent
-                parent.onScrollPositionChange(annotationId, footnoteRefId, imageId, focusType, scrollPercent, scrollY, viewportHeight)
-
-            case "bottomTug":
-                parent.onBottomTug()
-
-            default:
-                break
+                let aId = (body["annotationId"] as? String).flatMap(Int64.init)
+                let iId = (body["imageId"] as? String).flatMap(Int64.init)
+                let fId = body["footnoteRefId"] as? String
+                let bId = body["blockId"] as? Int
+                let aD = body["annotationDist"] as? Double ?? .infinity
+                let iD = body["imageDist"] as? Double ?? .infinity
+                let fD = body["footnoteDist"] as? Double ?? .infinity
+                let sY = (body["scrollY"] as? Double) ?? 0
+                let sP = (body["scrollPercent"] as? Double) ?? 0
+                let vH = (body["viewportHeight"] as? Double) ?? 0
+                parent.onScrollPositionChange(aId, fId, iId, bId, "\(aD),\(iD),\(fD)", sP, sY, vH)
+            default: break
             }
         }
     }
 }
 
-// MARK: - Color to Hex
-
 extension Color {
     var hexString: String {
         let nsColor = NSColor(self)
-        // Use sRGB for web-compatible colors
-        guard let rgbColor = nsColor.usingColorSpace(.sRGB) else {
-            // Fallback to deviceRGB
-            guard let deviceColor = nsColor.usingColorSpace(.deviceRGB) else {
-                return "#000000"
-            }
-            let r = Int(deviceColor.redComponent * 255)
-            let g = Int(deviceColor.greenComponent * 255)
-            let b = Int(deviceColor.blueComponent * 255)
-            return String(format: "#%02X%02X%02X", r, g, b)
-        }
-        let r = Int(rgbColor.redComponent * 255)
-        let g = Int(rgbColor.greenComponent * 255)
-        let b = Int(rgbColor.blueComponent * 255)
-        return String(format: "#%02X%02X%02X", r, g, b)
+        guard let rgbColor = nsColor.usingColorSpace(.sRGB) else { return "#000000" }
+        return String(format: "#%02X%02X%02X", Int(rgbColor.redComponent * 255), Int(rgbColor.greenComponent * 255), Int(rgbColor.blueComponent * 255))
     }
 }

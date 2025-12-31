@@ -2,11 +2,12 @@ import Foundation
 import GRDB
 
 final class DatabaseService {
-    static let shared = DatabaseService()
+    // The default instance for the app
+    @MainActor static let shared = DatabaseService()
 
     private let dbQueue: DatabaseQueue
-    private let databaseFilename = "reader_v2.sqlite"
 
+    /// Standard initializer for persistent storage
     init() {
         let fileManager = FileManager.default
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -14,9 +15,15 @@ final class DatabaseService {
 
         try? fileManager.createDirectory(at: readerDir, withIntermediateDirectories: true)
 
-        let dbPath = readerDir.appendingPathComponent(databaseFilename).path
-        dbQueue = try! DatabaseQueue(path: dbPath)
+        let dbPath = readerDir.appendingPathComponent("reader_v2.sqlite").path
+        self.dbQueue = try! DatabaseQueue(path: dbPath)
 
+        try! setupDatabase()
+    }
+    
+    /// Initializer for testing (e.g., in-memory)
+    init(dbQueue: DatabaseQueue) {
+        self.dbQueue = dbQueue
         try! setupDatabase()
     }
 

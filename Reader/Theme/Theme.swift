@@ -4,7 +4,7 @@ import Foundation
 
 // MARK: - Theme Protocol
 
-protocol Theme {
+protocol Theme: Sendable {
     var name: String { get }
 
     // Backgrounds
@@ -35,7 +35,7 @@ protocol Theme {
 
 @Observable
 final class ThemeManager {
-    static let shared = ThemeManager()
+    @MainActor static let shared = ThemeManager()
 
     let defaultThemeName = "Rose Pine"
 
@@ -266,7 +266,8 @@ enum ThemeImportError: LocalizedError {
 
 // MARK: - Environment Key
 
-struct ThemeKey: EnvironmentKey {
+@MainActor
+struct ThemeKey: @preconcurrency EnvironmentKey {
     static let defaultValue: Theme = RosePineTheme()
 }
 

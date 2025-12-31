@@ -10,11 +10,11 @@ enum CostEstimates {
 
     static func imagesPerChapter(for density: DensityLevel) -> Double {
         switch density {
-        case .minimal: return 0.2
-        case .low: return 0.5
-        case .medium: return 1.0
-        case .high: return 2.0
-        case .xhigh: return 3.0
+        case .minimal: return 0.8
+        case .low: return 2.0
+        case .medium: return 4.0
+        case .high: return 7.0
+        case .xhigh: return 10.0
         }
     }
 }
@@ -55,9 +55,9 @@ enum PricingCatalog {
 
     static func imagePricing(for model: ImageModel) -> ImagePricing {
         switch model {
-        case .nanoBananaPro:
+        case .gemini3Pro:
             return ImagePricing(inputPerMToken: 2, outputPerMToken: 12, outputPerImage: nil)
-        case .nanoBanana:
+        case .gemini25Flash:
             return ImagePricing(inputPerMToken: 0.3, outputPerMToken: nil, outputPerImage: 0.039)
         }
     }

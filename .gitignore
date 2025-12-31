@@ -19,6 +19,9 @@ build/
 # Local tooling
 .claude/
 
+# Testing fixtures
+Fixtures/
+
 # Local notes and scripts
 api_manager.js
 api_reference.md

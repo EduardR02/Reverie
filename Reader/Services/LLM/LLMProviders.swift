@@ -20,6 +20,10 @@ protocol LLMProviderClient {
 }
 
 struct OpenAIProvider: LLMProviderClient {
+    private func isReasoner(_ model: String) -> Bool {
+        model.hasPrefix("gpt-5") || model.hasPrefix("o1") || model.hasPrefix("o3")
+    }
+
     func makeRequest(
         prompt: LLMRequestPrompt,
         model: String,
@@ -30,14 +34,14 @@ struct OpenAIProvider: LLMProviderClient {
         stream: Bool
     ) throws -> URLRequest {
         let url = URL(string: "https://api.openai.com/v1/responses")!
-        let isReasoner = model.contains("gpt-5") || model.contains("o1") || model.contains("o3")
+        let reasoner = isReasoner(model)
 
         var body: [String: Any] = [
             "model": model,
             "input": [
                 ["role": "user", "content": [["type": "input_text", "text": prompt.text]]]
             ],
-            "max_output_tokens": isReasoner ? 100000 : 16384,
+            "max_output_tokens": reasoner ? 100000 : 16384,
             "stream": stream
         ]
 
@@ -52,7 +56,7 @@ struct OpenAIProvider: LLMProviderClient {
             ]
         }
 
-        if isReasoner {
+        if reasoner {
             body["reasoning"] = ["effort": reasoning.openAIEffort]
         } else {
             body["temperature"] = temperature
@@ -213,23 +217,25 @@ struct GeminiProvider: LLMProviderClient {
         }
 
         let text = parts.compactMap { part -> String? in
-            guard let text = part["text"] as? String else { return nil }
-            if part["thought"] as? Bool == true {
-                return nil
-            }
-            return text
+            if part["thought"] as? Bool == true { return nil }
+            return part["text"] as? String
         }.joined()
+        
         if text.isEmpty {
             throw LLMService.LLMError.invalidResponse
         }
 
         var usage: LLMService.TokenUsage?
         if let usageData = json["usageMetadata"] as? [String: Any] {
+            let prompt = usageData["promptTokenCount"] as? Int ?? 0
+            let candidates = usageData["candidatesTokenCount"] as? Int ?? 0
+            let thoughts = usageData["thoughtsTokenCount"] as? Int ?? 0
+            
             usage = LLMService.TokenUsage(
-                input: usageData["promptTokenCount"] as? Int ?? 0,
-                output: (usageData["candidatesTokenCount"] as? Int ?? 0) + (usageData["thoughtsTokenCount"] as? Int ?? 0),
+                input: prompt,
+                output: candidates + thoughts,
                 cached: nil,
-                reasoning: usageData["thoughtsTokenCount"] as? Int
+                reasoning: thoughts
             )
         }
 
@@ -281,6 +287,10 @@ struct GeminiProvider: LLMProviderClient {
 }
 
 struct AnthropicProvider: LLMProviderClient {
+    private func canThink(_ model: String) -> Bool {
+        model.contains("sonnet-4") || model.contains("opus-4") || model.contains("haiku-4") || model.contains("claude-4")
+    }
+
     func makeRequest(
         prompt: LLMRequestPrompt,
         model: String,
@@ -291,13 +301,13 @@ struct AnthropicProvider: LLMProviderClient {
         stream: Bool
     ) throws -> URLRequest {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
-        let canThink = model.contains("sonnet-4") || model.contains("opus-4") || model.contains("haiku-4")
-        let shouldThink = canThink && reasoning != .off
+        let thinkingCapable = canThink(model)
+        let shouldThink = thinkingCapable && reasoning != .off
 
         let maxTokens: Int
         if shouldThink {
             maxTokens = 64000
-        } else if canThink {
+        } else if thinkingCapable {
             maxTokens = 32000
         } else {
             maxTokens = 8192
