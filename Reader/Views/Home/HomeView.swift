@@ -291,26 +291,27 @@ struct HomeView: View {
 
     private func deleteBook(_ book: Book) {
         do {
-            // Delete from database (cascade deletes chapters, annotations, etc.)
+            guard let bookId = book.id else { return }
+
+            // 1. Delete from database (cascade deletes chapters, annotations, etc.)
             try appState.database.deleteBook(book)
 
-            // Delete cover image if exists
+            // 2. Delete all physical assets
+            let fileManager = FileManager.default
+            
+            // EPUB
+            try? fileManager.removeItem(at: LibraryPaths.bookURL(for: bookId))
+            
+            // Cover
             if let coverPath = book.coverPath {
-                try? FileManager.default.removeItem(atPath: coverPath)
+                try? fileManager.removeItem(atPath: coverPath)
             }
 
-            // Delete EPUB file
-            try? FileManager.default.removeItem(atPath: book.epubPath)
+            // Publication extracted HTML
+            try? fileManager.removeItem(at: LibraryPaths.publicationDirectory(for: bookId))
 
-            // Delete extracted publication and images
-            if let bookId = book.id {
-                let publicationDir = LibraryPaths.publicationDirectory(for: bookId)
-                try? FileManager.default.removeItem(at: publicationDir)
-
-                let imagesDir = LibraryPaths.imagesDirectory
-                    .appendingPathComponent("\(bookId)", isDirectory: true)
-                try? FileManager.default.removeItem(at: imagesDir)
-            }
+            // AI Generated Images folder
+            try? fileManager.removeItem(at: LibraryPaths.imagesDirectory(for: bookId))
 
             // Reload books list
             Task {
@@ -387,22 +388,12 @@ struct HomeView: View {
                 throw ImportError.noChaptersFound
             }
 
-            // Copy EPUB to app storage
-            let fileManager = FileManager.default
-            let destURL = LibraryPaths.booksDirectory
-                .appendingPathComponent("\(UUID().uuidString).epub")
-
-            if fileManager.fileExists(atPath: destURL.path) {
-                try fileManager.removeItem(at: destURL)
-            }
-            try fileManager.copyItem(at: url, to: destURL)
-
-            // Create book record
+            // 1. Save initial book record to get ID
             var book = Book(
                 title: parsed.title,
                 author: parsed.author,
                 coverPath: nil,
-                epubPath: destURL.path,
+                epubPath: "", // Will update after moving
                 chapterCount: parsed.chapters.count
             )
             try appState.database.saveBook(&book)
@@ -411,6 +402,20 @@ struct HomeView: View {
                 throw ImportError.bookSaveFailed
             }
 
+            // 2. Move EPUB to app storage using ID
+            let fileManager = FileManager.default
+            let destURL = LibraryPaths.bookURL(for: bookId)
+
+            if fileManager.fileExists(atPath: destURL.path) {
+                try fileManager.removeItem(at: destURL)
+            }
+            try fileManager.copyItem(at: url, to: destURL)
+            
+            // 3. Update book record with final path
+            book.epubPath = destURL.path
+            try appState.database.saveBook(&book)
+
+            // 4. Move extracted publication
             let finalExtractDir = LibraryPaths.publicationDirectory(for: bookId)
             if fileManager.fileExists(atPath: finalExtractDir.path) {
                 try fileManager.removeItem(at: finalExtractDir)
@@ -418,6 +423,7 @@ struct HomeView: View {
             try fileManager.moveItem(at: tempExtractDir, to: finalExtractDir)
             didMoveExtract = true
 
+            // 5. Save cover using ID
             if let cover = parsed.cover {
                 let fileExtension = coverFileExtension(for: cover)
                 let coverURL = LibraryPaths.coverURL(for: bookId, fileExtension: fileExtension)

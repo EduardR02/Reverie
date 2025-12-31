@@ -5,20 +5,24 @@ struct SettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.theme) private var theme
 
-    @State private var selectedSection: SettingsSection = .general
+    @State private var selectedSection: SettingsSection = .intelligence
     @State private var themeImportText: String = ""
     @State private var themeImportError: String?
 
     enum SettingsSection: String, CaseIterable {
-        case general = "General"
-        case apiKeys = "API Keys"
+        case intelligence = "Intelligence"
+        case reading = "Reading"
+        case media = "Media"
         case appearance = "Appearance"
+        case apiKeys = "API Keys"
 
         var icon: String {
             switch self {
-            case .general: return "sparkles"
-            case .apiKeys: return "key"
+            case .intelligence: return "brain"
+            case .reading: return "book.closed"
+            case .media: return "photo.on.rectangle"
             case .appearance: return "paintbrush"
+            case .apiKeys: return "key"
             }
         }
     }
@@ -46,12 +50,16 @@ struct SettingsView: View {
                     ScrollView {
                         VStack(spacing: 24) {
                             switch selectedSection {
-                            case .general:
-                                generalSection
-                            case .apiKeys:
-                                apiKeysSection
+                            case .intelligence:
+                                intelligenceSection
+                            case .reading:
+                                readingSection
+                            case .media:
+                                mediaSection
                             case .appearance:
                                 appearanceSection
+                            case .apiKeys:
+                                apiKeysSection
                             }
                         }
                         .padding(32)
@@ -137,70 +145,77 @@ struct SettingsView: View {
         .background(theme.surface)
     }
 
-    // MARK: - General Section
+    // MARK: - Intelligence Section
 
-    private var generalSection: some View {
+    private var intelligenceSection: some View {
         @Bindable var state = appState
 
         return VStack(alignment: .leading, spacing: 24) {
-            sectionHeader("AI Provider", icon: "cpu")
+            sectionHeader("Models", icon: "cpu")
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Provider picker
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("LLM Provider")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(theme.muted)
+                    HStack(spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("LLM Provider")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
 
-                        Picker("", selection: $state.settings.llmProvider) {
-                            ForEach(LLMProvider.allCases, id: \.self) { provider in
-                                Text(provider.displayName).tag(provider)
+                            Picker("", selection: $state.settings.llmProvider) {
+                                ForEach(LLMProvider.allCases, id: \.self) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
                             }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
-                    }
+                        .frame(maxWidth: .infinity)
 
-                    // Model picker
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Model")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(theme.muted)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Model")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
 
-                        Picker("", selection: $state.settings.llmModel) {
-                            ForEach(state.settings.llmProvider.models, id: \.id) { model in
-                                Text(model.name).tag(model.id)
+                            Picker("", selection: $state.settings.llmModel) {
+                                ForEach(state.settings.llmProvider.models, id: \.id) { model in
+                                    Text(model.name).tag(model.id)
+                                }
                             }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
                         }
-                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }
 
-            sectionHeader("Insight Density", icon: "lightbulb")
+            sectionHeader("Insight Analysis", icon: "lightbulb")
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Controls insight density; count adapts to chapter richness")
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.muted)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Density")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.muted)
+                        
+                        Text("Controls how many insights are generated per chapter")
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.subtle)
+                    }
 
                     HStack(spacing: 8) {
                         ForEach(DensityLevel.allCases, id: \.self) { level in
                             Button {
-                                state.settings.insightDensity = level
-                            } label: {
-                                VStack(spacing: 4) {
-                                    Text(level.rawValue)
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text(level.description)
-                                        .font(.system(size: 11))
+                                withAnimation(.spring(duration: 0.2)) {
+                                    state.settings.insightDensity = level
                                 }
-                                .foregroundColor(state.settings.insightDensity == level ? theme.base : theme.text)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(state.settings.insightDensity == level ? theme.rose : theme.overlay)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } label: {
+                                Text(level.rawValue)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(state.settings.insightDensity == level ? theme.base : theme.text)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(state.settings.insightDensity == level ? theme.rose : theme.overlay)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                             }
                             .buttonStyle(.plain)
                         }
@@ -208,37 +223,24 @@ struct SettingsView: View {
                 }
             }
 
-            sectionHeader("Reasoning Level", icon: "brain")
-
             settingsCard {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("How much thinking the AI does (supported models only)")
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.muted)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Reasoning Depth")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.muted)
+                        
+                        Text("Higher levels produce deeper analysis but are slower")
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.subtle)
+                    }
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        // Chat reasoning
-                        HStack {
-                            Text("Chat")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(theme.text)
-                                .frame(width: 60, alignment: .leading)
-
-                            Picker("", selection: $state.settings.chatReasoningLevel) {
-                                ForEach(ReasoningLevel.allCases, id: \.self) { level in
-                                    Text(level.rawValue).tag(level)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                        }
-
-                        // Insight reasoning
+                    VStack(spacing: 12) {
                         HStack {
                             Text("Insights")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 13))
                                 .foregroundColor(theme.text)
-                                .frame(width: 60, alignment: .leading)
+                                .frame(width: 70, alignment: .leading)
 
                             Picker("", selection: $state.settings.insightReasoningLevel) {
                                 ForEach(ReasoningLevel.allCases, id: \.self) { level in
@@ -246,28 +248,43 @@ struct SettingsView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
-                            .labelsHidden()
+                        }
+
+                        HStack {
+                            Text("Chat")
+                                .font(.system(size: 13))
+                                .foregroundColor(theme.text)
+                                .frame(width: 70, alignment: .leading)
+
+                            Picker("", selection: $state.settings.chatReasoningLevel) {
+                                ForEach(ReasoningLevel.allCases, id: \.self) { level in
+                                    Text(level.rawValue).tag(level)
+                                }
+                            }
+                            .pickerStyle(.segmented)
                         }
                     }
-
-                    Text("Gemini 3, GPT-5+, and Claude 4+ support reasoning. Higher levels produce better results but take longer.")
-                        .font(.system(size: 11))
-                        .foregroundColor(theme.subtle)
                 }
             }
 
-            sectionHeader("Temperature", icon: "thermometer.medium")
+            sectionHeader("Parameters", icon: "slider.horizontal.3")
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("Response Temperature")
+                        Text("Temperature")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.muted)
+
                         Spacer()
+                        
                         Text(String(format: "%.1f", state.settings.temperature))
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
                             .foregroundColor(theme.text)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(theme.overlay)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
 
                     Slider(
@@ -276,210 +293,6 @@ struct SettingsView: View {
                         step: 0.1
                     )
                     .tint(theme.rose)
-
-                    Text("Higher values make output more creative/random. Lower values make it more focused/deterministic. Default: 1.0")
-                        .font(.system(size: 11))
-                        .foregroundColor(theme.subtle)
-                }
-            }
-
-            sectionHeader("Reading Behavior", icon: "book")
-
-            settingsCard {
-                VStack(alignment: .leading, spacing: 16) {
-                    Toggle(isOn: $state.settings.autoSwitchToQuiz) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Switch to Quiz on End Tug")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Tug past the end of the chapter to open the quiz")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    Toggle(isOn: $state.settings.autoSwitchContextTabs) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Auto-switch Insights, Images & Notes")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Follow your scroll position across related tabs")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Return to Context Tabs from Chat")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Switch back to the relevant tab when you scroll the text")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    Divider()
-                        .background(theme.overlay)
-
-                    Toggle(isOn: $state.settings.smartAutoScrollEnabled) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Smart Auto-Scroll")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Enable automatic scrolling based on reading speed")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    Toggle(isOn: $state.settings.showReadingSpeedFooter) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Show Reading Speed")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Display average reading speed in footer")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-                }
-            }
-
-            sectionHeader("Layout", icon: "rectangle.split.3x1")
-
-            settingsCard {
-                let readerPercent = Int((state.splitRatio * 100).rounded())
-                let aiPercent = max(0, 100 - readerPercent)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Reader / AI Split")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(theme.muted)
-
-                        Spacer()
-
-                        Text("\(readerPercent)% / \(aiPercent)%")
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(theme.text)
-                    }
-
-                    Slider(
-                        value: $state.splitRatio,
-                        in: 0.5...0.8,
-                        step: 0.01
-                    )
-                    .tint(theme.iris)
-
-                    Text("Sets the default divider position. You can still drag it while reading.")
-                        .font(.system(size: 11))
-                        .foregroundColor(theme.subtle)
-                }
-            }
-
-            sectionHeader("Image Generation", icon: "photo")
-
-            settingsCard {
-                VStack(alignment: .leading, spacing: 16) {
-                    Toggle(isOn: $state.settings.imagesEnabled) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Enable AI Images")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Generate illustrations for scenes (uses Gemini 3 Pro Images)")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    Toggle(isOn: $state.settings.inlineAIImages) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Inline AI Images in Text")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(theme.text)
-                            Text("Show generated images inside the chapter, in addition to the Images tab")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.muted)
-                        }
-                    }
-                    .tint(theme.rose)
-
-                    if state.settings.imagesEnabled {
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Image Model")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(theme.muted)
-
-                            Picker("", selection: $state.settings.imageModel) {
-                                ForEach(ImageModel.allCases, id: \.self) { model in
-                                    Text(model.rawValue)
-                                        .tag(model)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-
-                            Text(state.settings.imageModel.description)
-                                .font(.system(size: 11))
-                                .foregroundColor(theme.muted)
-                        }
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Image Density")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(theme.muted)
-
-                            Text("Controls illustration density; count adapts to chapter richness")
-                                .font(.system(size: 11))
-                                .foregroundColor(theme.subtle)
-
-                            HStack(spacing: 6) {
-                                ForEach(DensityLevel.allCases, id: \.self) { level in
-                                    Button {
-                                        state.settings.imageDensity = level
-                                    } label: {
-                                        VStack(spacing: 2) {
-                                            Text(level.rawValue)
-                                                .font(.system(size: 12, weight: .medium))
-                                            Text(level.imageDescription)
-                                                .font(.system(size: 10))
-                                        }
-                                        .foregroundColor(state.settings.imageDensity == level ? theme.base : theme.text)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(state.settings.imageDensity == level ? theme.rose : theme.overlay)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-
-                        Divider()
-
-                        Toggle(isOn: $state.settings.rewriteImageExcerpts) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Rewrite Excerpts into Image Prompts")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(theme.text)
-                                Text("Lets the image model paraphrase excerpts into a prompt before generating")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(theme.muted)
-                            }
-                        }
-                        .tint(theme.rose)
-                    }
                 }
             }
         }
@@ -490,10 +303,207 @@ struct SettingsView: View {
         .onChange(of: state.settings) { _, _ in
             state.settings.save()
         }
-        .onChange(of: themeImportText) { _, _ in
-            if themeImportError != nil {
-                themeImportError = nil
+    }
+
+    // MARK: - Reading Section
+
+    private var readingSection: some View {
+        @Bindable var state = appState
+
+        return VStack(alignment: .leading, spacing: 24) {
+            sectionHeader("Automation", icon: "wand.and.stars")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    Toggle(isOn: $state.settings.autoSwitchToQuiz) {
+                        toggleLabel(title: "Quiz Auto-open", subtitle: "Tug past chapter end to open quiz")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
+                    Toggle(isOn: $state.settings.autoSwitchContextTabs) {
+                        toggleLabel(title: "Context Auto-follow", subtitle: "Tabs follow your scroll position")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
+                    Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
+                        toggleLabel(title: "Smart Chat Return", subtitle: "Back to context when scrolling text")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+                }
             }
+            .tint(theme.rose)
+
+            sectionHeader("Stats & Movement", icon: "chart.bar")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    Toggle(isOn: $state.settings.smartAutoScrollEnabled) {
+                        toggleLabel(title: "Smart Auto-Scroll", subtitle: "Scroll based on reading speed")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
+                    Toggle(isOn: $state.settings.showReadingSpeedFooter) {
+                        toggleLabel(title: "Reading Speed", subtitle: "Show average speed in footer")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+                }
+            }
+            .tint(theme.rose)
+
+            sectionHeader("Interface", icon: "macwindow")
+
+            settingsCard {
+                let readerPercent = Int((state.splitRatio * 100).rounded())
+                let aiPercent = max(0, 100 - readerPercent)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Reader / AI Split")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
+                            Text("Default divider position")
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.subtle)
+                        }
+
+                        Spacer()
+
+                        Text("\(readerPercent)% / \(aiPercent)%")
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(theme.text)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(theme.overlay)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+
+                    Slider(
+                        value: $state.splitRatio,
+                        in: 0.5...0.8,
+                        step: 0.01
+                    )
+                    .tint(theme.iris)
+                }
+            }
+        }
+        .onChange(of: state.settings) { _, _ in
+            state.settings.save()
+        }
+    }
+
+    private func toggleLabel(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(theme.text)
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundColor(theme.muted)
+        }
+    }
+
+    // MARK: - Media Section
+
+    private var mediaSection: some View {
+        @Bindable var state = appState
+
+        return VStack(alignment: .leading, spacing: 24) {
+            sectionHeader("Image Generation", icon: "photo.stack")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 16) {
+                    Toggle(isOn: $state.settings.imagesEnabled) {
+                        toggleLabel(title: "Enable AI Images", subtitle: "Generate illustrations for scenes")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .tint(theme.rose)
+
+                    if state.settings.imagesEnabled {
+                        Divider().background(theme.overlay)
+
+                        Toggle(isOn: $state.settings.inlineAIImages) {
+                            toggleLabel(title: "Inline in Text", subtitle: "Show images directly inside the chapter")
+                        }
+                        .toggleStyle(RightAlignedToggleStyle())
+                        .tint(theme.rose)
+
+                        Divider().background(theme.overlay)
+
+                        Toggle(isOn: $state.settings.rewriteImageExcerpts) {
+                            toggleLabel(title: "Prompt Refinement", subtitle: "Rewrite excerpts into detailed image prompts")
+                        }
+                        .toggleStyle(RightAlignedToggleStyle())
+                        .tint(theme.rose)
+                    }
+                }
+            }
+
+            if state.settings.imagesEnabled {
+                sectionHeader("Generation Settings", icon: "gearshape")
+
+                settingsCard {
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Image Model")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
+
+                            Picker("", selection: $state.settings.imageModel) {
+                                ForEach(ImageModel.allCases, id: \.self) { model in
+                                    Text(model.rawValue).tag(model)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            
+                            Text(state.settings.imageModel.description)
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.subtle)
+                        }
+
+                        Divider().background(theme.overlay)
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Image Density")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
+
+                            HStack(spacing: 6) {
+                                ForEach(DensityLevel.allCases, id: \.self) { level in
+                                    Button {
+                                        withAnimation(.spring(duration: 0.2)) {
+                                            state.settings.imageDensity = level
+                                        }
+                                    } label: {
+                                        Text(level.rawValue)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(state.settings.imageDensity == level ? theme.base : theme.text)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 8)
+                                            .background(state.settings.imageDensity == level ? theme.rose : theme.overlay)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: state.settings) { _, _ in
+            state.settings.save()
         }
     }
 
@@ -825,6 +835,11 @@ struct SettingsView: View {
         .onChange(of: state.settings) { _, _ in
             state.settings.save()
         }
+        .onChange(of: themeImportText) { _, _ in
+            if themeImportError != nil {
+                themeImportError = nil
+            }
+        }
     }
 
     private func themeOption(
@@ -896,6 +911,23 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+// MARK: - Right Aligned Toggle Style
+
+struct RightAlignedToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label
+            Spacer()
+            Toggle("", isOn: configuration.$isOn)
+                .labelsHidden()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            configuration.isOn.toggle()
+        }
     }
 }
 

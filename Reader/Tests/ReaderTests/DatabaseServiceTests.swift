@@ -46,7 +46,7 @@ final class DatabaseServiceTests: XCTestCase {
         XCTAssertTrue(book.needsClassification)
         
         book.classificationStatus = .inProgress
-        XCTAssertFalse(book.needsClassification, "Should be false to prevent infinite loops; manual retry handles crashes")
+        XCTAssertTrue(book.needsClassification, "Should be true to allow recovery if the app crashed during classification")
         
         book.classificationStatus = .completed
         XCTAssertFalse(book.needsClassification)

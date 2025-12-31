@@ -27,6 +27,18 @@ enum LibraryPaths {
         readerRoot.appendingPathComponent("images", isDirectory: true)
     }
 
+    static func imagesDirectory(for bookId: Int64) -> URL {
+        imagesDirectory.appendingPathComponent("\(bookId)", isDirectory: true)
+    }
+
+    static var databaseURL: URL {
+        readerRoot.appendingPathComponent("reader.sqlite")
+    }
+
+    static func bookURL(for bookId: Int64) -> URL {
+        booksDirectory.appendingPathComponent("\(bookId).epub")
+    }
+
     static func publicationDirectory(for bookId: Int64) -> URL {
         publicationsDirectory.appendingPathComponent("\(bookId)", isDirectory: true)
     }

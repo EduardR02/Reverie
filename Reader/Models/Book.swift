@@ -62,9 +62,10 @@ extension Book {
              createdAt, lastReadAt, classificationStatus, classificationError, isFinished
     }
 
-    /// Whether classification needs to run (pending or failed)
+    /// Whether classification needs to run (pending, failed, or interrupted)
     var needsClassification: Bool {
         classificationStatus == .pending
             || classificationStatus == .failed
+            || classificationStatus == .inProgress
     }
 }

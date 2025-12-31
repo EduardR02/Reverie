@@ -7,11 +7,12 @@ final class JourneyTests: XCTestCase {
     var db: DatabaseService!
     var appState: AppState!
 
+    @MainActor
     override func setUp() async throws {
         try await super.setUp()
         let queue = try! DatabaseQueue()
         db = DatabaseService(dbQueue: queue)
-        appState = await AppState(database: db)
+        appState = AppState(database: db)
     }
 
     @MainActor

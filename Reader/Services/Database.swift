@@ -10,13 +10,12 @@ final class DatabaseService {
     /// Standard initializer for persistent storage
     init() {
         let fileManager = FileManager.default
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let readerDir = appSupport.appendingPathComponent("Reader", isDirectory: true)
+        let readerDir = LibraryPaths.readerRoot
 
         try? fileManager.createDirectory(at: readerDir, withIntermediateDirectories: true)
 
-        let dbPath = readerDir.appendingPathComponent("reader_v2.sqlite").path
-        self.dbQueue = try! DatabaseQueue(path: dbPath)
+        let databaseURL = LibraryPaths.databaseURL
+        self.dbQueue = try! DatabaseQueue(path: databaseURL.path)
 
         try! setupDatabase()
     }

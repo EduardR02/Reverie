@@ -198,6 +198,12 @@ struct ReaderView: View {
         .onChange(of: appState.currentChapterIndex) { _, newIndex in
             Task { await loadChapter(at: newIndex) }
         }
+        .onChange(of: appState.currentBook?.classificationStatus) { _, newValue in
+            // When classification finishes, re-load the current chapter to trigger analysis
+            if newValue == .completed {
+                Task { await loadChapter(at: appState.currentChapterIndex) }
+            }
+        }
         .onDisappear {
             if let chapter = currentChapter {
                 appState.updateChapterProgress(
@@ -792,7 +798,14 @@ struct ReaderView: View {
     }
 
     private func loadChapter(at index: Int) async {
-        guard index >= 0, index < chapters.count, let currentBook = appState.currentBook else { return }
+        guard let currentBook = appState.currentBook else { return }
+        
+        // Re-fetch chapters to ensure indices and IDs are current
+        if let updated = try? appState.database.fetchChapters(for: currentBook) {
+            self.chapters = updated
+        }
+        
+        guard index >= 0, index < chapters.count else { return }
 
         // End previous reading session
         if let result = appState.readingSpeedTracker.endSession() {
@@ -801,7 +814,8 @@ struct ReaderView: View {
             appState.readingStats.addWords(result.words)
         }
 
-        currentChapter = chapters[index]
+        let chapter = chapters[index]
+        currentChapter = chapter
 
         // Reset auto-switch state and switch back to insights for new chapter
         hasAutoSwitchedToQuiz = false
