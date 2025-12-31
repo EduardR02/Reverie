@@ -25,27 +25,32 @@ struct BookCard: View {
                         onProcess()
                     } label: {
                         Image(systemName: "sparkles")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(theme.base)
-                            .frame(width: 32, height: 32)
-                            .background(theme.rose)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(book.isFinished ? theme.foam : theme.rose)
+                            .frame(width: 26, height: 26)
+                            .background(.ultraThinMaterial)
                             .clipShape(Circle())
-                            .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                            .overlay(
+                                Circle()
+                                    .stroke((book.isFinished ? theme.foam : theme.rose).opacity(0.15), lineWidth: 0.5)
+                            )
                     }
                     .buttonStyle(.plain)
                     .opacity(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0)
-                    .scaleEffect(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0.8)
+                    .scaleEffect(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0.9)
 
                     Spacer()
 
                     // RIGHT: Status area
-                    HStack(spacing: 8) {
-                        // Subtle "Processed" indicator
+                    HStack(spacing: 6) {
+                        // Subtle "Processed" indicator (when not hovering)
                         if book.processedFully && !isHovered {
-                            Image(systemName: "sparkles.rectangle.stack.fill")
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.rose)
-                                .shadow(color: .black.opacity(0.4), radius: 2)
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(book.isFinished ? theme.foam : theme.rose)
+                                .frame(width: 20, height: 20)
+                                .background(.ultraThinMaterial.opacity(0.5))
+                                .clipShape(Circle())
                         }
                         
                         // The "Finished" Toggle Button
@@ -53,18 +58,19 @@ struct BookCard: View {
                             onToggleFinished()
                         } label: {
                             Image(systemName: book.isFinished ? "checkmark.seal.fill" : "checkmark.seal")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(book.isFinished ? theme.foam : theme.base)
-                                .frame(width: 32, height: 32)
-                                .background(
-                                    book.isFinished ? theme.foam.opacity(0.2) : theme.rose
-                                )
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(book.isFinished ? theme.foam : theme.rose)
+                                .frame(width: 26, height: 26)
+                                .background(.ultraThinMaterial)
                                 .clipShape(Circle())
-                                .shadow(color: .black.opacity(book.isFinished ? 0 : 0.2), radius: 4, y: 2)
+                                .overlay(
+                                    Circle()
+                                        .stroke((book.isFinished ? theme.foam : theme.rose).opacity(0.15), lineWidth: 0.5)
+                                )
                         }
                         .buttonStyle(.plain)
                         .opacity(book.isFinished || isHovered ? 1 : 0)
-                        .scaleEffect(book.isFinished || isHovered ? 1 : 0.8)
+                        .scaleEffect(book.isFinished || isHovered ? 1 : 0.9)
                     }
                 }
                 .padding(8)
