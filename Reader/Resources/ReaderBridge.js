@@ -19,8 +19,8 @@ function getMarkers() {
     return Array.from(document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref'));
 }
 
-function isPartiallyVisible(rect, viewportHeight) {
-    return rect.bottom >= 0 && rect.top <= viewportHeight;
+function isVisibleWithMargin(rect, viewportHeight, extraTop, extraBottom) {
+    return rect.bottom >= -extraTop && rect.top <= viewportHeight + extraBottom;
 }
 
 function selectionThreshold(scrollPercent, viewportHeight) {
@@ -288,6 +288,7 @@ function updateFocus() {
     const viewportHeight = window.innerHeight;
     const scrollMax = document.documentElement.scrollHeight - viewportHeight;
     const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
+    const minSpacing = Math.max(140, viewportHeight * 0.22);
     
     // 1. Adaptive Eye Line (0.0 -> 0.4 -> 1.0)
     const edgeThreshold = viewportHeight * 0.6;
@@ -301,7 +302,7 @@ function updateFocus() {
         const pull = t * 0.18;
         eyeRatio = 0.45 + pull;
     }
-    const focusLine = scrollY + (eyeRatio * viewportHeight);
+    let focusLine = scrollY + (eyeRatio * viewportHeight);
     const isFlying = focusState.lastVelocity > 40;
 
     // 2. Block Tracking
@@ -314,6 +315,19 @@ function updateFocus() {
         let dist = (focusLine >= top && focusLine <= bottom) ? 0 : Math.min(Math.abs(top - focusLine), Math.abs(bottom - focusLine));
         if (dist < minBlockDist) { minBlockDist = dist; activeBlockIndex = index; }
     });
+
+    const edgeZone = 0.08;
+    const topFactor = scrollPercent < edgeZone ? 1 - (scrollPercent / edgeZone) : 0;
+    const bottomFactor = scrollPercent > 1 - edgeZone ? 1 - ((1 - scrollPercent) / edgeZone) : 0;
+    const extraTop = topFactor * Math.max(24, minSpacing * 0.35);
+    const extraBottom = bottomFactor * Math.max(60, minSpacing * 0.9);
+    const edgeBand = Math.max(minSpacing * 0.6, viewportHeight * 0.12);
+    if (topFactor > 0) {
+        focusLine = Math.min(focusLine, scrollY + edgeBand);
+    }
+    if (bottomFactor > 0) {
+        focusLine = Math.max(focusLine, scrollY + viewportHeight - edgeBand);
+    }
 
     const markers = getMarkers();
     if (markers.length === 0) {
@@ -332,7 +346,7 @@ function updateFocus() {
             type,
             order: index,
             y: rect.top + scrollY + (rect.height * 0.5),
-            isVisible: isPartiallyVisible(rect, viewportHeight),
+            isVisible: isVisibleWithMargin(rect, viewportHeight, extraTop, extraBottom),
             blockId: blockIdForElement(m)
         };
     });
@@ -344,7 +358,6 @@ function updateFocus() {
         }
     }
 
-    const minSpacing = Math.max(140, viewportHeight * 0.22);
     const maxDistance = selectionThreshold(scrollPercent, viewportHeight);
     const prevActive = { ...focusState.activeIds };
     const keyForType = (item) => item.id;

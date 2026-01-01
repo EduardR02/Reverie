@@ -9,6 +9,7 @@ struct Annotation: Identifiable, Codable, FetchableRecord, MutablePersistableRec
     var content: String
     var sourceBlockId: Int  // Block number [N] this insight relates to
     var isSeen: Bool = false
+    var refinedSearchQuery: String?
 
     static let databaseTableName = "annotations"
 
@@ -55,6 +56,6 @@ enum AnnotationType: String, Codable {
 
 extension Annotation {
     enum Columns: String, ColumnExpression {
-        case id, chapterId, type, title, content, sourceBlockId, isSeen
+        case id, chapterId, type, title, content, sourceBlockId, isSeen, refinedSearchQuery
     }
 }

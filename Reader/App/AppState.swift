@@ -19,6 +19,14 @@ final class AppState {
     var currentBook: Book?
     var currentChapterIndex: Int = 0
 
+    // Chat Handoff
+    struct ChatReference: Equatable {
+        let title: String
+        let content: String
+        let type: AnnotationType?
+    }
+    var pendingChatReference: ChatReference?
+
     // UI State
     var showImportSheet = false
     var showSettings: Bool {
@@ -133,6 +141,17 @@ final class AppState {
         }
     }
 
+    func recordQuizQuality(quiz: Quiz, feedback: Quiz.QualityFeedback) {
+        var updatedQuiz = quiz
+        updatedQuiz.qualityFeedback = feedback
+        
+        do {
+            try database.saveQuiz(&updatedQuiz)
+        } catch {
+            print("Failed to save quiz quality feedback: \(error)")
+        }
+    }
+
     func toggleBookFinished(_ book: Book) {
         var updatedBook = book
         updatedBook.isFinished.toggle()
@@ -161,6 +180,15 @@ final class AppState {
             saveStats()
         } catch {
             print("Failed to record annotation seen: \(error)")
+        }
+    }
+
+    func updateAnnotation(_ annotation: Annotation) {
+        var updated = annotation
+        do {
+            try database.saveAnnotation(&updated)
+        } catch {
+            print("Failed to update annotation: \(error)")
         }
     }
 

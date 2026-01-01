@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BB007F5D2F057A2000926C8E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = BB007F5C2F057A2000926C8E /* GRDB */; };
+		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		F001 /* ReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReaderApp.swift */; };
 		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002 /* AppState.swift */; };
 		F003 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = S003 /* Book.swift */; };
@@ -47,6 +48,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		PROD /* Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reader.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		S001 /* ReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderApp.swift; sourceTree = "<group>"; };
 		S002 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -162,6 +164,7 @@
 				S008 /* Database.swift */,
 				S009 /* EPUBParser.swift */,
 				S010 /* LLMService.swift */,
+				BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */,
 				SERVICES_LLM /* LLM */,
 				S011 /* ImageService.swift */,
 				S026 /* LibraryPaths.swift */,
@@ -326,6 +329,7 @@
 				F007 /* GeneratedImage.swift in Sources */,
 				F008 /* Database.swift in Sources */,
 				F009 /* EPUBParser.swift in Sources */,
+				BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */,
 				F010 /* LLMService.swift in Sources */,
 				F027 /* LLMStream.swift in Sources */,
 				F028 /* LLMSchemas.swift in Sources */,

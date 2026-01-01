@@ -340,6 +340,26 @@ Excerpt:
 """
     }
 
+    // MARK: - Search Query Distillation
+
+    static func distillSearchQueryPrompt(
+        insightTitle: String,
+        insightContent: String,
+        bookTitle: String,
+        author: String
+    ) -> LLMRequestPrompt {
+        let prompt = """
+Formulate the single most effective Google search query to find primary sources or deeper context for this literary insight.
+
+Book: "\(bookTitle)" by \(author)
+Insight: "\(insightTitle)"
+Detail: "\(insightContent)"
+
+Output ONLY the search query text. No quotes, no preamble.
+"""
+        return LLMRequestPrompt(text: prompt)
+    }
+
     // MARK: - Chapter Classification
 
     static func chapterClassificationPrompt(

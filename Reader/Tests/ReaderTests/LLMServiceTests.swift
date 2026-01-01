@@ -57,6 +57,40 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testDistillSearchQuerySuccess() async throws {
+        let jsonResponse = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "Refined Search Query"
+                    }]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = jsonResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        var settings = UserSettings()
+        settings.googleAPIKey = "mock-key"
+        let query = try await llmService.distillSearchQuery(
+            insightTitle: "Title",
+            insightContent: "Content",
+            bookTitle: "Book",
+            author: "Author",
+            settings: settings
+        )
+
+        XCTAssertEqual(query, "Refined Search Query")
+    }
+
+    @MainActor
     func testHandleAPIError() async throws {
         let errorJson = """
         {

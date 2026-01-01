@@ -190,7 +190,7 @@ struct ReaderView: View {
     private var aiPanel: some View {
         AIPanel(
             chapter: currentChapter,
-            annotations: annotations,
+            annotations: $annotations,
             quizzes: quizzes,
             footnotes: footnotes,
             images: images,

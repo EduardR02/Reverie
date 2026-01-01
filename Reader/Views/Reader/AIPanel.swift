@@ -3,7 +3,7 @@ import SwiftUI
 
 struct AIPanel: View {
     let chapter: Chapter?
-    let annotations: [Annotation]
+    @Binding var annotations: [Annotation]
     let quizzes: [Quiz]
     let footnotes: [Footnote]
     let images: [GeneratedImage]
@@ -58,10 +58,6 @@ struct AIPanel: View {
     private let chatScrollSpace = "chat-scroll"
     private let chatBottomId = "chat-bottom"
 
-    private var sortedAnnotations: [Annotation] {
-        annotations.sorted { $0.sourceBlockId < $1.sourceBlockId }
-    }
-
     private var sortedQuizzes: [Quiz] {
         quizzes.sorted { $0.sourceBlockId < $1.sourceBlockId }
     }
@@ -103,58 +99,90 @@ struct AIPanel: View {
         }
         .background(theme.surface)
         .onChange(of: currentAnnotationId) { _, newId in
-            // Auto-expand the current annotation when scrolling through text
-            if let newId = newId, selectedTab == .insights {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    expandedAnnotationId = newId
-                }
-                
-                // Record as seen in Journey
-                if let annotation = annotations.first(where: { $0.id == newId }) {
-                    appState.recordAnnotationSeen(annotation)
-                }
-            }
+            handleAnnotationChange(newId)
         }
         .onChange(of: currentFootnoteRefId) { _, newId in
             highlightedFootnoteId = newId
         }
         .onChange(of: externalTabSelection) { _, newTab in
-            // External tab control (e.g., auto-switch to quiz at chapter end)
-            if let tab = newTab {
-                if selectedTab != tab {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        selectedTab = tab
-                    }
-                }
-                // Reset external selection after applying
-                DispatchQueue.main.async {
-                    externalTabSelection = nil
-                }
-            }
+            handleExternalTabChange(newTab)
         }
         .onChange(of: pendingChatPrompt) { _, newPrompt in
-            let trimmed = newPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !trimmed.isEmpty else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                selectedTab = .chat
-            }
-            sendMessage(trimmed)
-            DispatchQueue.main.async {
-                pendingChatPrompt = nil
-            }
+            handlePendingChatPrompt(newPrompt)
         }
         .onChange(of: selectedTab) { _, newTab in
-            if newTab != .chat && isChatFocused {
-                isChatFocused = false
-            }
-            if newTab == .insights, let id = currentAnnotationId {
-                expandedAnnotationId = id
-            }
+            handleTabChange(newTab)
         }
         .onChange(of: isChatFocused) { _, newValue in
             if isChatInputFocused != newValue {
                 isChatInputFocused = newValue
             }
+        }
+        .onChange(of: appState.pendingChatReference) { _, newValue in
+            handlePendingReference(newValue)
+        }
+    }
+
+    private func handleAnnotationChange(_ newId: Int64?) {
+        // Auto-expand the current annotation when scrolling through text
+        if let newId = newId, selectedTab == .insights {
+            withAnimation(.easeOut(duration: 0.2)) {
+                expandedAnnotationId = newId
+            }
+            
+            // Record as seen in Journey
+            if let annotation = annotations.first(where: { $0.id == newId }) {
+                appState.recordAnnotationSeen(annotation)
+            }
+        }
+    }
+
+    private func handleExternalTabChange(_ newTab: Tab?) {
+        // External tab control (e.g., auto-switch to quiz at chapter end)
+        if let tab = newTab {
+            if selectedTab != tab {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    selectedTab = tab
+                }
+            }
+            // Reset external selection after applying
+            DispatchQueue.main.async {
+                externalTabSelection = nil
+            }
+        }
+    }
+
+    private func handlePendingChatPrompt(_ newPrompt: String?) {
+        let trimmed = newPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            selectedTab = .chat
+        }
+        sendMessage(trimmed)
+        DispatchQueue.main.async {
+            pendingChatPrompt = nil
+        }
+    }
+
+    private func handleTabChange(_ newTab: Tab) {
+        if newTab != .chat {
+            if isChatFocused {
+                isChatFocused = false
+            }
+            // If they switch away from chat without sending, clear the reference to prevent leaks
+            appState.pendingChatReference = nil
+        }
+        if newTab == .insights, let id = currentAnnotationId {
+            expandedAnnotationId = id
+        }
+    }
+
+    private func handlePendingReference(_ reference: AppState.ChatReference?) {
+        if let reference = reference {
+            let refMessage = ChatMessage(role: .reference, content: "", reference: reference)
+            chatMessages.append(refMessage)
+            chatScrollTick += 1
+            isChatFocused = true
         }
     }
 
@@ -305,35 +333,7 @@ struct AIPanel: View {
                             subtitle: "Insights will appear as you read"
                         )
                     } else if !annotations.isEmpty {
-                        ForEach(sortedAnnotations) { annotation in
-                            if let annotationId = annotation.id {
-                                AnnotationCard(
-                                    annotation: annotation,
-                                    isExpanded: expandedAnnotationId == annotationId,
-                                    isCurrent: currentAnnotationId == annotationId,
-                                    isAutoScroll: !isProgrammaticScroll,
-                                    onToggle: {
-                                        withAnimation(.easeOut(duration: 0.2)) {
-                                            if expandedAnnotationId == annotationId {
-                                                expandedAnnotationId = nil
-                                            } else {
-                                                expandedAnnotationId = annotationId
-                                                // Auto-scroll to passage when expanding
-                                                onScrollTo(annotationId)
-                                                externalScrollRequest = (annotationId, .insights)
-                                                scrollRequestCount += 1
-                                            }
-                                        }
-                                    },
-                                    onScrollTo: {
-                                        onScrollTo(annotationId)
-                                        externalScrollRequest = (annotationId, .insights)
-                                        scrollRequestCount += 1
-                                    }
-                                )
-                                .id(annotationId)
-                            }
-                        }
+                        annotationList
                     }
 
                     // More insights button
@@ -392,6 +392,51 @@ struct AIPanel: View {
                         expandedAnnotationId = id
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var annotationList: some View {
+        let indexById: [Int64: Int] = Dictionary(uniqueKeysWithValues: annotations.indices.compactMap { index in
+            guard let id = annotations[index].id else { return nil }
+            return (id, index)
+        })
+        let orderedIds = annotations
+            .sorted { $0.sourceBlockId < $1.sourceBlockId }
+            .compactMap { $0.id }
+
+        ForEach(orderedIds, id: \.self) { annotationId in
+            if let index = indexById[annotationId] {
+                AnnotationCard(
+                    annotation: $annotations[index],
+                    isExpanded: expandedAnnotationId == annotationId,
+                    isCurrent: currentAnnotationId == annotationId,
+                    isAutoScroll: !isProgrammaticScroll,
+                    onToggle: {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            if expandedAnnotationId == annotationId {
+                                expandedAnnotationId = nil
+                            } else {
+                                expandedAnnotationId = annotationId
+                                // Auto-scroll to passage when expanding
+                                onScrollTo(annotationId)
+                                externalScrollRequest = (annotationId, .insights)
+                                scrollRequestCount += 1
+                            }
+                        }
+                    },
+                    onScrollTo: {
+                        onScrollTo(annotationId)
+                        externalScrollRequest = (annotationId, .insights)
+                        scrollRequestCount += 1
+                    },
+                    selectedTab: $selectedTab,
+                    onUpdateAnnotation: { updated in
+                        appState.updateAnnotation(updated)
+                    }
+                )
+                .id(annotationId)
             }
         }
     }
@@ -995,11 +1040,15 @@ struct AIPanel: View {
             chatInput = ""
         }
 
-        // Add empty assistant message for streaming
         let assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil)
         chatMessages.append(assistantMessage)
         chatScrollTick += 1
         let messageIndex = chatMessages.count - 1
+
+        // Use the reference context for the prompt but DO NOT append a bubble here.
+        // The bubble was already appended by handlePendingReference.
+        let referenceContext = appState.pendingChatReference
+        appState.pendingChatReference = nil // Clear it immediately in AppState
 
         isLoading = true
 
@@ -1017,8 +1066,16 @@ struct AIPanel: View {
                     contentWithBlocks = text
                 }
 
+                // If we have context, prepend it to the message or use a specialized prompt
+                let finalQuery: String
+                if let ref = referenceContext {
+                    finalQuery = "Regarding the insight \"\(ref.title)\" (\(ref.content)): \(query)"
+                } else {
+                    finalQuery = query
+                }
+
                 let stream = appState.llmService.chatStreaming(
-                    message: query,
+                    message: finalQuery,
                     contentWithBlocks: contentWithBlocks,
                     rollingSummary: chapter.rollingSummary,
                     settings: appState.settings
@@ -1097,16 +1154,19 @@ struct ChatMessage: Identifiable {
     let role: Role
     var content: String
     var thinking: String?
+    var reference: AppState.ChatReference?
 
     enum Role {
         case user
         case assistant
+        case reference
     }
 
-    init(role: Role, content: String, thinking: String? = nil) {
+    init(role: Role, content: String, thinking: String? = nil, reference: AppState.ChatReference? = nil) {
         self.role = role
         self.content = content
         self.thinking = thinking
+        self.reference = reference
     }
 }
 
@@ -1142,60 +1202,87 @@ struct ChatBubble: View {
             if message.role == .user { Spacer(minLength: 40) }
 
             VStack(alignment: .leading, spacing: 8) {
-                // Thinking section (collapsible)
-                if let thinking = message.thinking, !thinking.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                showThinking.toggle()
+                if message.role == .reference, let ref = message.reference {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            if let type = ref.type {
+                                Image(systemName: type.icon)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(theme.rose)
                             }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "brain")
-                                    .font(.system(size: 11, weight: .medium))
-                                Text("Reasoning")
-                                    .font(.system(size: 11, weight: .medium))
-                                Spacer()
-                                Image(systemName: showThinking ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 9, weight: .semibold))
-                            }
-                            .foregroundColor(theme.muted)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(theme.base.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            Text(ref.title)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(theme.rose)
                         }
-                        .buttonStyle(.plain)
+                        
+                        Text(ref.content)
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.text)
+                            .lineLimit(3)
+                    }
+                    .padding(10)
+                    .background(theme.rose.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(theme.rose.opacity(0.2), lineWidth: 1)
+                    }
+                } else {
+                    // Thinking section (collapsible)
+                    if let thinking = message.thinking, !thinking.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    showThinking.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "brain")
+                                        .font(.system(size: 11, weight: .medium))
+                                    Text("Reasoning")
+                                        .font(.system(size: 11, weight: .medium))
+                                    Spacer()
+                                    Image(systemName: showThinking ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                                .foregroundColor(theme.muted)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(theme.base.opacity(0.5))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
 
-                        if showThinking {
-                            SelectableText(
-                                thinking,
-                                fontSize: 12,
-                                color: theme.subtle,
-                                isItalic: true
-                            )
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(theme.base.opacity(0.3))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            if showThinking {
+                                SelectableText(
+                                    thinking,
+                                    fontSize: 12,
+                                    color: theme.subtle,
+                                    isItalic: true
+                                )
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(theme.base.opacity(0.3))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
                         }
                     }
-                }
 
-                // Main content
-                SelectableText(
-                    message.content,
-                    fontSize: 14,
-                    color: message.role == .user ? theme.base : theme.text
-                )
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(message.role == .user ? theme.rose : theme.overlay)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                    // Main content
+                    SelectableText(
+                        message.content,
+                        fontSize: 14,
+                        color: message.role == .user ? theme.base : theme.text
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(message.role == .user ? theme.rose : theme.overlay)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
             }
 
-            if message.role == .assistant { Spacer(minLength: 40) }
+            if message.role == .assistant || message.role == .reference { Spacer(minLength: 40) }
         }
     }
 }
@@ -1203,15 +1290,18 @@ struct ChatBubble: View {
 // MARK: - Annotation Card
 
 struct AnnotationCard: View {
-    let annotation: Annotation
+    @Binding var annotation: Annotation
     let isExpanded: Bool
     let isCurrent: Bool
     let isAutoScroll: Bool
     let onToggle: () -> Void
     let onScrollTo: () -> Void
+    @Binding var selectedTab: AIPanel.Tab
+    let onUpdateAnnotation: (Annotation) -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
+    @State private var isSearching = false
 
     private var showHighlight: Bool {
         if !isCurrent { return false }
@@ -1272,19 +1362,61 @@ struct AnnotationCard: View {
                         lineSpacing: 4
                     )
 
-                    // Jump to source
-                    Button(action: onScrollTo) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.right.circle")
-                            Text("Go to passage")
+                    HStack(spacing: 8) {
+                        // Jump to source
+                        Button(action: onScrollTo) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.right.circle")
+                                Text("Passage")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(theme.rose)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            .background(theme.rose.opacity(0.1))
+                            .clipShape(Capsule())
                         }
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(theme.rose)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+
+                        // Web Search
+                        Button {
+                            performSearch()
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isSearching {
+                                    ProgressView().scaleEffect(0.5)
+                                } else {
+                                    Image(systemName: "magnifyingglass.circle")
+                                }
+                                Text("Search")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(theme.iris)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            .background(theme.iris.opacity(0.1))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSearching)
+
+                        // Ask about this
+                        Button {
+                            handoffToChat()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrowshape.turn.up.right")
+                                Text("Ask")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(theme.foam)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            .background(theme.foam.opacity(0.1))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
@@ -1298,6 +1430,81 @@ struct AnnotationCard: View {
         }
         .animation(.easeOut(duration: 0.2), value: showHighlight)
     }
+
+    private func performSearch() {
+        // 1. If we have a cached refined query, use it immediately
+        if let refined = annotation.refinedSearchQuery, !refined.isEmpty {
+            if let url = SearchQueryBuilder.searchURL(for: refined) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
+
+        let bookTitle = appState.currentBook?.title ?? "Unknown"
+        let author = appState.currentBook?.author ?? "Unknown"
+        
+        // 2. Otherwise, we need to distill it. Show loading.
+        Task { @MainActor in
+            isSearching = true
+            defer { isSearching = false }
+            
+            do {
+                let refinedRaw = try await appState.llmService.distillSearchQuery(
+                    insightTitle: annotation.title,
+                    insightContent: annotation.content,
+                    bookTitle: bookTitle,
+                    author: author,
+                    settings: appState.settings
+                )
+                
+                let refined = SearchQueryBuilder.validateQuery(refinedRaw)
+                guard !refined.isEmpty else { throw SearchError.emptyResult }
+                
+                // Cache it in parent/binding (single source of truth)
+                var updated = annotation
+                updated.refinedSearchQuery = refined
+                annotation = updated
+                
+                // Persist to DB
+                onUpdateAnnotation(updated)
+                
+                if let url = SearchQueryBuilder.searchURL(for: refined) {
+                    NSWorkspace.shared.open(url)
+                }
+            } catch {
+                // Fallback to deterministic query if LLM fails or returns junk
+                let detQuery = SearchQueryBuilder.deterministicQuery(
+                    insightTitle: annotation.title,
+                    insightContent: annotation.content,
+                    bookTitle: bookTitle,
+                    author: author
+                )
+                if let url = SearchQueryBuilder.searchURL(for: detQuery) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    enum SearchError: Error {
+        case emptyResult
+    }
+
+    private func handoffToChat() {
+        let reference = AppState.ChatReference(
+            title: annotation.title,
+            content: annotation.content,
+            type: annotation.type
+        )
+        
+        appState.pendingChatReference = reference
+        
+        withAnimation(.easeOut(duration: 0.2)) {
+            selectedTab = .chat
+        }
+        
+        // Focus will be handled by AIPanel observing pendingChatReference or selectedTab
+    }
 }
 
 // MARK: - Quiz Card
@@ -1310,16 +1517,53 @@ struct QuizCard: View {
     @Environment(AppState.self) private var appState
     @State private var showAnswer = false
     @State private var userResponse: Bool?
+    @State private var qualityFeedback: Quiz.QualityFeedback?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Question
-            SelectableText(
-                quiz.question,
-                fontSize: 14,
-                fontWeight: .medium,
-                color: theme.text
-            )
+            // Question Header with Quality Feedback
+            HStack(alignment: .top) {
+                SelectableText(
+                    quiz.question,
+                    fontSize: 14,
+                    fontWeight: .medium,
+                    color: theme.text
+                )
+                
+                Spacer()
+                
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.spring(duration: 0.2)) {
+                            qualityFeedback = .good
+                        }
+                        appState.recordQuizQuality(quiz: quiz, feedback: .good)
+                    } label: {
+                        Image(systemName: qualityFeedback == .good ? "hand.thumbsup.fill" : "hand.thumbsup")
+                            .font(.system(size: 11))
+                            .foregroundColor(qualityFeedback == .good ? theme.foam : theme.muted)
+                            .padding(6)
+                            .background(qualityFeedback == .good ? theme.foam.opacity(0.15) : Color.clear)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        withAnimation(.spring(duration: 0.2)) {
+                            qualityFeedback = .garbage
+                        }
+                        appState.recordQuizQuality(quiz: quiz, feedback: .garbage)
+                    } label: {
+                        Image(systemName: qualityFeedback == .garbage ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                            .font(.system(size: 11))
+                            .foregroundColor(qualityFeedback == .garbage ? theme.love : theme.muted)
+                            .padding(6)
+                            .background(qualityFeedback == .garbage ? theme.love.opacity(0.15) : Color.clear)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
 
             if showAnswer {
                 // Answer
@@ -1366,7 +1610,7 @@ struct QuizCard: View {
                 .buttonStyle(.plain)
             }
 
-            // Feedback buttons (after answer shown)
+            // Correctness feedback buttons (after answer shown)
             if showAnswer && userResponse == nil {
                 HStack(spacing: 12) {
                     Text("Did you know this?")
@@ -1408,6 +1652,7 @@ struct QuizCard: View {
             if quiz.userAnswered {
                 userResponse = quiz.userCorrect
             }
+            qualityFeedback = quiz.qualityFeedback
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {

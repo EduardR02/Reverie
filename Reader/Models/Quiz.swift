@@ -9,6 +9,12 @@ struct Quiz: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
     var sourceBlockId: Int  // Block number [N] containing the answer
     var userAnswered: Bool = false
     var userCorrect: Bool?
+    var qualityFeedback: QualityFeedback?
+
+    enum QualityFeedback: String, Codable {
+        case good
+        case garbage
+    }
 
     static let databaseTableName = "quizzes"
 
@@ -25,6 +31,6 @@ struct Quiz: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
 
 extension Quiz {
     enum Columns: String, ColumnExpression {
-        case id, chapterId, question, answer, sourceBlockId, userAnswered, userCorrect
+        case id, chapterId, question, answer, sourceBlockId, userAnswered, userCorrect, qualityFeedback
     }
 }

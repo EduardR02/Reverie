@@ -31,8 +31,23 @@ final class DatabaseServiceTests: XCTestCase {
         
         // Verify cascade
         XCTAssertEqual(try db.fetchAllBooks().count, 0)
-        // Check chapters directly via SQL or GRDB since fetchChapters needs a Book object
-        // but it's enough to know the cascade is defined in the schema.
+    }
+
+    func testAnnotationRefinedSearchQuery() throws {
+        var book = Book(title: "T", author: "A", epubPath: "P")
+        try db.saveBook(&book)
+        
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C", contentHTML: "H")
+        try db.saveChapter(&chapter)
+        
+        var annotation = Annotation(chapterId: chapter.id!, type: .science, title: "T", content: "C", sourceBlockId: 1)
+        try db.saveAnnotation(&annotation)
+        
+        annotation.refinedSearchQuery = "Refined Query"
+        try db.saveAnnotation(&annotation)
+        
+        let fetched = try db.fetchAnnotations(for: chapter)
+        XCTAssertEqual(fetched.first?.refinedSearchQuery, "Refined Query")
     }
 
     func testSaveChapterUpdatesExisting() throws {
@@ -53,5 +68,28 @@ final class DatabaseServiceTests: XCTestCase {
         
         book.classificationStatus = .failed
         XCTAssertTrue(book.needsClassification, "Should retry if failed")
+    }
+
+    func testQuizQualityFeedback() throws {
+        var book = Book(title: "T", author: "A", epubPath: "P")
+        try db.saveBook(&book)
+        
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C", contentHTML: "H")
+        try db.saveChapter(&chapter)
+        
+        var quiz = Quiz(chapterId: chapter.id!, question: "Q", answer: "A", sourceBlockId: 1)
+        try db.saveQuiz(&quiz)
+        
+        quiz.qualityFeedback = .good
+        try db.saveQuiz(&quiz)
+        
+        let fetched = try db.fetchQuizzes(for: chapter)
+        XCTAssertEqual(fetched.first?.qualityFeedback, .good)
+        
+        quiz.qualityFeedback = .garbage
+        try db.saveQuiz(&quiz)
+        
+        let fetched2 = try db.fetchQuizzes(for: chapter)
+        XCTAssertEqual(fetched2.first?.qualityFeedback, .garbage)
     }
 }

@@ -82,6 +82,7 @@ final class DatabaseService {
                 t.column("content", .text).notNull()
                 t.column("sourceBlockId", .integer).notNull()
                 t.column("isSeen", .boolean).notNull().defaults(to: false)
+                t.column("refinedSearchQuery", .text)
             }
 
             try db.create(table: "quizzes") { t in
@@ -92,6 +93,7 @@ final class DatabaseService {
                 t.column("sourceBlockId", .integer).notNull()
                 t.column("userAnswered", .boolean).notNull().defaults(to: false)
                 t.column("userCorrect", .boolean)
+                t.column("qualityFeedback", .text)
             }
 
             try db.create(table: "generated_images") { t in

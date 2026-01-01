@@ -169,6 +169,36 @@ final class LLMService {
         )
     }
 
+    // MARK: - Search Query Distillation
+
+    func distillSearchQuery(
+        insightTitle: String,
+        insightContent: String,
+        bookTitle: String,
+        author: String,
+        settings: UserSettings
+    ) async throws -> String {
+        let prompt = PromptLibrary.distillSearchQueryPrompt(
+            insightTitle: insightTitle,
+            insightContent: insightContent,
+            bookTitle: bookTitle,
+            author: author
+        )
+
+        // Always use Flash (or cheapest) for this fast task
+        let (provider, model, key) = classificationModelSelection(settings: settings)
+
+        return try await requestText(
+            prompt: prompt,
+            provider: provider,
+            model: model,
+            apiKey: key,
+            temperature: 0.0,
+            reasoning: .off,
+            nameHint: "distill_search"
+        )
+    }
+
     // MARK: - Chat (Q&A)
 
     func chat(
