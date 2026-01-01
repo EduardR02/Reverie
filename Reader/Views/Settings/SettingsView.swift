@@ -269,6 +269,14 @@ struct SettingsView: View {
                             .pickerStyle(.segmented)
                         }
                     }
+
+                    Divider().background(theme.overlay)
+
+                    Toggle(isOn: $state.settings.webSearchEnabled) {
+                        toggleLabel(title: "Web Search", subtitle: "Allow models to search the web for external context")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .tint(theme.rose)
                 }
             }
 

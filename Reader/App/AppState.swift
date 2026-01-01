@@ -398,6 +398,7 @@ struct UserSettings: Codable, Equatable {
     var chatReasoningLevel: ReasoningLevel = .medium
     var insightReasoningLevel: ReasoningLevel = .high
     var temperature: Double = 1.0
+    var webSearchEnabled: Bool = true
     var autoSwitchToQuiz: Bool = true
     var autoSwitchContextTabs: Bool = true
     var autoSwitchFromChatOnScroll: Bool = true

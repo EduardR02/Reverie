@@ -120,6 +120,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
+            webSearch: settings.webSearchEnabled,
             nameHint: "chapter_analysis"
         )
     }
@@ -145,6 +146,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: .off,
+            webSearch: false, // Explicitly false for word explanation
             nameHint: "explain_word"
         )
     }
@@ -165,6 +167,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: .off,
+            webSearch: false, // Explicitly false for image prompts
             nameHint: "image_prompt"
         )
     }
@@ -195,6 +198,7 @@ final class LLMService {
             apiKey: key,
             temperature: settings.temperature,
             reasoning: .off,
+            webSearch: false, // Explicitly false
             nameHint: "distill_search"
         )
     }
@@ -220,6 +224,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.chatReasoningLevel,
+            webSearch: false, // Explicitly false for chat (as per request)
             nameHint: "chat"
         )
     }
@@ -245,6 +250,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.chatReasoningLevel,
+            webSearch: false, // Explicitly false
             nameHint: "chat_stream"
         )
     }
@@ -272,6 +278,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
+            webSearch: settings.webSearchEnabled,
             nameHint: "more_insights"
         )
 
@@ -298,6 +305,7 @@ final class LLMService {
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
+            webSearch: settings.webSearchEnabled, // Quiz generation also gets it
             nameHint: "more_questions"
         )
 
@@ -397,6 +405,7 @@ final class LLMService {
         apiKey: String,
         temperature: Double,
         reasoning: ReasoningLevel,
+        webSearch: Bool = false,
         nameHint: String? = nil
     ) async throws -> String {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -412,7 +421,8 @@ final class LLMService {
             temperature: temperature,
             reasoning: reasoning,
             schema: nil,
-            stream: false
+            stream: false,
+            webSearch: webSearch
         )
 
         let data = try await performRequest(request)
@@ -431,6 +441,7 @@ final class LLMService {
         apiKey: String,
         temperature: Double,
         reasoning: ReasoningLevel,
+        webSearch: Bool = false,
         nameHint: String? = nil
     ) async throws -> T {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -446,7 +457,8 @@ final class LLMService {
             temperature: temperature,
             reasoning: reasoning,
             schema: schema,
-            stream: false
+            stream: false,
+            webSearch: webSearch
         )
 
         let data = try await performRequest(request)
@@ -547,6 +559,7 @@ final class LLMService {
         apiKey: String,
         temperature: Double,
         reasoning: ReasoningLevel,
+        webSearch: Bool = false,
         nameHint: String? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -566,7 +579,8 @@ final class LLMService {
                         temperature: temperature,
                         reasoning: reasoning,
                         schema: nil,
-                        stream: true
+                        stream: true,
+                        webSearch: webSearch
                     )
 
                     let (bytes, response) = try await session.bytes(for: request)

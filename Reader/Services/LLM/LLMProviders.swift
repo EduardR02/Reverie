@@ -8,7 +8,8 @@ protocol LLMProviderClient {
         temperature: Double,
         reasoning: ReasoningLevel,
         schema: LLMStructuredSchema?,
-        stream: Bool
+        stream: Bool,
+        webSearch: Bool
     ) throws -> URLRequest
 
     func parseResponseText(from data: Data) throws -> (String, LLMService.TokenUsage?)
@@ -31,7 +32,8 @@ struct OpenAIProvider: LLMProviderClient {
         temperature: Double,
         reasoning: ReasoningLevel,
         schema: LLMStructuredSchema?,
-        stream: Bool
+        stream: Bool,
+        webSearch: Bool
     ) throws -> URLRequest {
         let url = URL(string: "https://api.openai.com/v1/responses")!
         let reasoner = isReasoner(model)
@@ -44,6 +46,10 @@ struct OpenAIProvider: LLMProviderClient {
             "max_output_tokens": reasoner ? 100000 : 16384,
             "stream": stream
         ]
+
+        if webSearch {
+            body["tools"] = [["type": "web_search"]]
+        }
 
         if let schema {
             body["text"] = [
@@ -142,7 +148,8 @@ struct GeminiProvider: LLMProviderClient {
         temperature: Double,
         reasoning: ReasoningLevel,
         schema: LLMStructuredSchema?,
-        stream: Bool
+        stream: Bool,
+        webSearch: Bool
     ) throws -> URLRequest {
         let isGemini3 = model.contains("gemini-3")
         let isGemini25 = model.contains("gemini-2.5") && !model.contains("image")
@@ -180,7 +187,7 @@ struct GeminiProvider: LLMProviderClient {
         let endpoint = stream ? "streamGenerateContent?alt=sse&" : "generateContent?"
         let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(endpoint)key=\(apiKey)")!
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "contents": [
                 ["role": "user", "parts": [["text": prompt.text]]]
             ],
@@ -192,6 +199,10 @@ struct GeminiProvider: LLMProviderClient {
             ],
             "generationConfig": generationConfig
         ]
+
+        if webSearch {
+            body["tools"] = [["google_search": [:]]]
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -298,7 +309,8 @@ struct AnthropicProvider: LLMProviderClient {
         temperature: Double,
         reasoning: ReasoningLevel,
         schema: LLMStructuredSchema?,
-        stream: Bool
+        stream: Bool,
+        webSearch: Bool
     ) throws -> URLRequest {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
         let thinkingCapable = canThink(model)
@@ -321,6 +333,14 @@ struct AnthropicProvider: LLMProviderClient {
             ],
             "stream": stream
         ]
+
+        if webSearch {
+            body["tools"] = [[
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 2
+            ]]
+        }
 
         if shouldThink {
             body["thinking"] = [
