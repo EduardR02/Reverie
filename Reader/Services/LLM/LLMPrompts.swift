@@ -349,11 +349,28 @@ Excerpt:
         author: String
     ) -> LLMRequestPrompt {
         let prompt = """
-Formulate the single most effective Google search query to find primary sources or deeper context for this literary insight.
+A reader just finished reading a literary insight and clicked "search" to learn more. They might want to:
+- Explore topic, connections, and philosophical implications
+- Verify factual claims or get technical details
+- Find discussion, analysis, or deeper context
 
 Book: "\(bookTitle)" by \(author)
 Insight: "\(insightTitle)"
 Detail: "\(insightContent)"
+
+Formulate a Google search query that serves these purposes well.
+
+Good queries work for BOTH exploration and verification:
+- "Procyon star system white dwarf energy"
+- "lunar regolith oxygen silicon semiconductor fabrication"
+- "Nick Bostrom simulation argument counterarguments"
+
+Avoid:
+- site: restrictions
+- Overly narrow or technical jargon-only queries
+- Queries that would return 0 results
+
+The query should be discoverable enough to surface content AND specific enough to be relevant.
 
 Output ONLY the search query text. No quotes, no preamble.
 """

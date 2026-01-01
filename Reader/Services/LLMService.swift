@@ -193,7 +193,7 @@ final class LLMService {
             provider: provider,
             model: model,
             apiKey: key,
-            temperature: 0.0,
+            temperature: settings.temperature,
             reasoning: .off,
             nameHint: "distill_search"
         )
