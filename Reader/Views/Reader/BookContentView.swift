@@ -12,6 +12,24 @@ struct ImageMarkerInjection: Equatable {
     let sourceBlockId: Int
 }
 
+struct ScrollContext: Equatable {
+    let annotationId: Int64?
+    let imageId: Int64?
+    let footnoteRefId: String?
+    let blockId: Int?
+    let annotationBlockId: Int?
+    let imageBlockId: Int?
+    let footnoteBlockId: Int?
+    let primaryType: String?
+    let annotationDistance: Double
+    let imageDistance: Double
+    let footnoteDistance: Double
+    let scrollPercent: Double
+    let scrollOffset: Double
+    let viewportHeight: Double
+    let isProgrammatic: Bool
+}
+
 struct BookContentView: NSViewRepresentable {
     let chapter: Chapter
     let annotations: [Annotation]
@@ -22,7 +40,7 @@ struct BookContentView: NSViewRepresentable {
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
     let onImageMarkerDblClick: (Int64) -> Void
-    let onScrollPositionChange: (_ annotationId: Int64?, _ footnoteRefId: String?, _ imageId: Int64?, _ blockId: Int?, _ distances: String?, _ scrollPercent: Double, _ scrollOffset: Double, _ viewportHeight: Double, _ isProgrammatic: Bool) -> Void
+    let onScrollPositionChange: (_ context: ScrollContext) -> Void
     let onBottomTug: () -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
@@ -183,6 +201,16 @@ struct BookContentView: NSViewRepresentable {
                     z-index: 100 !important;
                     transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.4s !important;
                 }
+                
+                @keyframes marker-pulse-anim {
+                    0% { transform: scale(1.0); }
+                    25% { transform: scale(1.3); box-shadow: 0 0 12px var(--highlight-color); }
+                    100% { transform: scale(1.0); }
+                }
+                .marker-pulse {
+                    animation: marker-pulse-anim 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+                    z-index: 90;
+                }
             </style>
         </head>
         <body>
@@ -297,11 +325,32 @@ struct BookContentView: NSViewRepresentable {
                 let aD = body["annotationDist"] as? Double ?? .infinity
                 let iD = body["imageDist"] as? Double ?? .infinity
                 let fD = body["footnoteDist"] as? Double ?? .infinity
+                let aB = body["annotationBlockId"] as? Int
+                let iB = body["imageBlockId"] as? Int
+                let fB = body["footnoteBlockId"] as? Int
+                let pT = body["primaryType"] as? String
                 let sY = (body["scrollY"] as? Double) ?? 0
                 let sP = (body["scrollPercent"] as? Double) ?? 0
                 let vH = (body["viewportHeight"] as? Double) ?? 0
                 let isP = (body["isProgrammatic"] as? Bool) ?? false
-                parent.onScrollPositionChange(aId, fId, iId, bId, "\(aD),\(iD),\(fD)", sP, sY, vH, isP)
+                let context = ScrollContext(
+                    annotationId: aId,
+                    imageId: iId,
+                    footnoteRefId: fId,
+                    blockId: bId,
+                    annotationBlockId: aB,
+                    imageBlockId: iB,
+                    footnoteBlockId: fB,
+                    primaryType: pT,
+                    annotationDistance: aD,
+                    imageDistance: iD,
+                    footnoteDistance: fD,
+                    scrollPercent: sP,
+                    scrollOffset: sY,
+                    viewportHeight: vH,
+                    isProgrammatic: isP
+                )
+                parent.onScrollPositionChange(context)
             default: break
             }
         }

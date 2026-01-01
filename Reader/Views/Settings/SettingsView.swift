@@ -197,9 +197,14 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.muted)
                         
-                        Text("Controls how many insights are generated per chapter")
-                            .font(.system(size: 12))
-                            .foregroundColor(theme.subtle)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Controls how many insights are generated per chapter.")
+                                .font(.system(size: 12))
+                            Text("Density is highly model-dependent—one model may interpret 'Medium' as more or less dense than another. We recommend fine-tuning this setting for your active model to ensure the best results.")
+                                .font(.system(size: 11))
+                                .italic()
+                        }
+                        .foregroundColor(theme.subtle)
                     }
 
                     HStack(spacing: 8) {

@@ -3,7 +3,11 @@ const focusState = {
     lastTargetId: null, 
     targetY: null,
     timeout: null,
-    reachedBottom: false
+    reachedBottom: false,
+    lastScrollY: 0,
+    lastVelocity: 0,
+    activeIds: { annotation: null, image: null, footnote: null },
+    primaryKey: null
 };
 let scrollTicking = false;
 
@@ -12,8 +16,161 @@ function getBlocks() {
 }
 
 function getMarkers() {
-    // Return all markers in DOM order
     return Array.from(document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref'));
+}
+
+function isPartiallyVisible(rect, viewportHeight) {
+    return rect.bottom >= 0 && rect.top <= viewportHeight;
+}
+
+function selectionThreshold(scrollPercent, viewportHeight) {
+    const base = Math.max(160, viewportHeight * 0.6);
+    const edgeBoost = (scrollPercent < 0.05 || scrollPercent > 0.95) ? viewportHeight * 0.25 : 0;
+    return base + edgeBoost;
+}
+
+function parseTargetId() {
+    if (!focusState.isProgrammaticScroll || !focusState.lastTargetId) return null;
+    const dashIndex = focusState.lastTargetId.indexOf("-");
+    if (dashIndex <= 0) return null;
+    return {
+        type: focusState.lastTargetId.slice(0, dashIndex),
+        id: focusState.lastTargetId.slice(dashIndex + 1)
+    };
+}
+
+function preferredIdForType(type) {
+    const parsed = parseTargetId();
+    if (!parsed || parsed.type !== type) return null;
+    return parsed.id;
+}
+
+function blockIdForElement(el) {
+    if (el.dataset.blockId) {
+        const parsed = parseInt(el.dataset.blockId, 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    const block = el.closest('[id^="block-"]');
+    if (!block) return null;
+    const raw = block.id.replace("block-", "");
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed)) {
+        el.dataset.blockId = String(parsed);
+        return parsed;
+    }
+    return null;
+}
+
+function computeVirtualPositions(items, minSpacing, minBound, maxBound) {
+    const ordered = items.slice().sort((a, b) => (a.y - b.y) || (a.order - b.order));
+    if (ordered.length <= 1) {
+        if (ordered[0]) {
+            const clamped = Math.min(maxBound, Math.max(minBound, ordered[0].y));
+            ordered[0].virtualY = clamped;
+        }
+        return ordered;
+    }
+
+    const minY = ordered[0].y;
+    const maxY = ordered[ordered.length - 1].y;
+    const span = Math.max(1, maxY - minY);
+    const requiredSpan = minSpacing * Math.max(1, ordered.length - 1);
+    const extra = Math.max(0, requiredSpan - span);
+    let targetMin = minY - extra * 0.5;
+    let targetMax = maxY + extra * 0.5;
+
+    if (targetMin < minBound) {
+        const shift = minBound - targetMin;
+        targetMin += shift;
+        targetMax += shift;
+    }
+    if (targetMax > maxBound) {
+        const shift = targetMax - maxBound;
+        targetMin -= shift;
+        targetMax -= shift;
+    }
+    targetMin = Math.min(targetMin, targetMax);
+    targetMax = Math.max(targetMin, targetMax);
+
+    const v = ordered.map(item => item.y);
+    v[0] = Math.max(v[0], targetMin);
+    for (let i = 1; i < v.length; i++) {
+        v[i] = Math.max(v[i], v[i - 1] + minSpacing);
+    }
+    if (v[v.length - 1] > targetMax) v[v.length - 1] = targetMax;
+    for (let i = v.length - 2; i >= 0; i--) {
+        v[i] = Math.min(v[i], v[i + 1] - minSpacing);
+    }
+    if (v[0] < targetMin) {
+        const shift = targetMin - v[0];
+        for (let i = 0; i < v.length; i++) v[i] += shift;
+        const overshoot = v[v.length - 1] - targetMax;
+        if (overshoot > 0) {
+            for (let i = 0; i < v.length; i++) v[i] -= overshoot;
+        }
+    }
+
+    for (let i = 0; i < ordered.length; i++) {
+        ordered[i].virtualY = Math.min(maxBound, Math.max(minBound, v[i]));
+    }
+    return ordered;
+}
+
+function selectMarker(items, focusLine, minSpacing, maxDistance, lastKey, preferredKey, keyForItem) {
+    if (items.length === 0) return null;
+    if (preferredKey) {
+        const preferred = items.find(item => keyForItem(item) === preferredKey);
+        if (preferred) {
+            const preferredY = preferred.virtualY ?? preferred.y;
+            preferred.distance = Math.abs(preferredY - focusLine);
+            return preferred;
+        }
+    }
+
+    const ordered = items.slice().sort((a, b) => {
+        const aY = a.virtualY ?? a.y;
+        const bY = b.virtualY ?? b.y;
+        return (aY - bY) || (a.order - b.order);
+    });
+    let best = ordered[0];
+    best.distance = Math.abs((best.virtualY ?? best.y) - focusLine);
+    for (const item of ordered) {
+        const distance = Math.abs((item.virtualY ?? item.y) - focusLine);
+        item.distance = distance;
+        if (distance < best.distance - 0.5) {
+            best = item;
+        }
+    }
+    if (best.distance > maxDistance) return null;
+
+    if (lastKey) {
+        const lastItem = ordered.find(item => keyForItem(item) === lastKey);
+        if (lastItem) {
+            const lastIndex = ordered.indexOf(lastItem);
+            const prev = lastIndex > 0 ? ordered[lastIndex - 1] : null;
+            const next = lastIndex < ordered.length - 1 ? ordered[lastIndex + 1] : null;
+            const lastY = lastItem.virtualY ?? lastItem.y;
+            const lower = prev ? ((prev.virtualY ?? prev.y) + lastY) * 0.5 : -Infinity;
+            const upper = next ? ((next.virtualY ?? next.y) + lastY) * 0.5 : Infinity;
+            const margin = Math.max(26, minSpacing * 0.32);
+            if (focusLine >= lower - margin && focusLine <= upper + margin) {
+                return lastItem;
+            }
+        }
+    }
+
+    return best;
+}
+
+function pulseMarker(el) {
+    if (!el) return;
+    const isImage = el.classList.contains('image-marker');
+    const colorVar = isImage ? '--iris' : '--rose';
+    el.style.setProperty('--highlight-color', 'var(' + colorVar + ')');
+    el.classList.remove('marker-pulse');
+    void el.offsetWidth; // Force reflow
+    el.classList.add('marker-pulse');
+    setTimeout(() => el.classList.remove('marker-pulse'), 650);
 }
 
 function setProgrammaticScroll(targetId, targetY) {
@@ -23,7 +180,7 @@ function setProgrammaticScroll(targetId, targetY) {
     if (focusState.timeout) clearTimeout(focusState.timeout);
     focusState.timeout = setTimeout(() => {
         focusState.isProgrammaticScroll = false;
-    }, 1500); // Slightly longer to ensure smooth arrival
+    }, 1500); 
 }
 
 function performSmoothScroll(element, ratio, targetId) {
@@ -38,7 +195,6 @@ function highlightElement(el, colorVar) {
     if (!el) return;
     el.classList.add('highlight-active');
     el.style.backgroundColor = 'var(' + colorVar + ')';
-    
     setTimeout(() => {
         el.style.transition = 'background-color 1.0s ease-out';
         el.style.backgroundColor = '';
@@ -53,13 +209,9 @@ function highlightMarker(el) {
     if (!el) return;
     const isImage = el.classList.contains('image-marker');
     const colorVar = isImage ? '--iris' : '--rose';
-    
     el.classList.add('marker-highlight');
     el.style.setProperty('--highlight-color', 'var(' + colorVar + ')');
-    
-    setTimeout(() => {
-        el.classList.remove('marker-highlight');
-    }, 1500);
+    setTimeout(() => el.classList.remove('marker-highlight'), 1500);
 }
 
 function scrollToAnnotation(id) {
@@ -93,8 +245,13 @@ function scrollToQuote(quote) {
 }
 
 window.addEventListener('scroll', () => {
+    const scrollY = window.scrollY;
+    const velocity = Math.abs(scrollY - focusState.lastScrollY);
+    focusState.lastVelocity = velocity;
+    focusState.lastScrollY = scrollY;
+
     if (focusState.isProgrammaticScroll && focusState.targetY !== null) {
-        if (Math.abs(window.scrollY - focusState.targetY) < 3) {
+        if (Math.abs(scrollY - focusState.targetY) < 3) {
             focusState.isProgrammaticScroll = false;
             if (focusState.timeout) clearTimeout(focusState.timeout);
         }
@@ -102,13 +259,11 @@ window.addEventListener('scroll', () => {
     if (!scrollTicking) {
         scrollTicking = true;
         window.requestAnimationFrame(() => {
-            const scrollY = window.scrollY;
             const viewportHeight = window.innerHeight;
             const scrollMax = document.documentElement.scrollHeight - viewportHeight;
             
             updateFocus();
             
-            // Refined bottom tug: Must reach bottom first, then scroll further
             if (scrollMax > 0) {
                 const atAbsoluteBottom = scrollY >= scrollMax - 1;
                 if (atAbsoluteBottom) {
@@ -117,10 +272,9 @@ window.addEventListener('scroll', () => {
                     focusState.reachedBottom = false;
                 }
                 
-                // If we are latched to bottom and user tries to scroll more
                 if (focusState.reachedBottom && scrollY > scrollMax + 5) {
                     webkit.messageHandlers.readerBridge.postMessage({type:'bottomTug'});
-                    focusState.reachedBottom = false; // Trigger once, reset latch
+                    focusState.reachedBottom = false; 
                 }
             }
             
@@ -135,100 +289,126 @@ function updateFocus() {
     const scrollMax = document.documentElement.scrollHeight - viewportHeight;
     const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
     
-    // THE ADAPTIVE EYE LINE (First Principle Solution)
-    // eyeRatio moves from 0 (start) -> 0.4 (stable) -> 1.0 (end)
-    // The transition happens over 40% of a viewport's height of scrolling.
-    const edgeThreshold = viewportHeight * 0.4;
-    let eyeRatio = 0.4;
+    // 1. Adaptive Eye Line (0.0 -> 0.4 -> 1.0)
+    const edgeThreshold = viewportHeight * 0.6;
+    let eyeRatio = 0.45;
     if (scrollY < edgeThreshold) {
-        eyeRatio = (scrollY / edgeThreshold) * 0.4;
+        const t = Math.max(0, Math.min(1, scrollY / edgeThreshold));
+        const pull = (1 - t) * 0.12;
+        eyeRatio = 0.45 - pull;
     } else if (scrollY > scrollMax - edgeThreshold) {
-        const over = scrollY - (scrollMax - edgeThreshold);
-        eyeRatio = 0.4 + (over / edgeThreshold) * 0.6;
+        const t = Math.max(0, Math.min(1, (scrollY - (scrollMax - edgeThreshold)) / edgeThreshold));
+        const pull = t * 0.18;
+        eyeRatio = 0.45 + pull;
     }
-    
-    // The absolute coordinate we are "reading" right now.
     const focusLine = scrollY + (eyeRatio * viewportHeight);
-    
+    const isFlying = focusState.lastVelocity > 40;
+
+    // 2. Block Tracking
     const blocks = getBlocks();
     let activeBlockIndex = -1;
     let minBlockDist = Infinity;
-
     blocks.forEach((block, index) => {
         const rect = block.getBoundingClientRect();
-        const top = rect.top + scrollY;
-        const bottom = rect.bottom + scrollY;
+        const top = rect.top + scrollY, bottom = rect.bottom + scrollY;
         let dist = (focusLine >= top && focusLine <= bottom) ? 0 : Math.min(Math.abs(top - focusLine), Math.abs(bottom - focusLine));
-        if (dist < minBlockDist) {
-            minBlockDist = dist;
-            activeBlockIndex = index;
-        }
+        if (dist < minBlockDist) { minBlockDist = dist; activeBlockIndex = index; }
     });
 
     const markers = getMarkers();
     if (markers.length === 0) {
-        sendScrollMessage(null, null, null, activeBlockIndex + 1, Infinity, Infinity, Infinity, scrollY, scrollPercent, viewportHeight);
+        sendScrollMessage(null, null, null, activeBlockIndex + 1, null, null, null, null, null, null, scrollY, scrollPercent, viewportHeight, focusState.isProgrammaticScroll);
         return;
     }
 
-    // 1. Calculate physical positions and metadata
-    const markerData = markers.map((m) => {
+    // 3. Marker selection (visible + proximity to focus line)
+    const markerData = markers.map((m, index) => {
         const rect = m.getBoundingClientRect();
+        const type = m.classList.contains('annotation-marker') ? 'annotation' : (m.classList.contains('image-marker') ? 'image' : 'footnote');
+        const id = m.dataset.annotationId || m.dataset.imageId || (type === 'footnote' ? (m.getAttribute('href')?.split('#')[1] || m.id) : null);
         return {
             el: m,
-            y: rect.top + scrollY,
-            // Visibility is the ultimate gate for highlight/expansion
-            isVisible: rect.top >= -20 && rect.bottom <= viewportHeight + 20,
-            id: m.dataset.annotationId || m.dataset.imageId || (m.classList.contains('footnote-ref') ? (m.getAttribute('href')?.split('#')[1] || m.id) : null),
-            type: m.classList.contains('annotation-marker') ? 'annotation' : (m.classList.contains('image-marker') ? 'image' : 'footnote')
+            id,
+            type,
+            order: index,
+            y: rect.top + scrollY + (rect.height * 0.5),
+            isVisible: isPartiallyVisible(rect, viewportHeight),
+            blockId: blockIdForElement(m)
         };
     });
 
-    // 2. Sort by Y then DOM order
-    markerData.sort((a, b) => (a.y - b.y) || (markers.indexOf(a.el) - markers.indexOf(b.el)));
-
-    // 3. Localized Virtual Spacing: 50px for colliding markers
-    const spacing = 50;
-    for (let i = 0; i < markerData.length; i++) {
-        if (i === 0) {
-            markerData[i].virtualY = markerData[i].y;
-        } else {
-            if (markerData[i].y < markerData[i-1].virtualY + 10) {
-                markerData[i].virtualY = markerData[i-1].virtualY + spacing;
-            } else {
-                markerData[i].virtualY = markerData[i].y;
-            }
+    const byType = { annotation: [], image: [], footnote: [] };
+    for (const marker of markerData) {
+        if (marker.id) {
+            byType[marker.type].push(marker);
         }
     }
 
-    // 4. Visibility-Gated Ordinal Selection
-    const findActive = (type) => {
-        const filtered = markerData.filter(m => m.type === type);
-        let candidate = null;
-        for (let i = 0; i < filtered.length; i++) {
-            const m = filtered[i];
-            if (m.isVisible && focusLine >= m.virtualY - 10) {
-                candidate = m;
-            }
-        }
-        return candidate;
+    const minSpacing = Math.max(140, viewportHeight * 0.22);
+    const maxDistance = selectionThreshold(scrollPercent, viewportHeight);
+    const prevActive = { ...focusState.activeIds };
+    const keyForType = (item) => item.id;
+
+    const visibleAll = markerData.filter(item => item.id && item.isVisible);
+    const virtualMax = scrollMax + viewportHeight;
+    if (visibleAll.length > 0) {
+        computeVirtualPositions(visibleAll, minSpacing, 0, virtualMax);
+    }
+
+    const selectForType = (type, items) => {
+        const visible = items.filter(item => item.isVisible);
+        if (visible.length === 0) return null;
+        const preferredId = preferredIdForType(type);
+        const lastId = focusState.activeIds[type];
+        return selectMarker(visible, focusLine, minSpacing, maxDistance, lastId, preferredId, keyForType);
     };
 
-    const bestA = findActive('annotation');
-    const bestI = findActive('image');
-    const bestF = findActive('footnote');
+    const bestA = selectForType('annotation', byType.annotation);
+    const bestI = selectForType('image', byType.image);
+    const bestF = selectForType('footnote', byType.footnote);
+    const parsedTarget = parseTargetId();
+    const preferredPrimary = parsedTarget ? `${parsedTarget.type}:${parsedTarget.id}` : null;
+    const primary = selectMarker(
+        visibleAll,
+        focusLine,
+        minSpacing,
+        maxDistance,
+        focusState.primaryKey,
+        preferredPrimary,
+        (item) => `${item.type}:${item.id}`
+    );
 
-    const getVDist = (m) => m ? Math.abs(m.virtualY - focusLine) : Infinity;
+    // 4. Visual Pulse on Commitment
+    if (!isFlying && !focusState.isProgrammaticScroll) {
+        if (bestA && bestA.id !== prevActive.annotation) pulseMarker(bestA.el);
+        if (bestI && bestI.id !== prevActive.image) pulseMarker(bestI.el);
+        if (bestF && bestF.id !== prevActive.footnote) pulseMarker(bestF.el);
+    }
 
+    focusState.activeIds = { annotation: bestA?.id || null, image: bestI?.id || null, footnote: bestF?.id || null };
+    focusState.primaryKey = primary ? `${primary.type}:${primary.id}` : null;
+
+    // 5. Stable Delivery
     sendScrollMessage(
-        bestA?.id, bestI?.id, bestF?.id, 
-        activeBlockIndex + 1, 
-        getVDist(bestA), getVDist(bestI), getVDist(bestF), 
-        scrollY, scrollPercent, viewportHeight
+        bestA?.id || null,
+        bestI?.id || null,
+        bestF?.id || null,
+        activeBlockIndex + 1,
+        bestA ? bestA.distance : null,
+        bestI ? bestI.distance : null,
+        bestF ? bestF.distance : null,
+        bestA?.blockId || null,
+        bestI?.blockId || null,
+        bestF?.blockId || null,
+        primary?.type || null,
+        scrollY,
+        scrollPercent,
+        viewportHeight,
+        focusState.isProgrammaticScroll
     );
 }
 
-function sendScrollMessage(aId, iId, fId, bId, aD, iD, fD, sY, sP, vH) {
+function sendScrollMessage(aId, iId, fId, bId, aD, iD, fD, aB, iB, fB, pT, sY, sP, vH, isP) {
     const isArrival = (focusState.lastTargetId === 'annotation-' + aId) || 
                       (focusState.lastTargetId === 'image-' + iId) ||
                       (focusState.lastTargetId === 'footnote-' + fId) ||
@@ -243,9 +423,38 @@ function sendScrollMessage(aId, iId, fId, bId, aD, iD, fD, sY, sP, vH) {
         type: 'scrollPosition',
         annotationId: aId, imageId: iId, footnoteRefId: fId, blockId: bId,
         annotationDist: aD, imageDist: iD, footnoteDist: fD,
+        annotationBlockId: aB, imageBlockId: iB, footnoteBlockId: fB,
+        primaryType: pT,
         scrollY: sY, scrollPercent: sP, viewportHeight: vH,
-        isProgrammatic: focusState.isProgrammaticScroll
+        isProgrammatic: isP
     });
+}
+
+function scrollToPercent(p) { const m = document.documentElement.scrollHeight - window.innerHeight; window.scrollTo({top: m * p, behavior:'auto'}); }
+function scrollToOffset(o) { window.scrollTo({top: o, behavior:'auto'}); }
+
+function injectMarkerAtBlock(aId, bId) {
+    const blocks = getBlocks();
+    if (bId > 0 && bId <= blocks.length) {
+        const block = blocks[bId-1];
+        const marker = document.createElement('span');
+        marker.className = 'annotation-marker';
+        marker.dataset.annotationId = aId;
+        marker.dataset.blockId = bId;
+        block.appendChild(marker);
+    }
+}
+
+function injectImageMarker(iId, bId) {
+    const blocks = getBlocks();
+    if (bId > 0 && bId <= blocks.length) {
+        const block = blocks[bId-1];
+        const marker = document.createElement('span');
+        marker.className = 'image-marker';
+        marker.dataset.imageId = iId;
+        marker.dataset.blockId = bId;
+        block.appendChild(marker);
+    }
 }
 
 document.addEventListener('click', e => {
@@ -278,29 +487,3 @@ document.addEventListener('mouseup', e => {
 document.addEventListener('mousedown', e => { if(!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display='none'; });
 function handleExplain() { webkit.messageHandlers.readerBridge.postMessage({type:'explain', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); document.getElementById('wordPopup').style.display = 'none'; }
 function handleGenerateImage() { webkit.messageHandlers.readerBridge.postMessage({type:'generateImage', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); document.getElementById('wordPopup').style.display = 'none'; }
-function scrollToPercent(p) { const m = document.documentElement.scrollHeight - window.innerHeight; window.scrollTo({top: m * p, behavior:'auto'}); }
-function scrollToOffset(o) { window.scrollTo({top: o, behavior:'auto'}); }
-
-function injectMarkerAtBlock(aId, bId) {
-    const blocks = getBlocks();
-    if (bId > 0 && bId <= blocks.length) {
-        const block = blocks[bId-1];
-        const marker = document.createElement('span');
-        marker.className = 'annotation-marker';
-        marker.dataset.annotationId = aId;
-        marker.dataset.blockId = bId;
-        block.appendChild(marker);
-    }
-}
-
-function injectImageMarker(iId, bId) {
-    const blocks = getBlocks();
-    if (bId > 0 && bId <= blocks.length) {
-        const block = blocks[bId-1];
-        const marker = document.createElement('span');
-        marker.className = 'image-marker';
-        marker.dataset.imageId = iId;
-        marker.dataset.blockId = bId;
-        block.appendChild(marker);
-    }
-}

@@ -332,64 +332,57 @@ struct ReaderView: View {
                         onAnnotationClick: handleAnnotationClick,
                         onImageMarkerClick: handleImageMarkerClick,
                         onFootnoteClick: handleFootnoteClick,
-                                                onImageMarkerDblClick: { imageId in
-                                                    if let image = images.first(where: { $0.id == imageId }) {
-                                                        withAnimation(.easeOut(duration: 0.2)) {
-                                                            expandedImage = image
-                                                        }
-                                                    }
-                                                },
-                                                                        onScrollPositionChange: { annotationId, footnoteRefId, imageId, blockId, distances, scrollPercent, scrollOffset, viewportHeight, isProgrammatic in
-                                                                            self.isProgrammaticScroll = isProgrammatic
-                                                                            
-                                                                            // Selection Lock logic
-                                                                            if !isProgrammatic {
-                                                
-                                                        navigationIntent = nil
-                                                    }
-                        
-                                                    let isLocked: Bool = {
-                                                        if let intent = navigationIntent, !intent.isExpired {
-                                                            let targets = [
-                                                                annotationId.map { "annotation-\($0)" },
-                                                                footnoteRefId.map { "footnote-\($0)" },
-                                                                imageId.map { "image-\($0)" },
-                                                                blockId.map { "block-\($0)" }
-                                                            ].compactMap { $0 }
-                                                            
-                                                            if targets.contains(intent.targetId) {
-                                                                navigationIntent = nil
-                                                                return false
-                                                            }
-                                                            return true
-                                                        }
-                                                        return false
-                                                    }()
-                        
-                                                    if !isLocked {
-                                                        currentAnnotationId = annotationId
-                                                        currentImageId = imageId
-                                                        currentFootnoteRefId = footnoteRefId
-                                                    }
-                        
+                        onImageMarkerDblClick: { imageId in
+                            if let image = images.first(where: { $0.id == imageId }) {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    expandedImage = image
+                                }
+                            }
+                        },
+                        onScrollPositionChange: { context in
+                            isProgrammaticScroll = context.isProgrammatic
 
-                            lastScrollPercent = scrollPercent
-                            lastScrollOffset = scrollOffset
-                            
-                            appState.updateChapterProgress(chapter: chapter, scrollPercent: scrollPercent, scrollOffset: scrollOffset)
-                            appState.readingSpeedTracker.updateSession(scrollPercent: scrollPercent)
-                            updateBackAnchor(scrollOffset: scrollOffset, viewportHeight: viewportHeight)
-                            
-                            if scrollPercent < 0.85 {
+                            // Selection Lock logic
+                            if !context.isProgrammatic {
+                                navigationIntent = nil
+                            }
+
+                            let isLocked: Bool = {
+                                if let intent = navigationIntent, !intent.isExpired {
+                                    let targets = [
+                                        context.annotationId.map { "annotation-\($0)" },
+                                        context.footnoteRefId.map { "footnote-\($0)" },
+                                        context.imageId.map { "image-\($0)" },
+                                        context.blockId.map { "block-\($0)" }
+                                    ].compactMap { $0 }
+
+                                    if targets.contains(intent.targetId) {
+                                        navigationIntent = nil
+                                        return false
+                                    }
+                                    return true
+                                }
+                                return false
+                            }()
+
+                            if !isLocked {
+                                currentAnnotationId = context.annotationId
+                                currentImageId = context.imageId
+                                currentFootnoteRefId = context.footnoteRefId
+                            }
+
+                            lastScrollPercent = context.scrollPercent
+                            lastScrollOffset = context.scrollOffset
+
+                            appState.updateChapterProgress(chapter: chapter, scrollPercent: context.scrollPercent, scrollOffset: context.scrollOffset)
+                            appState.readingSpeedTracker.updateSession(scrollPercent: context.scrollPercent)
+                            updateBackAnchor(scrollOffset: context.scrollOffset, viewportHeight: context.viewportHeight)
+
+                            if context.scrollPercent < 0.85 {
                                 hasAutoSwitchedToQuiz = false
                             }
 
-                            handleAutoSwitch(
-                                distances: distances,
-                                annotationId: annotationId,
-                                imageId: imageId,
-                                footnoteRefId: footnoteRefId
-                            )
+                            handleAutoSwitch(context: context)
                         },
                         onBottomTug: {
                             handleQuizAutoSwitchOnTug()
@@ -1046,33 +1039,26 @@ struct ReaderView: View {
         externalTabSelection = .footnotes
     }
 
-    private func handleAutoSwitch(distances: String?, annotationId: Int64?, imageId: Int64?, footnoteRefId: String?) {
-        guard appState.settings.autoSwitchContextTabs, let distStr = distances else { return }
-        let parts = distStr.components(separatedBy: ",")
-        guard parts.count == 3 else { return }
-        let annotationDist = Double(parts[0]) ?? .infinity
-        let imageDist = Double(parts[1]) ?? .infinity
-        let footnoteDist = Double(parts[2]) ?? .infinity
+    private func handleAutoSwitch(context: ScrollContext) {
+        guard appState.settings.autoSwitchContextTabs else { return }
         let now = Date().timeIntervalSinceReferenceDate
         if now < suppressContextAutoSwitchUntil { return }
-        let candidates: [(tab: AIPanel.Tab, dist: Double, hasValue: Bool)] = [
-            (.images, imageDist, imageId != nil),
-            (.insights, annotationDist, annotationId != nil),
-            (.footnotes, footnoteDist, footnoteRefId != nil)
-        ]
-        let winner = candidates.filter { $0.hasValue }.min { a, b in
-            if abs(a.dist - b.dist) < 1 {
-                let priority: [AIPanel.Tab: Int] = [.images: 0, .insights: 1, .footnotes: 2]
-                return (priority[a.tab] ?? 99) < (priority[b.tab] ?? 99)
-            }
-            return a.dist < b.dist
-        }
-        guard let best = winner, best.dist < 300 else { return }
-        if best.tab == aiPanelSelectedTab { return }
         if aiPanelSelectedTab == .quiz || aiPanelSelectedTab == .chat { return }
-        if now - lastAutoSwitchAt < 0.25 { return }
+        guard let primaryType = context.primaryType else { return }
+
+        let targetTab: AIPanel.Tab? = {
+            switch primaryType {
+            case "annotation": return .insights
+            case "image": return .images
+            case "footnote": return .footnotes
+            default: return nil
+            }
+        }()
+
+        guard let tab = targetTab, tab != aiPanelSelectedTab else { return }
+        if now - lastAutoSwitchAt < 0.2 { return }
         lastAutoSwitchAt = now
-        withAnimation(.easeOut(duration: 0.2)) { aiPanelSelectedTab = best.tab }
+        withAnimation(.easeOut(duration: 0.2)) { aiPanelSelectedTab = tab }
     }
 
     private func suppressContextAutoSwitch(for duration: TimeInterval = 2.0) {
