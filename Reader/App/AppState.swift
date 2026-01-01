@@ -141,7 +141,7 @@ final class AppState {
         }
     }
 
-    func recordQuizQuality(quiz: Quiz, feedback: Quiz.QualityFeedback) {
+    func recordQuizQuality(quiz: Quiz, feedback: Quiz.QualityFeedback?) {
         var updatedQuiz = quiz
         updatedQuiz.qualityFeedback = feedback
         

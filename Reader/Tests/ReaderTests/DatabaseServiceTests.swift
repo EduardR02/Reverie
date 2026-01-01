@@ -92,4 +92,24 @@ final class DatabaseServiceTests: XCTestCase {
         let fetched2 = try db.fetchQuizzes(for: chapter)
         XCTAssertEqual(fetched2.first?.qualityFeedback, .garbage)
     }
+
+    func testQuizQualityFeedbackClears() throws {
+        var book = Book(title: "T", author: "A", epubPath: "P")
+        try db.saveBook(&book)
+
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C", contentHTML: "H")
+        try db.saveChapter(&chapter)
+
+        var quiz = Quiz(chapterId: chapter.id!, question: "Q", answer: "A", sourceBlockId: 1)
+        try db.saveQuiz(&quiz)
+
+        quiz.qualityFeedback = .good
+        try db.saveQuiz(&quiz)
+
+        quiz.qualityFeedback = nil
+        try db.saveQuiz(&quiz)
+
+        let fetched = try db.fetchQuizzes(for: chapter)
+        XCTAssertNil(fetched.first?.qualityFeedback)
+    }
 }

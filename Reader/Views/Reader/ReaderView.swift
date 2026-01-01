@@ -191,7 +191,7 @@ struct ReaderView: View {
         AIPanel(
             chapter: currentChapter,
             annotations: $annotations,
-            quizzes: quizzes,
+            quizzes: $quizzes,
             footnotes: footnotes,
             images: images,
             currentAnnotationId: currentAnnotationId,

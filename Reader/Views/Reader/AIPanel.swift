@@ -4,7 +4,7 @@ import SwiftUI
 struct AIPanel: View {
     let chapter: Chapter?
     @Binding var annotations: [Annotation]
-    let quizzes: [Quiz]
+    @Binding var quizzes: [Quiz]
     let footnotes: [Footnote]
     let images: [GeneratedImage]
     let currentAnnotationId: Int64?
@@ -57,10 +57,6 @@ struct AIPanel: View {
 
     private let chatScrollSpace = "chat-scroll"
     private let chatBottomId = "chat-bottom"
-
-    private var sortedQuizzes: [Quiz] {
-        quizzes.sorted { $0.sourceBlockId < $1.sourceBlockId }
-    }
 
     private var sortedImages: [GeneratedImage] {
         images.sorted { $0.sourceBlockId < $1.sourceBlockId }
@@ -533,14 +529,7 @@ struct AIPanel: View {
                         subtitle: "Quiz questions will appear at chapter end"
                     )
                 } else if !quizzes.isEmpty {
-                    ForEach(sortedQuizzes) { quiz in
-                        QuizCard(
-                            quiz: quiz,
-                            onScrollTo: {
-                                onScrollToBlockId(quiz.sourceBlockId, nil)
-                            }
-                        )
-                    }
+                    quizList
 
                     // More questions button
                     if !isProcessingInsights {
@@ -569,6 +558,29 @@ struct AIPanel: View {
                 }
             }
             .padding(16)
+        }
+    }
+
+    @ViewBuilder
+    private var quizList: some View {
+        let indexById: [Int64: Int] = Dictionary(uniqueKeysWithValues: quizzes.indices.compactMap { index in
+            guard let id = quizzes[index].id else { return nil }
+            return (id, index)
+        })
+        let orderedIds = quizzes
+            .sorted { $0.sourceBlockId < $1.sourceBlockId }
+            .compactMap { $0.id }
+
+        ForEach(orderedIds, id: \.self) { quizId in
+            if let index = indexById[quizId] {
+                QuizCard(
+                    quiz: $quizzes[index],
+                    onScrollTo: {
+                        onScrollToBlockId(quizzes[index].sourceBlockId, nil)
+                    }
+                )
+                .id(quizId)
+            }
         }
     }
 
@@ -1379,26 +1391,7 @@ struct AnnotationCard: View {
                         .buttonStyle(.plain)
 
                         // Web Search
-                        Button {
-                            performSearch()
-                        } label: {
-                            HStack(spacing: 4) {
-                                if isSearching {
-                                    ProgressView().scaleEffect(0.5)
-                                } else {
-                                    Image(systemName: "magnifyingglass.circle")
-                                }
-                                Text("Search")
-                            }
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(theme.iris)
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 8)
-                            .background(theme.iris.opacity(0.1))
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isSearching)
+                        searchControl
 
                         // Ask about this
                         Button {
@@ -1431,9 +1424,79 @@ struct AnnotationCard: View {
         .animation(.easeOut(duration: 0.2), value: showHighlight)
     }
 
-    private func performSearch() {
+    private var cachedSearchQuery: String? {
+        guard let query = annotation.refinedSearchQuery else { return nil }
+        let cleaned = SearchQueryBuilder.validateQuery(query)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private var searchControl: some View {
+        let hasCachedQuery = cachedSearchQuery != nil
+        let labelText = isSearching ? "Forming" : "Search"
+        let iconName = hasCachedQuery ? "magnifyingglass.circle.fill" : "magnifyingglass.circle"
+
+        return HStack(spacing: 0) {
+            Button {
+                performSearch(regenerate: false)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 12))
+                        .frame(width: 12, height: 12)
+                    Text(labelText)
+                    if isSearching {
+                        AnimatedEllipsis()
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(theme.iris)
+                .padding(.vertical, 6)
+                .padding(.leading, 8)
+                .padding(.trailing, hasCachedQuery ? 4 : 8)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSearching)
+            .help(hasCachedQuery ? "Cached search query" : "Generate search query")
+
+            if hasCachedQuery {
+                Button {
+                    performSearch(regenerate: true)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(theme.iris)
+                        .frame(width: 16, height: 16)
+                        .background(theme.iris.opacity(0.2))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isSearching)
+                .padding(.trailing, 8)
+                .help("Regenerate search query")
+            }
+        }
+        .frame(height: 26)
+        .background(theme.iris.opacity(hasCachedQuery ? 0.18 : 0.1))
+        .clipShape(Capsule())
+        .animation(.easeOut(duration: 0.2), value: isSearching)
+    }
+
+    private struct AnimatedEllipsis: View {
+        var body: some View {
+            TimelineView(.periodic(from: .now, by: 0.4)) { context in
+                let phase = Int(context.date.timeIntervalSinceReferenceDate / 0.4) % 4
+                HStack(spacing: 0) {
+                    Text(".").opacity(phase >= 1 ? 1 : 0.2)
+                    Text(".").opacity(phase >= 2 ? 1 : 0.2)
+                    Text(".").opacity(phase >= 3 ? 1 : 0.2)
+                }
+            }
+        }
+    }
+
+    private func performSearch(regenerate: Bool) {
         // 1. If we have a cached refined query, use it immediately
-        if let refined = annotation.refinedSearchQuery, !refined.isEmpty {
+        if !regenerate, let refined = cachedSearchQuery {
             if let url = SearchQueryBuilder.searchURL(for: refined) {
                 NSWorkspace.shared.open(url)
                 return
@@ -1510,14 +1573,17 @@ struct AnnotationCard: View {
 // MARK: - Quiz Card
 
 struct QuizCard: View {
-    let quiz: Quiz
+    @Binding var quiz: Quiz
     let onScrollTo: () -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
     @State private var showAnswer = false
-    @State private var userResponse: Bool?
-    @State private var qualityFeedback: Quiz.QualityFeedback?
+    
+    private var userResponse: Bool? {
+        guard quiz.userAnswered else { return nil }
+        return quiz.userCorrect
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1534,31 +1600,33 @@ struct QuizCard: View {
                 
                 HStack(spacing: 8) {
                     Button {
+                        let nextFeedback: Quiz.QualityFeedback? = quiz.qualityFeedback == .good ? nil : .good
                         withAnimation(.spring(duration: 0.2)) {
-                            qualityFeedback = .good
+                            quiz.qualityFeedback = nextFeedback
                         }
-                        appState.recordQuizQuality(quiz: quiz, feedback: .good)
+                        appState.recordQuizQuality(quiz: quiz, feedback: nextFeedback)
                     } label: {
-                        Image(systemName: qualityFeedback == .good ? "hand.thumbsup.fill" : "hand.thumbsup")
+                        Image(systemName: quiz.qualityFeedback == .good ? "hand.thumbsup.fill" : "hand.thumbsup")
                             .font(.system(size: 11))
-                            .foregroundColor(qualityFeedback == .good ? theme.foam : theme.muted)
+                            .foregroundColor(quiz.qualityFeedback == .good ? theme.foam : theme.muted)
                             .padding(6)
-                            .background(qualityFeedback == .good ? theme.foam.opacity(0.15) : Color.clear)
+                            .background(quiz.qualityFeedback == .good ? theme.foam.opacity(0.15) : Color.clear)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                     
                     Button {
+                        let nextFeedback: Quiz.QualityFeedback? = quiz.qualityFeedback == .garbage ? nil : .garbage
                         withAnimation(.spring(duration: 0.2)) {
-                            qualityFeedback = .garbage
+                            quiz.qualityFeedback = nextFeedback
                         }
-                        appState.recordQuizQuality(quiz: quiz, feedback: .garbage)
+                        appState.recordQuizQuality(quiz: quiz, feedback: nextFeedback)
                     } label: {
-                        Image(systemName: qualityFeedback == .garbage ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                        Image(systemName: quiz.qualityFeedback == .garbage ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                             .font(.system(size: 11))
-                            .foregroundColor(qualityFeedback == .garbage ? theme.love : theme.muted)
+                            .foregroundColor(quiz.qualityFeedback == .garbage ? theme.love : theme.muted)
                             .padding(6)
-                            .background(qualityFeedback == .garbage ? theme.love.opacity(0.15) : Color.clear)
+                            .background(quiz.qualityFeedback == .garbage ? theme.love.opacity(0.15) : Color.clear)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -1620,7 +1688,8 @@ struct QuizCard: View {
                     Spacer()
 
                     Button {
-                        userResponse = true
+                        quiz.userAnswered = true
+                        quiz.userCorrect = true
                         appState.recordQuizAnswer(quiz: quiz, correct: true)
                     } label: {
                         Image(systemName: "checkmark.circle")
@@ -1632,7 +1701,8 @@ struct QuizCard: View {
                     .buttonStyle(.plain)
 
                     Button {
-                        userResponse = false
+                        quiz.userAnswered = true
+                        quiz.userCorrect = false
                         appState.recordQuizAnswer(quiz: quiz, correct: false)
                     } label: {
                         Image(systemName: "xmark.circle")
@@ -1648,12 +1718,6 @@ struct QuizCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.base)
-        .onAppear {
-            if quiz.userAnswered {
-                userResponse = quiz.userCorrect
-            }
-            qualityFeedback = quiz.qualityFeedback
-        }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
