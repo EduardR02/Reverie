@@ -11,7 +11,7 @@ const MIN_TERRITORY_HEIGHT = 100; // Preferred minimum scroll height for each ma
 const HYSTERESIS_THRESHOLD = 20;  // Pixels to 'break' focus into a new zone
 const EYE_LINE_RATIO = 0.4;       // Focal point at 40% of viewport height
 const VISIBILITY_BUFFER = 5;      // Pixels marker can be off-screen before clearing
-const DEBUG_MODE = true;          // Visualizes territories and focus logic
+const DEBUG_MODE = false;          // Visualizes territories and focus logic
 
 // --- Global State ---
 const focusState = { 
@@ -150,7 +150,8 @@ function getMarkers() {
 
 /**
  * Builds the Elastic Territory Map.
- * Now adapts MIN_TERRITORY_HEIGHT to ensure all markers fit in short chapters.
+ * Now uses a Stop-Centered approach where territories are divided based on
+ * Ideal Stops (the scroll position where a marker sits at 40% height).
  */
 function buildTerritoryMap() {
     const stations = getMarkers();
@@ -162,55 +163,47 @@ function buildTerritoryMap() {
     if (n === 0) {
         focusState.stations = [];
         focusState.boundaries = [];
+        focusState.stops = [];
         return;
     }
 
-    const pointerMin = vH * EYE_LINE_RATIO;
-    const pointerMax = scrollMax + pointerMin;
-    const pointerRange = pointerMax - pointerMin;
+    // Density Safety: Ensure MIN_TERRITORY_HEIGHT doesn't exceed available scroll range
+    const effectiveMinHeight = Math.min(MIN_TERRITORY_HEIGHT, scrollMax / n);
 
-    // Density Safety: Ensure MIN_TERRITORY_HEIGHT doesn't exceed available space
-    const effectiveMinHeight = Math.min(MIN_TERRITORY_HEIGHT, pointerRange / n);
+    // 1. Calculate Ideal Stops
+    // The scroll position where the marker is at EYE_LINE_RATIO
+    let stops = stations.map(s => {
+        const ideal = s.y - (vH * EYE_LINE_RATIO);
+        return Math.max(0, Math.min(scrollMax, ideal));
+    });
 
-    let boundaries = [];
-    let cumulativeOffset = 0;
-
-    for (let i = 0; i < n - 1; i++) {
-        const naturalMidpoint = (stations[i].y + stations[i+1].y) / 2;
-        const scrollRatio = naturalMidpoint / scrollHeight;
-        let idealBoundary = pointerMin + (scrollRatio * pointerRange);
-        let actualBoundary = idealBoundary + cumulativeOffset;
-        
-        const prevBoundary = i === 0 ? pointerMin : boundaries[i-1];
-        
-        // 1. Enforce effective minimum height (Push Down)
-        if (actualBoundary < prevBoundary + effectiveMinHeight) {
-            const push = (prevBoundary + effectiveMinHeight) - actualBoundary;
-            actualBoundary += push;
-            cumulativeOffset += push;
-        } 
-        // 2. Slack Absorption (Elastic Return)
-        else if (cumulativeOffset > 0) {
-            const slack = actualBoundary - (prevBoundary + effectiveMinHeight);
-            const absorption = Math.min(cumulativeOffset, slack * 0.4);
-            actualBoundary -= absorption;
-            cumulativeOffset -= absorption;
+    // 2. Enforce Minimum Spacing (Forward Pass)
+    for (let i = 1; i < n; i++) {
+        if (stops[i] < stops[i-1] + effectiveMinHeight) {
+            stops[i] = stops[i-1] + effectiveMinHeight;
         }
-        
-        // 3. Final Safety Clamp: Don't push boundaries past reachable pointerMax
-        const remainingStations = n - 1 - i;
-        const maxAllowed = pointerMax - (remainingStations * effectiveMinHeight);
-        if (actualBoundary > maxAllowed) {
-            const overflow = actualBoundary - maxAllowed;
-            actualBoundary = maxAllowed;
-            cumulativeOffset -= overflow;
-        }
-
-        boundaries.push(actualBoundary);
     }
-    boundaries.push(pointerMax);
+
+    // 3. Backward Pass (to respect scrollMax while maintaining spacing)
+    if (stops[n-1] > scrollMax) {
+        stops[n-1] = scrollMax;
+        for (let i = n - 2; i >= 0; i--) {
+            if (stops[i] > stops[i+1] - effectiveMinHeight) {
+                stops[i] = stops[i+1] - effectiveMinHeight;
+            }
+        }
+    }
+
+    // 4. Calculate Boundaries (midway between adjusted stops)
+    let boundaries = [];
+    for (let i = 0; i < n - 1; i++) {
+        boundaries.push((stops[i] + stops[i+1]) / 2);
+    }
+    // Final boundary is beyond the end of the scroll range
+    boundaries.push(scrollMax + 1000);
 
     focusState.stations = stations;
+    focusState.stops = stops;
     focusState.boundaries = boundaries;
 }
 
@@ -236,6 +229,7 @@ function updateFocus() {
     // Visibility Data
     const markerData = focusState.stations.map(s => {
         const rect = s.el.getBoundingClientRect();
+        // Check if marker is within viewport (with a small buffer)
         const isVisible = rect.bottom >= -VISIBILITY_BUFFER && rect.top <= vH + VISIBILITY_BUFFER;
         return { ...s, isVisible, rect };
     });
@@ -243,23 +237,22 @@ function updateFocus() {
     if (isLocked && targetId) {
         newStationIndex = markerData.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
     } else if (markerData.length > 0) {
-        const pointerY = scrollY + (vH * EYE_LINE_RATIO);
         let idx = focusState.currentStationIndex;
         
         if (idx === -1) {
-            idx = focusState.boundaries.findIndex(b => pointerY <= b);
+            idx = focusState.boundaries.findIndex(b => scrollY <= b);
             if (idx === -1) idx = markerData.length - 1;
         } else {
             const lower = idx === 0 ? 0 : focusState.boundaries[idx - 1];
             const upper = focusState.boundaries[idx];
             
             // Instant catch-up for large moves
-            if (pointerY > upper + 100 || pointerY < lower - 100) {
-                idx = focusState.boundaries.findIndex(b => pointerY <= b);
+            if (scrollY > upper + 100 || scrollY < lower - 100) {
+                idx = focusState.boundaries.findIndex(b => scrollY <= b);
                 if (idx === -1) idx = markerData.length - 1;
             } else {
-                if (pointerY > upper + HYSTERESIS_THRESHOLD && idx < markerData.length - 1) idx++;
-                else if (pointerY < lower - HYSTERESIS_THRESHOLD && idx > 0) idx--;
+                if (scrollY > upper + HYSTERESIS_THRESHOLD && idx < markerData.length - 1) idx++;
+                else if (scrollY < lower - HYSTERESIS_THRESHOLD && idx > 0) idx--;
             }
         }
 
@@ -268,10 +261,10 @@ function updateFocus() {
         if (owner && owner.isVisible) {
             newStationIndex = idx;
         } else {
-            if (owner && scrollY + owner.rect.bottom < 0) {
+            if (owner && owner.rect.bottom < 0) { // Off-screen Top
                 const nextVisible = markerData.slice(idx + 1).find(m => m.isVisible);
                 if (nextVisible) newStationIndex = markerData.indexOf(nextVisible);
-            } else if (owner && owner.rect.top > vH) {
+            } else if (owner && owner.rect.top > vH) { // Off-screen Bottom
                 const prevVisible = markerData.slice(0, idx).reverse().find(m => m.isVisible);
                 if (prevVisible) newStationIndex = markerData.indexOf(prevVisible);
             }
@@ -282,7 +275,7 @@ function updateFocus() {
     const blocks = getBlocks();
     let activeBlockIndex = -1;
     let minBlockDist = Infinity;
-    const blockEyeLine = scrollY + (vH * 0.45); 
+    const blockEyeLine = scrollY + (vH * EYE_LINE_RATIO); 
     blocks.forEach((b, i) => {
         const r = b.getBoundingClientRect();
         const top = r.top + scrollY, bot = r.bottom + scrollY;
@@ -291,10 +284,16 @@ function updateFocus() {
     });
 
     const hasChanged = newStationIndex !== focusState.currentStationIndex;
-    if (hasChanged) {
+    const significantScroll = Math.abs(scrollY - (focusState.lastReportedScrollY || 0)) > 30;
+
+    if (hasChanged || significantScroll) {
         const station = markerData[newStationIndex];
         focusState.currentStationIndex = newStationIndex;
-        if (!isLocked && station && station.isVisible && focusState.lastVelocity < 40) pulseMarker(station.el);
+        focusState.lastReportedScrollY = scrollY;
+        
+        if (hasChanged && !isLocked && station && station.isVisible && focusState.lastVelocity < 40) {
+            pulseMarker(station.el);
+        }
 
         webkit.messageHandlers.readerBridge.postMessage({
             type: 'scrollPosition',
@@ -313,36 +312,92 @@ function updateFocus() {
 
 /**
  * Visualizes territories for debugging.
+ * Provides a sidebar mini-map and in-situ highlights.
  */
 function updateDebugOverlay() {
     let container = document.getElementById('territoryDebug');
     if (!container) {
         container = document.createElement('div');
         container.id = 'territoryDebug';
-        container.style = "position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999;";
+        container.style = "position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; font-family:monospace;";
         document.body.appendChild(container);
     }
     container.innerHTML = '';
+    
     const vH = window.innerHeight;
     const scrollY = window.scrollY;
-    const pointerY = scrollY + (vH * EYE_LINE_RATIO);
+    const scrollHeight = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, scrollHeight - vH);
     
-    const pLine = document.createElement('div');
-    pLine.style = `position:absolute; top:${pointerY}px; left:0; width:100%; height:2px; background:rgba(255,0,0,0.6);`;
-    container.appendChild(pLine);
+    // --- 1. Sidebar Mini-map (Fixed) ---
+    const sidebarWidth = 60;
+    const sidebar = document.createElement('div');
+    sidebar.style = `position:fixed; top:0; right:0; width:${sidebarWidth}px; height:100vh; background:rgba(0,0,0,0.05); border-left:1px solid rgba(0,0,0,0.1); z-index:10001;`;
+    container.appendChild(sidebar);
 
-    const pMin = vH * EYE_LINE_RATIO;
+    // Current Scroll Indicator in Sidebar
+    const scrollIndicator = document.createElement('div');
+    const scrollPosRatio = scrollY / scrollMax;
+    scrollIndicator.style = `position:absolute; top:${scrollPosRatio * 100}%; right:0; width:100%; height:2px; background:red; z-index:10002;`;
+    sidebar.appendChild(scrollIndicator);
+
+    // --- 2. Territories & Stops ---
     focusState.boundaries.forEach((b, i) => {
-        const start = i === 0 ? pMin : focusState.boundaries[i-1];
+        const start = i === 0 ? 0 : focusState.boundaries[i-1];
+        const height = b - start;
+        if (height <= 0) return;
+
+        const isActive = scrollY >= start && scrollY < b;
+        const color = i % 2 === 0 ? '0, 255, 0' : '0, 0, 255';
+        const opacity = isActive ? '0.1' : '0.03';
+
+        // A. In-situ Box (Full Width)
         const box = document.createElement('div');
-        box.style = `position:absolute; top:${start}px; left:0; width:100%; height:${b - start}px; border-top:1px solid rgba(0,0,0,0.1);`;
-        box.style.backgroundColor = i % 2 === 0 ? 'rgba(0, 255, 0, 0.05)' : 'rgba(0, 0, 255, 0.05)';
+        box.style = `position:absolute; top:${start}px; left:0; width:100%; height:${height}px; border-top:1px solid rgba(0,0,0,0.05); box-sizing:border-box;`;
+        box.style.backgroundColor = `rgba(${color}, ${opacity})`;
+        
+        if (isActive) {
+            box.style.borderLeft = "4px solid red";
+        }
+
         const label = document.createElement('span');
-        label.innerText = `T${i} (${focusState.stations[i].id})`;
-        label.style = "font-size:9px; color:rgba(0,0,0,0.3); margin-left:10px;";
+        label.innerText = `T${i}:${focusState.stations[i].type.charAt(0)} Stop:${Math.round(focusState.stops[i])}`;
+        label.style = `font-size:10px; color:${isActive ? 'red' : 'rgba(0,0,0,0.4)'}; font-weight:${isActive ? 'bold' : 'normal'}; margin-left:10px; position:absolute; top:4px; background:rgba(255,255,255,0.7); padding:2px; border-radius:2px;`;
         box.appendChild(label);
+
+        // B. Mini-map Segment
+        const segment = document.createElement('div');
+        const segTop = (start / scrollMax) * 100;
+        const segHeight = (height / scrollMax) * 100;
+        segment.style = `position:absolute; top:${segTop}%; left:0; width:100%; height:${segHeight}%; background:rgba(${color}, 0.2); border-bottom:1px solid rgba(0,0,0,0.1); box-sizing:border-box;`;
+        
+        const stopDot = document.createElement('div');
+        const stopRatio = (focusState.stops[i] / scrollMax) * 100;
+        stopDot.style = `position:absolute; top:${(stopRatio - segTop) / segHeight * 100}%; left:0; width:100%; height:2px; background:magenta;`;
+        segment.appendChild(stopDot);
+        
+        sidebar.appendChild(segment);
+
+        // C. Draw the Stop line in-situ
+        const stopY = focusState.stops[i];
+        const stopLine = document.createElement('div');
+        stopLine.style = `position:absolute; top:${stopY}px; left:0; width:100%; height:1px; border-top:1px dashed rgba(255,0,255,0.4);`;
+        container.appendChild(stopLine);
+
         container.appendChild(box);
     });
+
+    // Info Panel
+    const info = document.createElement('div');
+    info.style = "position:fixed; bottom:20px; right:70px; padding:10px; background:white; border:1px solid #ccc; font-size:11px; z-index:10003; box-shadow:0 2px 10px rgba(0,0,0,0.1); border-radius:4px;";
+    info.innerHTML = `
+        <b>Debug Map</b><br>
+        Active: T${focusState.currentStationIndex}<br>
+        ScrollY: ${Math.round(scrollY)}<br>
+        <span style="color:magenta">---</span> Ideal Stop<br>
+        <span style="background:rgba(0,255,0,0.2)">T(even)</span> <span style="background:rgba(0,0,255,0.2)">T(odd)</span>
+    `;
+    container.appendChild(info);
 }
 
 function pulseMarker(el) {
