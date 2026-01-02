@@ -421,6 +421,39 @@ function updateFocus() {
     );
 }
 
+const selectionOverlay = document.getElementById('selectionOverlay');
+
+function clearSelectionOverlay() {
+    if (!selectionOverlay) return;
+    selectionOverlay.innerHTML = '';
+}
+
+function updateSelectionOverlay() {
+    if (!selectionOverlay) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        clearSelectionOverlay();
+        return;
+    }
+
+    const range = sel.getRangeAt(0);
+    const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
+    
+    clearSelectionOverlay();
+    rects.forEach(rect => {
+        const div = document.createElement('div');
+        div.className = 'selection-rect';
+        div.style.left = (rect.left + window.scrollX) + 'px';
+        div.style.top = (rect.top + window.scrollY) + 'px';
+        div.style.width = rect.width + 'px';
+        div.style.height = rect.height + 'px';
+        selectionOverlay.appendChild(div);
+    });
+}
+
+document.addEventListener('selectionchange', updateSelectionOverlay);
+window.addEventListener('resize', updateSelectionOverlay);
+
 function sendScrollMessage(aId, iId, fId, bId, aD, iD, fD, aB, iB, fB, pT, sY, sP, vH, isP) {
     const isArrival = (focusState.lastTargetId === 'annotation-' + aId) || 
                       (focusState.lastTargetId === 'image-' + iId) ||
@@ -484,18 +517,27 @@ document.addEventListener('dblclick', e => {
 });
 
 document.addEventListener('mouseup', e => {
-    const sel = window.getSelection();
-    const txt = sel.toString().trim();
-    if (!sel.isCollapsed && txt) {
-        const range = sel.getRangeAt(0);
-        const container = range.startContainer.parentElement;
-        const blocks = getBlocks();
-        let bId = 1;
-        for(let i=0; i<blocks.length; i++) { if(blocks[i].contains(container)) { bId = i+1; break; } }
+    // Small delay to ensure selection state is updated by the browser
+    setTimeout(() => {
+        const sel = window.getSelection();
+        const txt = sel.toString().trim();
         const p = document.getElementById('wordPopup');
-        p.style.left = e.clientX+'px'; p.style.top = (e.clientY+10)+'px'; p.style.display = 'block';
-        window.selectedWord = txt; window.selectedBlockId = bId; window.selectedContext = container.textContent;
-    }
+        
+        if (!sel.isCollapsed && txt) {
+            const range = sel.getRangeAt(0);
+            const container = range.startContainer.parentElement;
+            const blocks = getBlocks();
+            let bId = 1;
+            for(let i=0; i<blocks.length; i++) { if(blocks[i].contains(container)) { bId = i+1; break; } }
+            
+            p.style.left = e.clientX+'px'; p.style.top = (e.clientY+10)+'px'; p.style.display = 'block';
+            window.selectedWord = txt; window.selectedBlockId = bId; window.selectedContext = container.textContent;
+        } else {
+            if (!e.target.closest('.word-popup')) {
+                p.style.display = 'none';
+            }
+        }
+    }, 20);
 });
 document.addEventListener('mousedown', e => { if(!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display='none'; });
 function handleExplain() { webkit.messageHandlers.readerBridge.postMessage({type:'explain', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); document.getElementById('wordPopup').style.display = 'none'; }

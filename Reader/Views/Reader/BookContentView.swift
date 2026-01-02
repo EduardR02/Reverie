@@ -181,6 +181,14 @@ struct BookContentView: NSViewRepresentable {
                 html, body { margin: 0; padding: 0; background: var(--base); color: var(--text); 
                              font-family: "\(fontFamily)", sans-serif; font-size: \(fontSize)px; line-height: \(lineSpacing); }
                 body { padding: 40px 60px; position: relative; }
+                
+                #readerContent { position: relative; z-index: 1; }
+                .selection-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 0; pointer-events: none; overflow: visible; z-index: 0; }
+                .selection-rect { position: absolute; background: var(--rose); border-radius: 2px; }
+
+                ::selection { background: transparent !important; color: var(--base) !important; }
+                ::-webkit-selection { background: transparent !important; color: var(--base) !important; }
+
                 .annotation-marker, .image-marker { 
                     display: inline-block; width: 10px; height: 10px; border-radius: 50%; 
                     margin-left: 6px; cursor: pointer; vertical-align: middle; transition: transform 0.2s, background-color 0.2s;
@@ -193,7 +201,7 @@ struct BookContentView: NSViewRepresentable {
                 .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
                 
                 /* Highlight animations */
-                .highlight-active { transition: background-color 0s !important; }
+                .highlight-active { border-radius: 4px; color: var(--base) !important; }
                 .marker-highlight { 
                     transform: scale(1.6) !important;
                     background-color: var(--highlight-color) !important;
@@ -203,17 +211,19 @@ struct BookContentView: NSViewRepresentable {
                 }
                 
                 @keyframes marker-pulse-anim {
-                    0% { transform: scale(1.0); }
-                    25% { transform: scale(1.3); box-shadow: 0 0 12px var(--highlight-color); }
-                    100% { transform: scale(1.0); }
+                    0% { background-color: var(--highlight-color); box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+                    30% { background-color: #ffffff; box-shadow: 0 0 8px 3px var(--highlight-color), 0 0 5px 2px rgba(255,255,255,0.9); }
+                    60% { background-color: var(--highlight-color); box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+                    100% { background-color: var(--highlight-color); box-shadow: 0 0 0 0 rgba(0,0,0,0); }
                 }
                 .marker-pulse {
-                    animation: marker-pulse-anim 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+                    animation: marker-pulse-anim 0.5s ease-out;
                     z-index: 90;
                 }
             </style>
         </head>
         <body>
+            <div id="selectionOverlay" class="selection-overlay"></div>
             <div id="readerContent">\(content)</div>
             <div id="wordPopup" class="word-popup">
                 <button onclick="handleExplain()">Explain</button>

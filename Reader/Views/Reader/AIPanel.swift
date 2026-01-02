@@ -174,12 +174,9 @@ struct AIPanel: View {
     }
 
     private func handlePendingReference(_ reference: AppState.ChatReference?) {
-        if let reference = reference {
-            let refMessage = ChatMessage(role: .reference, content: "", reference: reference)
-            chatMessages.append(refMessage)
-            chatScrollTick += 1
-            isChatFocused = true
-        }
+        guard reference != nil else { return }
+        chatScrollTick += 1
+        isChatFocused = true
     }
 
     private var showsSharedPanels: Bool {
@@ -212,9 +209,7 @@ struct AIPanel: View {
         HStack(spacing: 0) {
             ForEach(Tab.allCases, id: \.self) { tab in
                 Button {
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        selectedTab = tab
-                    }
+                    selectedTab = tab
                 } label: {
                     ViewThatFits(in: .horizontal) {
                         tabLabelRow(for: tab)
@@ -647,7 +642,8 @@ struct AIPanel: View {
                 // Messages
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if chatMessages.isEmpty {
+                        let pendingReference = appState.pendingChatReference
+                        if chatMessages.isEmpty && pendingReference == nil {
                             emptyState(
                                 icon: "bubble.left.and.bubble.right",
                                 title: "Ask anything",
@@ -687,6 +683,9 @@ struct AIPanel: View {
                 }
 
                 // Input
+                if let reference = appState.pendingChatReference {
+                    pendingReferenceCard(reference)
+                }
                 chatInputBar
             }
             .onChange(of: chatScrollTick) { _, _ in
@@ -736,6 +735,39 @@ struct AIPanel: View {
                 .fill(theme.overlay)
                 .frame(height: 1)
         }
+    }
+
+    private func pendingReferenceCard(_ reference: AppState.ChatReference) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    if let type = reference.type {
+                        Image(systemName: type.icon)
+                            .font(.system(size: 10))
+                            .foregroundColor(theme.rose)
+                    }
+                    Text(reference.title)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(theme.rose)
+                }
+
+                Text(reference.content)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.text)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(theme.rose.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(theme.rose.opacity(0.2), lineWidth: 1)
+        }
+        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Shared Panels
@@ -1043,6 +1075,15 @@ struct AIPanel: View {
         let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let chapter = chapter else { return }
 
+        // Commit the pending reference into history only when the user sends.
+        let referenceContext = appState.pendingChatReference
+        if let ref = referenceContext {
+            let refMessage = ChatMessage(role: .reference, content: "", reference: ref)
+            chatMessages.append(refMessage)
+            chatScrollTick += 1
+        }
+        appState.pendingChatReference = nil
+
         let userMessage = ChatMessage(role: .user, content: trimmed)
         chatMessages.append(userMessage)
         chatScrollTick += 1
@@ -1056,11 +1097,6 @@ struct AIPanel: View {
         chatMessages.append(assistantMessage)
         chatScrollTick += 1
         let messageIndex = chatMessages.count - 1
-
-        // Use the reference context for the prompt but DO NOT append a bubble here.
-        // The bubble was already appended by handlePendingReference.
-        let referenceContext = appState.pendingChatReference
-        appState.pendingChatReference = nil // Clear it immediately in AppState
 
         isLoading = true
 
@@ -1609,9 +1645,10 @@ struct QuizCard: View {
                         Image(systemName: quiz.qualityFeedback == .good ? "hand.thumbsup.fill" : "hand.thumbsup")
                             .font(.system(size: 11))
                             .foregroundColor(quiz.qualityFeedback == .good ? theme.foam : theme.muted)
-                            .padding(6)
+                            .frame(width: 24, height: 24)
                             .background(quiz.qualityFeedback == .good ? theme.foam.opacity(0.15) : Color.clear)
                             .clipShape(Circle())
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     
@@ -1625,9 +1662,10 @@ struct QuizCard: View {
                         Image(systemName: quiz.qualityFeedback == .garbage ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                             .font(.system(size: 11))
                             .foregroundColor(quiz.qualityFeedback == .garbage ? theme.love : theme.muted)
-                            .padding(6)
+                            .frame(width: 24, height: 24)
                             .background(quiz.qualityFeedback == .garbage ? theme.love.opacity(0.15) : Color.clear)
                             .clipShape(Circle())
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }

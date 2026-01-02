@@ -266,9 +266,7 @@ struct ReaderView: View {
         let tabs = AIPanel.Tab.allCases
         guard let currentIndex = tabs.firstIndex(of: aiPanelSelectedTab), !tabs.isEmpty else { return }
         let nextIndex = (currentIndex + direction + tabs.count) % tabs.count
-        withAnimation(.easeOut(duration: 0.15)) {
-            aiPanelSelectedTab = tabs[nextIndex]
-        }
+        aiPanelSelectedTab = tabs[nextIndex]
     }
 
     // MARK: - Book Content Panel
