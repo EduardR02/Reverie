@@ -51,11 +51,6 @@ Skip if nothing merits visualization.
         let prompt = """
 You're helping a thoughtful reader get more from this chapter. Think of yourself as a well-read friend who notices things they might miss.
 
-## The Reader
-Reads: Ted Chiang, Three Body Problem, Feynman, Skunk Works, The Martian, QNTM.
-Values: Technical accuracy, philosophical depth, surprising connections, the "why" behind things.
-Hates: Generic observations, preachy commentary, anything that wastes their time.
-
 ## What Makes a Good Insight
 
 GOOD insights bring something from OUTSIDE the text:
