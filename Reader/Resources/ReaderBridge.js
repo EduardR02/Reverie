@@ -27,7 +27,9 @@ const focusState = {
     stations: [],       // List of all markers (getMarkers())
     boundaries: [],     // Territory division lines in scrollY space
     stops: [],          // Ideal scroll positions for each marker
-    reachedBottom: false
+    blockPositions: [], // Cached absolute Y positions of blocks
+    reachedBottom: false,
+    mapBuilt: false
 };
 
 let scrollTicking = false;
@@ -49,8 +51,8 @@ const programmatic = (() => {
         sessionId: 0      // Unique ID to track the current scroll session
     };
 
-    const driftTolerance = 1.5; // Max pixels user can scroll before breaking sticky lock
-    const staleWriteMs = 60;   // Time after which a scroll is considered manual if no updates
+    const driftTolerance = 4.0; // Max pixels user can scroll before breaking sticky lock
+    const staleWriteMs = 150;   // Time after which a scroll is considered manual if no updates (increased for robustness)
 
     const cancel = (silent = false) => {
         const wasLocked = state.sticky;
@@ -100,12 +102,18 @@ const programmatic = (() => {
 
         const currentSession = state.sessionId;
         const startY = window.scrollY;
-        const distance = Math.abs(targetY - startY);
+        
+        // Ensure targetY is reachable to prevent drift-induced lock breaks
+        const viewportHeight = window.innerHeight;
+        const scrollMax = Math.max(1, document.documentElement.scrollHeight - viewportHeight);
+        const safeTargetY = Math.max(0, Math.min(scrollMax, targetY));
+        
+        const distance = Math.abs(safeTargetY - startY);
         
         state.active = true;
         state.sticky = true;
         state.targetId = targetId;
-        state.targetY = targetY;
+        state.targetY = safeTargetY;
         state.expectedY = startY;
         state.lastSetAt = performance.now();
 
@@ -114,7 +122,7 @@ const programmatic = (() => {
 
         // If very close, just snap
         if (distance < 2) {
-            window.scrollTo({ top: targetY, behavior: 'auto' });
+            window.scrollTo({ top: safeTargetY, behavior: 'auto' });
             complete();
             return;
         }
@@ -139,7 +147,7 @@ const programmatic = (() => {
             const elapsed = now - startTime;
             const progress = Math.min(1, elapsed / duration);
             const eased = easeOutCubic(progress);
-            const nextY = startY + (targetY - startY) * eased;
+            const nextY = startY + (safeTargetY - startY) * eased;
             
             state.expectedY = nextY;
             state.lastSetAt = performance.now();
@@ -251,10 +259,21 @@ function buildTerritoryMap() {
     const scrollMax = Math.max(1, scrollHeight - viewportHeight);
     const stationCount = stations.length;
 
+    // Cache block positions while we're doing layout work anyway
+    const blocks = getBlocks();
+    focusState.blockPositions = blocks.map(block => {
+        const rect = block.getBoundingClientRect();
+        return {
+            top: rect.top + window.scrollY,
+            bottom: rect.bottom + window.scrollY
+        };
+    });
+
     if (stationCount === 0) {
         focusState.stations = [];
         focusState.boundaries = [];
         focusState.stops = [];
+        focusState.mapBuilt = true;
         return;
     }
 
@@ -300,6 +319,7 @@ function buildTerritoryMap() {
     focusState.stations = stations;
     focusState.stops = stops;
     focusState.boundaries = boundaries;
+    focusState.mapBuilt = true;
 }
 
 /**
@@ -312,11 +332,8 @@ function updateFocus() {
     const scrollMax = scrollHeight - viewportHeight;
     const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
     
-    // Rebuild map if DOM changed
-    const currentMarkerCount = document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref').length;
-    const needsRebuild = currentMarkerCount !== focusState.stations.length || focusState.boundaries.length === 0;
-    
-    if (needsRebuild) {
+    // Rebuild map if needed (initial load)
+    if (!focusState.mapBuilt) {
         buildTerritoryMap();
     }
 
@@ -325,11 +342,12 @@ function updateFocus() {
     
     let newStationIndex = -1;
 
-    // Refresh visibility data
+    // Fast Math-based visibility data (prevents layout thrashing during scroll)
     const markerData = focusState.stations.map(station => {
-        const rect = station.element.getBoundingClientRect();
-        const isVisible = rect.bottom >= -VISIBILITY_BUFFER && rect.top <= viewportHeight + VISIBILITY_BUFFER;
-        return { ...station, isVisible, rect };
+        // A marker is visible if its center Y is within the viewport (with buffer)
+        const isVisible = (station.y >= scrollY - VISIBILITY_BUFFER) && 
+                          (station.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
+        return { ...station, isVisible };
     });
 
     if (isLocked && targetId) {
@@ -372,13 +390,13 @@ function updateFocus() {
         if (owner && owner.isVisible) {
             newStationIndex = idx;
         } else if (owner) {
-            if (owner.rect.bottom < 0) {
+            if (owner.y < scrollY) {
                 // Owner is off-screen TOP: hand focus forward to next visible
                 const nextVisible = markerData.slice(idx + 1).find(marker => marker.isVisible);
                 if (nextVisible) {
                     newStationIndex = markerData.indexOf(nextVisible);
                 }
-            } else if (owner.rect.top > viewportHeight) {
+            } else if (owner.y > scrollY + viewportHeight) {
                 // Owner is off-screen BOTTOM: hand focus back to previous visible
                 const prevVisible = markerData.slice(0, idx).reverse().find(marker => marker.isVisible);
                 if (prevVisible) {
@@ -389,15 +407,13 @@ function updateFocus() {
     }
 
     // PARAGRAPH TRACKING (Closest to Eyeline)
-    const blocks = getBlocks();
     let activeBlockIndex = -1;
     let minBlockDist = Infinity;
     const blockEyeLine = scrollY + (viewportHeight * EYE_LINE_RATIO); 
     
-    blocks.forEach((block, i) => {
-        const rect = block.getBoundingClientRect();
-        const top = rect.top + scrollY;
-        const bottom = rect.bottom + scrollY;
+    focusState.blockPositions.forEach((pos, i) => {
+        const top = pos.top;
+        const bottom = pos.bottom;
         
         let distance = 0;
         if (blockEyeLine < top) {
@@ -583,9 +599,34 @@ function highlightBlock(element) {
  * Performs a smooth scroll to a specific element.
  */
 function performSmoothScroll(element, viewportRatio, targetId) {
-    const rect = element.getBoundingClientRect();
-    const targetY = Math.max(0, window.scrollY + rect.top - (window.innerHeight * viewportRatio));
-    programmatic.start(targetId, targetY);
+    const viewportHeight = window.innerHeight;
+    const scrollHeight = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
+    
+    let targetY = null;
+    
+    // Try to find the pre-calculated 'ideal stop' for this specific marker.
+    // This ensures we land in the dead center of its territory.
+    if (focusState.stations.length > 0) {
+        const index = focusState.stations.findIndex(station => 
+            (station.type + "-" + station.id) === targetId || station.id === targetId
+        );
+        
+        if (index !== -1 && focusState.stops[index] !== undefined) {
+            targetY = focusState.stops[index];
+        }
+    }
+    
+    // Fallback to physical calculation if no pre-calculated stop exists (e.g. raw block)
+    if (targetY === null) {
+        const rect = element.getBoundingClientRect();
+        targetY = window.scrollY + rect.top - (viewportHeight * viewportRatio);
+    }
+    
+    // CRITICAL: Clamp targetY to reachable range to prevent drift from breaking the lock.
+    const safeTargetY = Math.max(0, Math.min(scrollMax, targetY));
+    
+    programmatic.start(targetId, safeTargetY);
 }
 
 function scrollToAnnotation(id) {
