@@ -293,6 +293,7 @@ struct BookContentView: NSViewRepresentable {
         var lastScrollPercent: Double?
         var lastScrollOffset: Double?
         init(parent: BookContentView) { self.parent = parent }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isContentLoaded = true
             if let o = pendingScrollOffset { 

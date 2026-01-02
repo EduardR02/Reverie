@@ -46,6 +46,7 @@ struct AIPanel: View {
     @State private var chatInput = ""
     @State private var chatMessages: [ChatMessage] = []
     @State private var isLoading = false
+    @State private var chatSessionToken = UUID()
     @State private var expandedAnnotationId: Int64?
     @State private var chatScrollViewHeight: CGFloat = 0
     @State private var chatContentMetrics = ChatContentMetrics(height: 0, minY: 0)
@@ -114,8 +115,8 @@ struct AIPanel: View {
                 isChatInputFocused = newValue
             }
         }
-        .onChange(of: appState.pendingChatReference) { _, newValue in
-            handlePendingReference(newValue)
+        .onChange(of: appState.chatContextReference) { _, newValue in
+            handleChatContextChange(newValue)
         }
     }
 
@@ -165,15 +166,13 @@ struct AIPanel: View {
             if isChatFocused {
                 isChatFocused = false
             }
-            // If they switch away from chat without sending, clear the reference to prevent leaks
-            appState.pendingChatReference = nil
         }
         if newTab == .insights, let id = currentAnnotationId {
             expandedAnnotationId = id
         }
     }
 
-    private func handlePendingReference(_ reference: AppState.ChatReference?) {
+    private func handleChatContextChange(_ reference: AppState.ChatReference?) {
         guard reference != nil else { return }
         chatScrollTick += 1
         isChatFocused = true
@@ -423,6 +422,10 @@ struct AIPanel: View {
                         scrollRequestCount += 1
                     },
                     selectedTab: $selectedTab,
+                    onAsk: { reference in
+                        resetChatSession(context: reference)
+                        selectedTab = .chat
+                    },
                     onUpdateAnnotation: { updated in
                         appState.updateAnnotation(updated)
                     }
@@ -642,14 +645,17 @@ struct AIPanel: View {
                 // Messages
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        let pendingReference = appState.pendingChatReference
-                        if chatMessages.isEmpty && pendingReference == nil {
+                        let contextReference = appState.chatContextReference
+                        if chatMessages.isEmpty && contextReference == nil {
                             emptyState(
                                 icon: "bubble.left.and.bubble.right",
                                 title: "Ask anything",
                                 subtitle: "I have the current chapter in context"
                             )
                         } else {
+                            if let reference = contextReference {
+                                ChatBubble(message: ChatMessage(role: .reference, content: "", reference: reference))
+                            }
                             ForEach(chatMessages) { message in
                                 ChatBubble(message: message)
                             }
@@ -683,9 +689,6 @@ struct AIPanel: View {
                 }
 
                 // Input
-                if let reference = appState.pendingChatReference {
-                    pendingReferenceCard(reference)
-                }
                 chatInputBar
             }
             .onChange(of: chatScrollTick) { _, _ in
@@ -716,6 +719,21 @@ struct AIPanel: View {
                 }
 
             Button {
+                resetChatSession(context: nil)
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.muted)
+                    .frame(width: 28, height: 28)
+                    .background(theme.overlay.opacity(0.6))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .opacity(hasChatContent ? 1 : 0)
+            .allowsHitTesting(hasChatContent)
+            .help("Reset chat")
+
+            Button {
                 sendMessage()
             } label: {
                 Image(systemName: isLoading ? "hourglass" : "arrow.up.circle.fill")
@@ -735,39 +753,6 @@ struct AIPanel: View {
                 .fill(theme.overlay)
                 .frame(height: 1)
         }
-    }
-
-    private func pendingReferenceCard(_ reference: AppState.ChatReference) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    if let type = reference.type {
-                        Image(systemName: type.icon)
-                            .font(.system(size: 10))
-                            .foregroundColor(theme.rose)
-                    }
-                    Text(reference.title)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(theme.rose)
-                }
-
-                Text(reference.content)
-                    .font(.system(size: 12))
-                    .foregroundColor(theme.text)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(theme.rose.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(theme.rose.opacity(0.2), lineWidth: 1)
-        }
-        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Shared Panels
@@ -1069,20 +1054,29 @@ struct AIPanel: View {
 
     // MARK: - Actions
 
+    private var hasChatContent: Bool {
+        !chatMessages.isEmpty || appState.chatContextReference != nil
+    }
+
+    @MainActor
+    private func resetChatSession(context: AppState.ChatReference?) {
+        chatSessionToken = UUID()
+        isLoading = false
+        chatInput = ""
+        chatMessages.removeAll()
+        chatAutoScrollEnabled = true
+        appState.chatContextReference = context
+        chatScrollTick += 1
+    }
+
     @MainActor
     private func sendMessage(_ text: String? = nil) {
         let rawInput = text ?? chatInput
         let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let chapter = chapter else { return }
+        let sessionToken = chatSessionToken
 
-        // Commit the pending reference into history only when the user sends.
-        let referenceContext = appState.pendingChatReference
-        if let ref = referenceContext {
-            let refMessage = ChatMessage(role: .reference, content: "", reference: ref)
-            chatMessages.append(refMessage)
-            chatScrollTick += 1
-        }
-        appState.pendingChatReference = nil
+        let referenceContext = appState.chatContextReference
 
         let userMessage = ChatMessage(role: .user, content: trimmed)
         chatMessages.append(userMessage)
@@ -1130,15 +1124,20 @@ struct AIPanel: View {
                 )
 
                 for try await chunk in stream {
+                    if sessionToken != chatSessionToken { return }
                     if chunk.isThinking {
                         thinkingBuffer += chunk.text
                         await MainActor.run {
+                            guard sessionToken == chatSessionToken,
+                                  chatMessages.indices.contains(messageIndex) else { return }
                             chatMessages[messageIndex].thinking = thinkingBuffer
                             chatScrollTick += 1
                         }
                     } else {
                         contentBuffer += chunk.text
                         await MainActor.run {
+                            guard sessionToken == chatSessionToken,
+                                  chatMessages.indices.contains(messageIndex) else { return }
                             chatMessages[messageIndex].content = contentBuffer
                             chatScrollTick += 1
                         }
@@ -1146,13 +1145,18 @@ struct AIPanel: View {
                 }
 
                 // Finalize message
+                if sessionToken != chatSessionToken { return }
                 if contentBuffer.isEmpty && !thinkingBuffer.isEmpty {
                     await MainActor.run {
+                        guard sessionToken == chatSessionToken,
+                              chatMessages.indices.contains(messageIndex) else { return }
                         chatMessages[messageIndex].content = "(Reasoning only - no response)"
                         chatScrollTick += 1
                     }
                 } else if contentBuffer.isEmpty && thinkingBuffer.isEmpty {
                     await MainActor.run {
+                        guard sessionToken == chatSessionToken,
+                              chatMessages.indices.contains(messageIndex) else { return }
                         chatMessages[messageIndex].content = "No response returned. Try again."
                         chatScrollTick += 1
                     }
@@ -1160,13 +1164,17 @@ struct AIPanel: View {
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 await MainActor.run {
+                    guard sessionToken == chatSessionToken,
+                          chatMessages.indices.contains(messageIndex) else { return }
                     chatMessages[messageIndex].content = message
                     chatScrollTick += 1
                 }
             }
 
             await MainActor.run {
-                isLoading = false
+                if sessionToken == chatSessionToken {
+                    isLoading = false
+                }
             }
         }
     }
@@ -1263,10 +1271,11 @@ struct ChatBubble: View {
                                 .foregroundColor(theme.rose)
                         }
                         
-                        Text(ref.content)
-                            .font(.system(size: 12))
-                            .foregroundColor(theme.text)
-                            .lineLimit(3)
+                        SelectableText(
+                            ref.content,
+                            fontSize: 12,
+                            color: theme.text
+                        )
                     }
                     .padding(10)
                     .background(theme.rose.opacity(0.1))
@@ -1345,6 +1354,7 @@ struct AnnotationCard: View {
     let onToggle: () -> Void
     let onScrollTo: () -> Void
     @Binding var selectedTab: AIPanel.Tab
+    let onAsk: (AppState.ChatReference) -> Void
     let onUpdateAnnotation: (Annotation) -> Void
 
     @Environment(\.theme) private var theme
@@ -1431,7 +1441,12 @@ struct AnnotationCard: View {
 
                         // Ask about this
                         Button {
-                            handoffToChat()
+                            let reference = AppState.ChatReference(
+                                title: annotation.title,
+                                content: annotation.content,
+                                type: annotation.type
+                            )
+                            onAsk(reference)
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "arrowshape.turn.up.right")
@@ -1589,21 +1604,6 @@ struct AnnotationCard: View {
         case emptyResult
     }
 
-    private func handoffToChat() {
-        let reference = AppState.ChatReference(
-            title: annotation.title,
-            content: annotation.content,
-            type: annotation.type
-        )
-        
-        appState.pendingChatReference = reference
-        
-        withAnimation(.easeOut(duration: 0.2)) {
-            selectedTab = .chat
-        }
-        
-        // Focus will be handled by AIPanel observing pendingChatReference or selectedTab
-    }
 }
 
 // MARK: - Quiz Card

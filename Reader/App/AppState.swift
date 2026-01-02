@@ -25,7 +25,7 @@ final class AppState {
         let content: String
         let type: AnnotationType?
     }
-    var pendingChatReference: ChatReference?
+    var chatContextReference: ChatReference?
 
     // UI State
     var showImportSheet = false

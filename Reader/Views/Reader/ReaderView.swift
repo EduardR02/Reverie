@@ -66,34 +66,6 @@ struct ReaderView: View {
     @State private var classificationError: String?
     @State private var isProgrammaticScroll = false
 
-    // Navigation Intent (to break feedback loop)
-    @State private var navigationIntent: NavigationIntent?
-
-    private struct NavigationIntent: Equatable {
-        let targetId: String 
-        let timestamp: TimeInterval
-        
-        static func annotation(_ id: Int64) -> NavigationIntent {
-            .init(targetId: "annotation-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
-        }
-        
-        static func image(_ id: Int64) -> NavigationIntent {
-            .init(targetId: "image-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
-        }
-        
-        static func footnote(_ id: String) -> NavigationIntent {
-            .init(targetId: "footnote-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
-        }
-        
-        static func block(_ id: Int) -> NavigationIntent {
-            .init(targetId: "block-\(id)", timestamp: Date().timeIntervalSinceReferenceDate)
-        }
-        
-        var isExpired: Bool {
-            Date().timeIntervalSinceReferenceDate - timestamp > 2.5 
-        }
-    }
-
     private enum BackAnchorState {
         case inactive
         case pending
@@ -204,18 +176,15 @@ struct ReaderView: View {
             classificationError: classificationError,
             analysisError: analysisError,
             onScrollTo: { annotationId in
-                navigationIntent = .annotation(annotationId)
                 suppressContextAutoSwitch()
                 currentAnnotationId = annotationId
                 setBackAnchor()
                 scrollToAnnotationId = annotationId
             },
             onScrollToQuote: { quote in
-                navigationIntent = nil 
                 scrollToQuote = quote
             },
             onScrollToFootnote: { refId in
-                navigationIntent = .footnote(refId)
                 suppressContextAutoSwitch()
                 currentFootnoteRefId = refId
                 setBackAnchor()
@@ -223,10 +192,7 @@ struct ReaderView: View {
             },
             onScrollToBlockId: { blockId, imageId in
                 if let iid = imageId {
-                    navigationIntent = .image(iid)
                     currentImageId = iid
-                } else {
-                    navigationIntent = .block(blockId)
                 }
                 suppressContextAutoSwitch()
                 setBackAnchor()
@@ -340,30 +306,23 @@ struct ReaderView: View {
                         onScrollPositionChange: { context in
                             isProgrammaticScroll = context.isProgrammatic
 
-                            // Selection Lock logic
-                            if !context.isProgrammatic {
-                                navigationIntent = nil
-                            }
-
-                            let isLocked: Bool = {
-                                if let intent = navigationIntent, !intent.isExpired {
-                                    let targets = [
-                                        context.annotationId.map { "annotation-\($0)" },
-                                        context.footnoteRefId.map { "footnote-\($0)" },
-                                        context.imageId.map { "image-\($0)" },
-                                        context.blockId.map { "block-\($0)" }
-                                    ].compactMap { $0 }
-
-                                    if targets.contains(intent.targetId) {
-                                        navigationIntent = nil
-                                        return false
-                                    }
-                                    return true
+                            if context.isProgrammatic {
+                                // PROGRAMMATIC MODE (Sticky Lock)
+                                // During a programmatic scroll or settle period, we only update IDs if the 
+                                // bridge provides a specific non-nil value (the target).
+                                if let annotationId = context.annotationId {
+                                    currentAnnotationId = annotationId
                                 }
-                                return false
-                            }()
-
-                            if !isLocked {
+                                if let imageId = context.imageId {
+                                    currentImageId = imageId
+                                }
+                                if let footnoteRefId = context.footnoteRefId {
+                                    currentFootnoteRefId = footnoteRefId
+                                }
+                            } else {
+                                // MANUAL MODE (Proximity)
+                                // When the user is scrolling manually, we strictly mirror the 
+                                // bridge's calculated selection based on the current viewport.
                                 currentAnnotationId = context.annotationId
                                 currentImageId = context.imageId
                                 currentFootnoteRefId = context.footnoteRefId
@@ -1025,14 +984,12 @@ struct ReaderView: View {
 
     private func handleImageMarkerClick(_ imageId: Int64) {
         guard images.contains(where: { $0.id == imageId }) else { return }
-        navigationIntent = nil 
         currentImageId = imageId
         externalTabSelection = .images
     }
 
     private func handleFootnoteClick(_ refId: String) {
         guard footnotes.contains(where: { $0.refId == refId }) else { return }
-        navigationIntent = nil
         currentFootnoteRefId = refId
         externalTabSelection = .footnotes
     }
