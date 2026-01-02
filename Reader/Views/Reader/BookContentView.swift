@@ -17,13 +17,7 @@ struct ScrollContext: Equatable {
     let imageId: Int64?
     let footnoteRefId: String?
     let blockId: Int?
-    let annotationBlockId: Int?
-    let imageBlockId: Int?
-    let footnoteBlockId: Int?
     let primaryType: String?
-    let annotationDistance: Double
-    let imageDistance: Double
-    let footnoteDistance: Double
     let scrollPercent: Double
     let scrollOffset: Double
     let viewportHeight: Double
@@ -183,6 +177,7 @@ struct BookContentView: NSViewRepresentable {
                 body { padding: 40px 60px; position: relative; }
                 
                 #readerContent { position: relative; z-index: 1; }
+                
                 .selection-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 0; pointer-events: none; overflow: visible; z-index: 0; }
                 .selection-rect { position: absolute; background: var(--rose); border-radius: 2px; }
 
@@ -201,7 +196,7 @@ struct BookContentView: NSViewRepresentable {
                 .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
                 
                 /* Highlight animations */
-                .highlight-active { border-radius: 4px; color: var(--base) !important; }
+                .highlight-active { border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
                 .marker-highlight { 
                     transform: scale(1.6) !important;
                     background-color: var(--highlight-color) !important;
@@ -333,29 +328,18 @@ struct BookContentView: NSViewRepresentable {
                 let iId = (body["imageId"] as? String).flatMap(Int64.init)
                 let fId = body["footnoteRefId"] as? String
                 let bId = body["blockId"] as? Int
-                let aD = body["annotationDist"] as? Double ?? .infinity
-                let iD = body["imageDist"] as? Double ?? .infinity
-                let fD = body["footnoteDist"] as? Double ?? .infinity
-                let aB = body["annotationBlockId"] as? Int
-                let iB = body["imageBlockId"] as? Int
-                let fB = body["footnoteBlockId"] as? Int
                 let pT = body["primaryType"] as? String
                 let sY = (body["scrollY"] as? Double) ?? 0
                 let sP = (body["scrollPercent"] as? Double) ?? 0
                 let vH = (body["viewportHeight"] as? Double) ?? 0
                 let isP = (body["isProgrammatic"] as? Bool) ?? false
+                
                 let context = ScrollContext(
                     annotationId: aId,
                     imageId: iId,
                     footnoteRefId: fId,
                     blockId: bId,
-                    annotationBlockId: aB,
-                    imageBlockId: iB,
-                    footnoteBlockId: fB,
                     primaryType: pT,
-                    annotationDistance: aD,
-                    imageDistance: iD,
-                    footnoteDistance: fD,
                     scrollPercent: sP,
                     scrollOffset: sY,
                     viewportHeight: vH,
