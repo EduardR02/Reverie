@@ -1,89 +1,77 @@
 /**
  * ReaderBridge.js
  * 
- * Core synchronization bridge between the book content (WebView) and the native app.
- * Optimized for high-precision scroll tracking and "Sticky Intent" selection.
+ * Optimized for "Serial Elastic Map" scroll-syncing.
+ * Implements land-ownership territories with directional handover.
+ * Now includes Density-Aware Allocation to ensure all markers are reachable in short chapters.
  */
 
-// --- Global State ---
+// --- Constants ---
+const MIN_TERRITORY_HEIGHT = 100; // Preferred minimum scroll height for each marker
+const HYSTERESIS_THRESHOLD = 20;  // Pixels to 'break' focus into a new zone
+const EYE_LINE_RATIO = 0.4;       // Focal point at 40% of viewport height
+const VISIBILITY_BUFFER = 5;      // Pixels marker can be off-screen before clearing
+const DEBUG_MODE = true;          // Visualizes territories and focus logic
 
+// --- Global State ---
 const focusState = { 
-    reachedBottom: false,
     lastScrollY: 0,
     lastVelocity: 0,
     activeIds: { annotation: null, image: null, footnote: null },
-    primaryKey: null
+    currentStationIndex: -1,
+    stations: [],      // Master Timeline of all markers
+    boundaries: []     // Virtual Map boundaries
 };
 
 let scrollTicking = false;
 
 /**
  * Programmatic Scroll & Lock Controller
- * Implements "Sticky Intent": Locks focus to a target until the user manually scrolls.
  */
 const programmatic = (() => {
     const state = {
-        active: false,    // Scroll animation is currently running
-        sticky: false,    // Selection is locked to a target
-        targetId: null,   // The ID of the locked item
-        targetY: null,    // The scroll destination
-        expectedY: null,  // Expected Y position for drift detection
+        active: false,
+        sticky: false, 
+        targetId: null,
+        targetY: null,
+        expectedY: null,
         lastSetAt: 0,
         raf: null,
         timeout: null,
-        sessionId: 0      // Unique ID to track the current scroll session
+        sessionId: 0
     };
 
     const driftTolerance = 1.5; 
     const staleWriteMs = 60;
 
-    /**
-     * Fully releases all locks and cancels pending animations.
-     */
     const cancel = (silent = false) => {
         const wasLocked = state.sticky;
-        
         if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
-        
         state.active = false;
         state.sticky = false; 
         state.targetId = null;
         state.targetY = null;
         state.expectedY = null;
-        state.sessionId++; // Invalidate stale animation frame callbacks
-        
+        state.lastSetAt = 0;
+        state.sessionId++; 
         if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
-        
-        // Notify Swift that the lock is released
-        if (wasLocked && !silent) {
-            updateFocus();
-        }
+        if (wasLocked && !silent) updateFocus();
     };
 
-    /**
-     * Called when the scroll animation successfully reaches its destination.
-     */
     const complete = () => {
         if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
-        
         state.active = false;
-        state.expectedY = state.targetY; // Preserve for drift detection while stationary
-        
+        state.expectedY = state.targetY; 
         if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
-        
         updateFocus();
     };
 
-    /**
-     * Starts a smooth programmatic scroll to a target ID.
-     */
     const start = (targetId, targetY) => {
-        cancel(true); // Clear any existing sessions silently
-        
+        cancel(true); 
         const currentSession = state.sessionId;
         const startY = window.scrollY;
         const distance = Math.abs(targetY - startY);
@@ -95,10 +83,8 @@ const programmatic = (() => {
         state.expectedY = startY;
         state.lastSetAt = performance.now();
 
-        // Lock Swift UI to the target immediately on frame zero
         updateFocus();
 
-        // If very close, just jump and complete
         if (distance < 2) {
             window.scrollTo({ top: targetY, behavior: 'auto' });
             complete();
@@ -106,28 +92,20 @@ const programmatic = (() => {
         }
 
         const duration = Math.min(900, Math.max(280, distance * 0.65));
-        
-        // Watchdog: Ensure state is never stuck if RAF fails
         state.timeout = setTimeout(() => {
-            if (state.active && state.sessionId === currentSession) {
-                complete();
-            }
+            if (state.active && state.sessionId === currentSession) complete();
         }, duration + 500);
 
         const startTime = performance.now();
         const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-
         const step = (now) => {
             if (!state.active || state.sessionId !== currentSession) return;
-
             const progress = Math.min(1, (now - startTime) / duration);
-            const easedProgress = easeOutCubic(progress);
-            const nextY = startY + (targetY - startY) * easedProgress;
-            
+            const eased = easeOutCubic(progress);
+            const nextY = startY + (targetY - startY) * eased;
             state.expectedY = nextY;
             state.lastSetAt = performance.now();
             window.scrollTo({ top: nextY, behavior: 'auto' });
-
             if (progress < 1) {
                 state.raf = requestAnimationFrame(step);
             } else {
@@ -135,477 +113,352 @@ const programmatic = (() => {
                 complete();
             }
         };
-
         state.raf = requestAnimationFrame(step);
-    };
-
-    /**
-     * Checks if the user has manually interrupted the scroll or lock.
-     */
-    const noteScroll = (actualY) => {
-        if (!state.sticky) return;
-        
-        const drift = state.expectedY === null ? 0 : Math.abs(actualY - state.expectedY);
-        const timeSinceLastUpdate = performance.now() - state.lastSetAt;
-
-        // User interaction detected if actual Y deviates from expected Y
-        if (drift > driftTolerance || (state.active && timeSinceLastUpdate > staleWriteMs)) {
-            cancel();
-        }
     };
 
     return {
         start,
-        noteScroll,
+        noteScroll: (actualY) => {
+            if (!state.sticky) return;
+            const drift = state.expectedY === null ? 0 : Math.abs(actualY - state.expectedY);
+            const sinceWrite = performance.now() - state.lastSetAt;
+            if (drift > driftTolerance || (state.active && sinceWrite > staleWriteMs)) cancel();
+        },
         isActive: () => state.active,
         isSticky: () => state.sticky,
         preferredTargetId: () => state.sticky ? state.targetId : null
     };
 })();
 
-// --- Layout & DOM Helpers ---
+// --- Layout Logic ---
 
 function getBlocks() {
     return Array.from(document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li'));
 }
 
 function getMarkers() {
-    return Array.from(document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref'));
-}
-
-function isVisibleWithMargin(rect, viewportHeight, extraTop, extraBottom) {
-    return rect.bottom >= -extraTop && rect.top <= viewportHeight + extraBottom;
-}
-
-function selectionThreshold(scrollPercent, viewportHeight) {
-    const base = Math.max(160, viewportHeight * 0.6);
-    const edgeBoost = (scrollPercent < 0.05 || scrollPercent > 0.95) ? viewportHeight * 0.25 : 0;
-    return base + edgeBoost;
-}
-
-function parseTargetId(targetId) {
-    if (!targetId) return null;
-    const dashIndex = targetId.indexOf("-");
-    if (dashIndex <= 0) return null;
-    return {
-        type: targetId.slice(0, dashIndex),
-        id: targetId.slice(dashIndex + 1)
-    };
+    const markers = Array.from(document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref'));
+    return markers.map((m, index) => {
+        const rect = m.getBoundingClientRect();
+        const type = m.classList.contains('annotation-marker') ? 'annotation' : (m.classList.contains('image-marker') ? 'image' : 'footnote');
+        const id = m.dataset.annotationId || m.dataset.imageId || (m.getAttribute('href')?.split('#')[1] || m.id);
+        const block = m.closest('[id^="block-"]');
+        const blockId = block ? parseInt(block.id.replace("block-", ""), 10) : parseInt(m.dataset.blockId || "0", 10);
+        return { el: m, id, type, order: index, blockId, y: rect.top + window.scrollY + (rect.height * 0.5) };
+    }).sort((a, b) => a.y - b.y || a.order - b.order);
 }
 
 /**
- * Ensures markers are vertically spaced to prevent proximity jitter.
+ * Builds the Elastic Territory Map.
+ * Now adapts MIN_TERRITORY_HEIGHT to ensure all markers fit in short chapters.
  */
-function computeVirtualPositions(items, minSpacing, minBound, maxBound) {
-    const ordered = items.slice().sort((a, b) => (a.y - b.y) || (a.order - b.order));
-    
-    if (ordered.length <= 1) {
-        if (ordered[0]) {
-            ordered[0].virtualY = Math.min(maxBound, Math.max(minBound, ordered[0].y));
+function buildTerritoryMap() {
+    const stations = getMarkers();
+    const vH = window.innerHeight;
+    const scrollHeight = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, scrollHeight - vH);
+    const n = stations.length;
+
+    if (n === 0) {
+        focusState.stations = [];
+        focusState.boundaries = [];
+        return;
+    }
+
+    const pointerMin = vH * EYE_LINE_RATIO;
+    const pointerMax = scrollMax + pointerMin;
+    const pointerRange = pointerMax - pointerMin;
+
+    // Density Safety: Ensure MIN_TERRITORY_HEIGHT doesn't exceed available space
+    const effectiveMinHeight = Math.min(MIN_TERRITORY_HEIGHT, pointerRange / n);
+
+    let boundaries = [];
+    let cumulativeOffset = 0;
+
+    for (let i = 0; i < n - 1; i++) {
+        const naturalMidpoint = (stations[i].y + stations[i+1].y) / 2;
+        const scrollRatio = naturalMidpoint / scrollHeight;
+        let idealBoundary = pointerMin + (scrollRatio * pointerRange);
+        let actualBoundary = idealBoundary + cumulativeOffset;
+        
+        const prevBoundary = i === 0 ? pointerMin : boundaries[i-1];
+        
+        // 1. Enforce effective minimum height (Push Down)
+        if (actualBoundary < prevBoundary + effectiveMinHeight) {
+            const push = (prevBoundary + effectiveMinHeight) - actualBoundary;
+            actualBoundary += push;
+            cumulativeOffset += push;
+        } 
+        // 2. Slack Absorption (Elastic Return)
+        else if (cumulativeOffset > 0) {
+            const slack = actualBoundary - (prevBoundary + effectiveMinHeight);
+            const absorption = Math.min(cumulativeOffset, slack * 0.4);
+            actualBoundary -= absorption;
+            cumulativeOffset -= absorption;
         }
-        return ordered;
-    }
+        
+        // 3. Final Safety Clamp: Don't push boundaries past reachable pointerMax
+        const remainingStations = n - 1 - i;
+        const maxAllowed = pointerMax - (remainingStations * effectiveMinHeight);
+        if (actualBoundary > maxAllowed) {
+            const overflow = actualBoundary - maxAllowed;
+            actualBoundary = maxAllowed;
+            cumulativeOffset -= overflow;
+        }
 
-    const minY = ordered[0].y;
-    const maxY = ordered[ordered.length - 1].y;
-    const span = Math.max(1, maxY - minY);
-    const requiredSpan = minSpacing * (ordered.length - 1);
-    const extra = Math.max(0, requiredSpan - span);
-    
-    let targetMin = minY - extra * 0.5;
-    let targetMax = maxY + extra * 0.5;
+        boundaries.push(actualBoundary);
+    }
+    boundaries.push(pointerMax);
 
-    if (targetMin < minBound) {
-        const shift = minBound - targetMin;
-        targetMin += shift;
-        targetMax += shift;
-    }
-    if (targetMax > maxBound) {
-        const shift = targetMax - maxBound;
-        targetMin -= shift;
-        targetMax -= shift;
-    }
-
-    const positions = ordered.map(item => item.y);
-    positions[0] = Math.max(positions[0], targetMin);
-    
-    for (let i = 1; i < positions.length; i++) {
-        positions[i] = Math.max(positions[i], positions[i - 1] + minSpacing);
-    }
-    
-    if (positions[positions.length - 1] > targetMax) {
-        positions[positions.length - 1] = targetMax;
-    }
-    
-    for (let i = positions.length - 2; i >= 0; i--) {
-        positions[i] = Math.min(positions[i], positions[i + 1] - minSpacing);
-    }
-    
-    for (let i = 0; i < ordered.length; i++) {
-        ordered[i].virtualY = Math.min(maxBound, Math.max(minBound, positions[i]));
-    }
-    return ordered;
+    focusState.stations = stations;
+    focusState.boundaries = boundaries;
 }
 
 /**
- * Selects the marker closest to the focus line, with sticky focus to prevent jitter.
+ * Main Update Loop
  */
-function selectMarker(items, focusLine, minSpacing, maxDistance, lastKey, keyForItem, edgeHoldBoost) {
-    if (items.length === 0) return null;
+function updateFocus() {
+    const scrollY = window.scrollY;
+    const vH = window.innerHeight;
+    const scrollMax = document.documentElement.scrollHeight - vH;
+    const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
+    
+    const currentCount = document.querySelectorAll('.annotation-marker, .image-marker, .footnote-ref').length;
+    if (currentCount !== focusState.stations.length || focusState.boundaries.length === 0) {
+        buildTerritoryMap();
+    }
 
-    const ordered = items.slice().sort((a, b) => {
-        const aY = a.virtualY ?? a.y;
-        const bY = b.virtualY ?? b.y;
-        return (aY - bY) || (a.order - b.order);
+    const isLocked = programmatic.isSticky();
+    const targetId = programmatic.preferredTargetId();
+    
+    let newStationIndex = -1;
+
+    // Visibility Data
+    const markerData = focusState.stations.map(s => {
+        const rect = s.el.getBoundingClientRect();
+        const isVisible = rect.bottom >= -VISIBILITY_BUFFER && rect.top <= vH + VISIBILITY_BUFFER;
+        return { ...s, isVisible, rect };
     });
 
-    let bestItem = ordered[0];
-    bestItem.distance = Math.abs((bestItem.virtualY ?? bestItem.y) - focusLine);
-
-    for (const item of ordered) {
-        const distance = Math.abs((item.virtualY ?? item.y) - focusLine);
-        item.distance = distance;
-        if (distance < bestItem.distance - 0.5) {
-            bestItem = item;
+    if (isLocked && targetId) {
+        newStationIndex = markerData.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
+    } else if (markerData.length > 0) {
+        const pointerY = scrollY + (vH * EYE_LINE_RATIO);
+        let idx = focusState.currentStationIndex;
+        
+        if (idx === -1) {
+            idx = focusState.boundaries.findIndex(b => pointerY <= b);
+            if (idx === -1) idx = markerData.length - 1;
+        } else {
+            const lower = idx === 0 ? 0 : focusState.boundaries[idx - 1];
+            const upper = focusState.boundaries[idx];
+            
+            // Instant catch-up for large moves
+            if (pointerY > upper + 100 || pointerY < lower - 100) {
+                idx = focusState.boundaries.findIndex(b => pointerY <= b);
+                if (idx === -1) idx = markerData.length - 1;
+            } else {
+                if (pointerY > upper + HYSTERESIS_THRESHOLD && idx < markerData.length - 1) idx++;
+                else if (pointerY < lower - HYSTERESIS_THRESHOLD && idx > 0) idx--;
+            }
         }
-    }
 
-    if (bestItem.distance > maxDistance) return null;
-
-    // Sticky Proximity Selection logic
-    if (lastKey) {
-        const lastItem = ordered.find(item => keyForItem(item) === lastKey);
-        if (lastItem) {
-            const lastIdx = ordered.indexOf(lastItem);
-            const prevItem = lastIdx > 0 ? ordered[lastIdx - 1] : null;
-            const nextItem = lastIdx < ordered.length - 1 ? ordered[lastIdx + 1] : null;
-            
-            const lastY = lastItem.virtualY ?? lastItem.y;
-            const lowerBound = prevItem ? ((prevItem.virtualY ?? prevItem.y) + lastY) * 0.5 : -Infinity;
-            const upperBound = nextItem ? ((nextItem.virtualY ?? nextItem.y) + lastY) * 0.5 : Infinity;
-            
-            const stickinessMargin = Math.max(26, minSpacing * 0.32) * edgeHoldBoost;
-            if (focusLine >= lowerBound - stickinessMargin && focusLine <= upperBound + stickinessMargin) {
-                return lastItem;
+        // Serial Visibility Gate (Dynamic Handover)
+        const owner = markerData[idx];
+        if (owner && owner.isVisible) {
+            newStationIndex = idx;
+        } else {
+            if (owner && scrollY + owner.rect.bottom < 0) {
+                const nextVisible = markerData.slice(idx + 1).find(m => m.isVisible);
+                if (nextVisible) newStationIndex = markerData.indexOf(nextVisible);
+            } else if (owner && owner.rect.top > vH) {
+                const prevVisible = markerData.slice(0, idx).reverse().find(m => m.isVisible);
+                if (prevVisible) newStationIndex = markerData.indexOf(prevVisible);
             }
         }
     }
 
-    return bestItem;
+    // Paragraph Tracking
+    const blocks = getBlocks();
+    let activeBlockIndex = -1;
+    let minBlockDist = Infinity;
+    const blockEyeLine = scrollY + (vH * 0.45); 
+    blocks.forEach((b, i) => {
+        const r = b.getBoundingClientRect();
+        const top = r.top + scrollY, bot = r.bottom + scrollY;
+        const d = (blockEyeLine >= top && blockEyeLine <= bot) ? 0 : Math.min(Math.abs(top - blockEyeLine), Math.abs(bot - blockEyeLine));
+        if (d < minBlockDist) { minBlockDist = d; activeBlockIndex = i; }
+    });
+
+    const hasChanged = newStationIndex !== focusState.currentStationIndex;
+    if (hasChanged) {
+        const station = markerData[newStationIndex];
+        focusState.currentStationIndex = newStationIndex;
+        if (!isLocked && station && station.isVisible && focusState.lastVelocity < 40) pulseMarker(station.el);
+
+        webkit.messageHandlers.readerBridge.postMessage({
+            type: 'scrollPosition',
+            annotationId: station?.type === 'annotation' ? station.id : null, 
+            imageId: station?.type === 'image' ? station.id : null, 
+            footnoteRefId: station?.type === 'footnote' ? station.id : null,
+            blockId: activeBlockIndex + 1,
+            primaryType: station?.type || null,
+            scrollY: scrollY, scrollPercent: scrollPercent, viewportHeight: vH,
+            isProgrammatic: isLocked
+        });
+    }
+
+    if (DEBUG_MODE) updateDebugOverlay();
 }
 
-// --- UI Logic ---
+/**
+ * Visualizes territories for debugging.
+ */
+function updateDebugOverlay() {
+    let container = document.getElementById('territoryDebug');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'territoryDebug';
+        container.style = "position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999;";
+        document.body.appendChild(container);
+    }
+    container.innerHTML = '';
+    const vH = window.innerHeight;
+    const scrollY = window.scrollY;
+    const pointerY = scrollY + (vH * EYE_LINE_RATIO);
+    
+    const pLine = document.createElement('div');
+    pLine.style = `position:absolute; top:${pointerY}px; left:0; width:100%; height:2px; background:rgba(255,0,0,0.6);`;
+    container.appendChild(pLine);
+
+    const pMin = vH * EYE_LINE_RATIO;
+    focusState.boundaries.forEach((b, i) => {
+        const start = i === 0 ? pMin : focusState.boundaries[i-1];
+        const box = document.createElement('div');
+        box.style = `position:absolute; top:${start}px; left:0; width:100%; height:${b - start}px; border-top:1px solid rgba(0,0,0,0.1);`;
+        box.style.backgroundColor = i % 2 === 0 ? 'rgba(0, 255, 0, 0.05)' : 'rgba(0, 0, 255, 0.05)';
+        const label = document.createElement('span');
+        label.innerText = `T${i} (${focusState.stations[i].id})`;
+        label.style = "font-size:9px; color:rgba(0,0,0,0.3); margin-left:10px;";
+        box.appendChild(label);
+        container.appendChild(box);
+    });
+}
 
 function pulseMarker(el) {
     if (!el) return;
-    const isImage = el.classList.contains('image-marker');
-    const colorVar = isImage ? '--iris' : '--rose';
-    el.style.setProperty('--highlight-color', 'var(' + colorVar + ')');
+    const color = el.classList.contains('image-marker') ? '--iris' : '--rose';
+    el.style.setProperty('--highlight-color', 'var(' + color + ')');
     el.classList.remove('marker-pulse');
-    void el.offsetWidth; // Trigger layout
+    void el.offsetWidth;
     el.classList.add('marker-pulse');
     setTimeout(() => el.classList.remove('marker-pulse'), 650);
 }
 
-function highlightMarker(el) {
-    if (!el) return;
-    const isImage = el.classList.contains('image-marker');
-    const colorVar = isImage ? '--iris' : '--rose';
-    el.classList.add('marker-highlight');
-    el.style.setProperty('--highlight-color', 'var(' + colorVar + ')');
-    setTimeout(() => el.classList.remove('marker-highlight'), 1500);
+// --- External API ---
+
+function performSmoothScroll(el, ratio, targetId) {
+    const rect = el.getBoundingClientRect();
+    const targetY = Math.max(0, window.scrollY + rect.top - (window.innerHeight * ratio));
+    programmatic.start(targetId, targetY);
+    if (el.classList.contains('annotation-marker') || el.classList.contains('image-marker') || el.classList.contains('footnote-ref')) {
+        el.classList.add('marker-highlight');
+        const color = el.classList.contains('image-marker') ? '--iris' : '--rose';
+        el.style.setProperty('--highlight-color', 'var(' + color + ')');
+        setTimeout(() => el.classList.remove('marker-highlight'), 1500);
+    }
 }
-
-/**
- * Main Update Loop: Calculates focus based on scroll position.
- */
-function updateFocus() {
-    const scrollY = window.scrollY;
-    const viewportHeight = window.innerHeight;
-    const scrollMax = document.documentElement.scrollHeight - viewportHeight;
-    const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
-    const minSpacing = Math.max(140, viewportHeight * 0.22);
-    
-    // 1. Adaptive Eye Line Calculation
-    let eyeRatio = 0.45;
-    const edgeThreshold = viewportHeight * 0.6;
-    if (scrollY < edgeThreshold) {
-        eyeRatio -= (1 - (scrollY / edgeThreshold)) * 0.12;
-    } else if (scrollY > scrollMax - edgeThreshold) {
-        eyeRatio += ((scrollY - (scrollMax - edgeThreshold)) / edgeThreshold) * 0.18;
-    }
-    
-    let focusLine = scrollY + (eyeRatio * viewportHeight);
-
-    // 2. Edge Zone Behavior
-    const edgeZone = 0.08;
-    const topFactor = scrollPercent < edgeZone ? 1 - (scrollPercent / edgeZone) : 0;
-    const bottomFactor = scrollPercent > 1 - edgeZone ? 1 - ((1 - scrollPercent) / edgeZone) : 0;
-    
-    if (topFactor > 0) {
-        const topBand = (viewportHeight * 0.12) * (1 + topFactor * 0.4);
-        focusLine = Math.min(focusLine, scrollY + topBand);
-    }
-    if (bottomFactor > 0) {
-        const bottomBand = (viewportHeight * 0.12) * (1 - bottomFactor * 0.4);
-        focusLine = Math.max(focusLine, scrollY + viewportHeight - bottomBand);
-    }
-
-    const markers = getMarkers();
-    const isLocked = programmatic.isSticky();
-
-    // Fallback path: No markers in chapter
-    if (markers.length === 0) {
-        const blocks = getBlocks();
-        let activeBlockIndex = -1;
-        let minBlockDist = Infinity;
-        blocks.forEach((block, index) => {
-            const rect = block.getBoundingClientRect();
-            const top = rect.top + scrollY, bottom = rect.bottom + scrollY;
-            const dist = (focusLine >= top && focusLine <= bottom) ? 0 : Math.min(Math.abs(top - focusLine), Math.abs(bottom - focusLine));
-            if (dist < minBlockDist) { minBlockDist = dist; activeBlockIndex = index; }
-        });
-        sendScrollMessage(null, null, null, activeBlockIndex + 1, null, null, null, null, null, null, null, scrollY, scrollPercent, viewportHeight, isLocked);
-        return;
-    }
-
-    // 3. Normal Path: Map marker data and calculate selection
-    const extraTop = topFactor * Math.max(24, minSpacing * 0.35);
-    const extraBottom = bottomFactor * Math.max(80, minSpacing * 1.15);
-
-    const markerData = markers.map((m, index) => {
-        const rect = m.getBoundingClientRect();
-        const type = m.classList.contains('annotation-marker') ? 'annotation' : (m.classList.contains('image-marker') ? 'image' : 'footnote');
-        const id = m.dataset.annotationId || m.dataset.imageId || (type === 'footnote' ? (m.getAttribute('href')?.split('#')[1] || m.id) : null);
-        return { 
-            el: m, id, type, order: index, 
-            y: rect.top + scrollY + (rect.height * 0.5), 
-            isVisible: isVisibleWithMargin(rect, viewportHeight, extraTop, extraBottom),
-            blockId: parseInt(m.dataset.blockId || "0", 10) 
-        };
-    });
-
-    const target = parseTargetId(programmatic.preferredTargetId());
-    let bestA = null, bestI = null, bestF = null, primaryType = null;
-
-    if (isLocked && target) {
-        // --- STICKY LOCK MODE ---
-        const match = markerData.find(m => m.type === target.type && m.id === target.id);
-        if (target.type === 'annotation') bestA = match || { id: target.id, distance: 0 };
-        if (target.type === 'image') bestI = match || { id: target.id, distance: 0 };
-        if (target.type === 'footnote') bestF = match || { id: target.id, distance: 0 };
-        primaryType = target.type;
-    } else {
-        // --- PROXIMITY SELECTION MODE ---
-        const byType = { annotation: [], image: [], footnote: [] };
-        markerData.forEach(m => { if (m.id) byType[m.type].push(m); });
-
-        const maxD = selectionThreshold(scrollPercent, viewportHeight);
-        const visibleAll = markerData.filter(item => item.id && item.isVisible);
-        
-        if (visibleAll.length > 0) {
-            computeVirtualPositions(visibleAll, minSpacing, 0, scrollMax + viewportHeight);
-        }
-        
-        const edgeHoldBoost = 1 + Math.max(topFactor, bottomFactor) * 0.8;
-        const select = (type, items) => {
-            const visible = items.filter(m => m.isVisible);
-            if (visible.length === 0) return null;
-            return selectMarker(visible, focusLine, minSpacing, maxD, focusState.activeIds[type], m => m.id, edgeHoldBoost);
-        };
-        
-        bestA = select('annotation', byType.annotation);
-        bestI = select('image', byType.image);
-        bestF = select('footnote', byType.footnote);
-        
-        const primary = selectMarker(visibleAll, focusLine, minSpacing, maxD, focusState.primaryKey, m => `${m.type}:${m.id}`, edgeHoldBoost);
-        primaryType = primary?.type || null;
-
-        // Visual Pulse feedback on manual selection change
-        if (focusState.lastVelocity < 40) {
-            const prev = focusState.activeIds;
-            if (bestA && bestA.id !== prev.annotation) pulseMarker(bestA.el);
-            if (bestI && bestI.id !== prev.image) pulseMarker(bestI.el);
-            if (bestF && bestF.id !== prev.footnote) pulseMarker(bestF.el);
-        }
-    }
-
-    // Commit selection to state
-    focusState.activeIds = { annotation: bestA?.id || null, image: bestI?.id || null, footnote: bestF?.id || null };
-    focusState.primaryKey = primaryType ? `${primaryType}:${(bestA||bestI||bestF)?.id}` : null;
-
-    // Send final state to Swift
-    sendScrollMessage(
-        bestA?.id || null, bestI?.id || null, bestF?.id || null, -1, 
-        bestA?.distance || null, bestI?.distance || null, bestF?.distance || null,
-        bestA?.blockId || null, bestI?.blockId || null, bestF?.blockId || null,
-        primaryType, scrollY, scrollPercent, viewportHeight, isLocked
-    );
-}
-
-// --- Communication Out ---
-
-function sendScrollMessage(aId, iId, fId, bId, aD, iD, fD, aB, iB, fB, pT, sY, sP, vH, isP) {
-    webkit.messageHandlers.readerBridge.postMessage({ 
-        type: 'scrollPosition', 
-        annotationId: aId, imageId: iId, footnoteRefId: fId, blockId: bId, 
-        annotationDist: aD, imageDist: iD, footnoteDist: fD, 
-        annotationBlockId: aB, imageBlockId: iB, footnoteBlockId: fB, 
-        primaryType: pT, scrollY: sY, scrollPercent: sP, viewportHeight: vH, 
-        isProgrammatic: isP 
-    });
-}
-
-function performSmoothScroll(element, ratio, targetId) {
-    const rect = element.getBoundingClientRect();
-    const target = Math.max(0, window.scrollY + rect.top - (window.innerHeight * ratio));
-    programmatic.start(targetId, target);
-}
-
-// --- External API (Called from Swift) ---
 
 function scrollToAnnotation(id) {
     const el = document.querySelector('[data-annotation-id="' + id + '"]');
-    if (el) { performSmoothScroll(el, 0.4, 'annotation-' + id); highlightMarker(el); }
+    if (el) performSmoothScroll(el, 0.4, 'annotation-' + id);
 }
 
 function scrollToBlock(id, markerId, type) {
     const blocks = getBlocks();
     if (id > 0 && id <= blocks.length) {
         const block = blocks[id-1];
-        const targetKey = markerId && type ? `${type}-${markerId}` : `block-${id}`;
-        performSmoothScroll(block, 0.4, targetKey);
-        
-        if (markerId && type) {
-            const marker = document.querySelector('[data-' + type + '-id="' + markerId + '"]');
-            if (marker) highlightMarker(marker);
-        } else {
-            block.classList.add('highlight-active');
-            block.style.backgroundColor = 'var(--rose)';
-            setTimeout(() => {
-                block.style.transition = 'background-color 1.0s ease-out';
-                block.style.backgroundColor = '';
-                setTimeout(() => { block.classList.remove('highlight-active'); block.style.transition = ''; }, 1000);
-            }, 400);
-        }
+        performSmoothScroll(block, 0.4, markerId && type ? `${type}-${markerId}` : `block-${id}`);
     }
 }
 
 function scrollToQuote(quote) {
     const el = document.querySelector('[href="#' + quote + '"], [id="' + quote + '"]');
-    if (el) { 
-        performSmoothScroll(el, 0.4, 'footnote-' + quote); 
-        if (el.classList.contains('footnote-ref')) highlightMarker(el);
-    }
+    if (el) performSmoothScroll(el, 0.4, 'footnote-' + quote);
 }
 
-function scrollToPercent(p) { 
-    const scrollMax = document.documentElement.scrollHeight - window.innerHeight;
-    window.scrollTo({top: scrollMax * p, behavior:'auto'}); 
-}
+function scrollToPercent(p) { window.scrollTo({top: (document.documentElement.scrollHeight - window.innerHeight) * p, behavior:'auto'}); }
+function scrollToOffset(o) { window.scrollTo({top: o, behavior:'auto'}); }
 
-function scrollToOffset(o) { 
-    window.scrollTo({top: o, behavior:'auto'}); 
-}
-
-// --- Dynamic Injection ---
-
-function injectMarkerAtBlock(aId, bId) {
-    const blocks = getBlocks();
-    if (bId > 0 && bId <= blocks.length) {
-        const marker = document.createElement('span');
-        marker.className = 'annotation-marker';
-        marker.dataset.annotationId = aId;
-        marker.dataset.blockId = bId;
-        blocks[bId-1].appendChild(marker);
-    }
-}
-
-function injectImageMarker(iId, bId) {
-    const blocks = getBlocks();
-    if (bId > 0 && bId <= blocks.length) {
-        const marker = document.createElement('span');
-        marker.className = 'image-marker';
-        marker.dataset.imageId = iId;
-        marker.dataset.blockId = bId;
-        blocks[bId-1].appendChild(marker);
-    }
-}
-
-// --- Event Handlers ---
+// --- Event Listeners ---
 
 window.addEventListener('scroll', () => {
     const scrollY = window.scrollY;
     focusState.lastVelocity = Math.abs(scrollY - focusState.lastScrollY);
     focusState.lastScrollY = scrollY;
-    
-    // Check for manual drift from programmatic intent
     programmatic.noteScroll(scrollY);
-    
     if (!scrollTicking) {
         scrollTicking = true;
         window.requestAnimationFrame(() => {
             updateFocus();
-            
             const scrollMax = document.documentElement.scrollHeight - window.innerHeight;
             if (scrollMax > 0 && scrollY >= scrollMax - 1) focusState.reachedBottom = true;
             else if (scrollY < scrollMax - 20) focusState.reachedBottom = false;
-            
             if (focusState.reachedBottom && scrollY > scrollMax + 5) {
                 webkit.messageHandlers.readerBridge.postMessage({type:'bottomTug'});
                 focusState.reachedBottom = false; 
             }
-            
             scrollTicking = false;
         });
     }
 });
 
+const selectionOverlay = document.getElementById('selectionOverlay');
+function updateSelectionOverlay() {
+    if (!selectionOverlay) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) { selectionOverlay.innerHTML = ''; return; }
+    const range = sel.getRangeAt(0);
+    const rects = Array.from(range.getClientRects());
+    selectionOverlay.innerHTML = '';
+    rects.forEach(rect => {
+        const d = document.createElement('div');
+        d.className = 'selection-rect';
+        d.style.left = (rect.left + window.scrollX) + 'px';
+        d.style.top = (rect.top + window.scrollY) + 'px';
+        d.style.width = rect.width + 'px';
+        d.style.height = rect.height + 'px';
+        selectionOverlay.appendChild(d);
+    });
+}
+
+document.addEventListener('selectionchange', updateSelectionOverlay);
+window.addEventListener('resize', () => { buildTerritoryMap(); updateFocus(); });
+
 document.addEventListener('click', e => {
-    const target = e.target;
-    if (target.classList.contains('annotation-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({type:'annotationClick', id: target.dataset.annotationId});
-    } else if (target.classList.contains('image-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({type:'imageMarkerClick', id: target.dataset.imageId});
-    }
+    const t = e.target;
+    if (t.classList.contains('annotation-marker')) webkit.messageHandlers.readerBridge.postMessage({type:'annotationClick', id: t.dataset.annotationId});
+    if (t.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({type:'imageMarkerClick', id: t.dataset.imageId});
 });
 
 document.addEventListener('dblclick', e => {
-    if (e.target.classList.contains('image-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({type:'imageMarkerDblClick', id: e.target.dataset.imageId});
-    }
+    if (e.target.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({type:'imageMarkerDblClick', id: e.target.dataset.imageId});
 });
 
 document.addEventListener('mouseup', e => {
     setTimeout(() => {
-        const sel = window.getSelection();
-        const txt = sel.toString().trim();
-        const p = document.getElementById('wordPopup');
-        
+        const sel = window.getSelection(), txt = sel.toString().trim(), popup = document.getElementById('wordPopup');
         if (!sel.isCollapsed && txt) {
-            const container = sel.getRangeAt(0).startContainer.parentElement;
-            const blocks = getBlocks();
-            let blockId = 1;
-            for(let i=0; i<blocks.length; i++) { if(blocks[i].contains(container)) { blockId = i+1; break; } }
-            
-            p.style.left = e.clientX+'px'; p.style.top = (e.clientY+10)+'px'; p.style.display = 'block';
-            window.selectedWord = txt; window.selectedBlockId = blockId; window.selectedContext = container.textContent;
-        } else if (!e.target.closest('.word-popup')) {
-            p.style.display = 'none';
-        }
+            const container = sel.getRangeAt(0).startContainer.parentElement, blocks = getBlocks();
+            const bId = blocks.findIndex(b => b.contains(container)) + 1;
+            popup.style.left = e.clientX + 'px'; popup.style.top = (e.clientY + 10) + 'px'; popup.style.display = 'block';
+            window.selectedWord = txt; window.selectedBlockId = bId || 1; window.selectedContext = container.textContent;
+        } else if (!e.target.closest('.word-popup')) popup.style.display = 'none';
     }, 20);
 });
 
-document.addEventListener('mousedown', e => { 
-    if(!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display='none'; 
-});
-
-function handleExplain() { 
-    webkit.messageHandlers.readerBridge.postMessage({type:'explain', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); 
-    document.getElementById('wordPopup').style.display = 'none'; 
-}
-
-function handleGenerateImage() { 
-    webkit.messageHandlers.readerBridge.postMessage({type:'generateImage', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); 
-    document.getElementById('wordPopup').style.display = 'none'; 
-}
+document.addEventListener('mousedown', e => { if(!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display = 'none'; });
+function handleExplain() { webkit.messageHandlers.readerBridge.postMessage({type:'explain', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); document.getElementById('wordPopup').style.display = 'none'; }
+function handleGenerateImage() { webkit.messageHandlers.readerBridge.postMessage({type:'generateImage', word:window.selectedWord, context:window.selectedContext, blockId:window.selectedBlockId}); document.getElementById('wordPopup').style.display = 'none'; }
+function injectMarkerAtBlock(aId, bId) { const blocks = getBlocks(); if (bId > 0 && bId <= blocks.length) { const m = document.createElement('span'); m.className = 'annotation-marker'; m.dataset.annotationId = aId; m.dataset.blockId = bId; blocks[bId-1].appendChild(m); } }
+function injectImageMarker(iId, bId) { const blocks = getBlocks(); if (bId > 0 && bId <= blocks.length) { const m = document.createElement('span'); m.className = 'image-marker'; m.dataset.imageId = iId; m.dataset.blockId = bId; blocks[bId-1].appendChild(m); } }

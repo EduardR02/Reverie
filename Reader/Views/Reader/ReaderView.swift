@@ -307,22 +307,12 @@ struct ReaderView: View {
                             isProgrammaticScroll = context.isProgrammatic
 
                             if context.isProgrammatic {
-                                // PROGRAMMATIC MODE (Sticky Lock)
-                                // During a programmatic scroll or settle period, we only update IDs if the 
-                                // bridge provides a specific non-nil value (the target).
-                                if let annotationId = context.annotationId {
-                                    currentAnnotationId = annotationId
-                                }
-                                if let imageId = context.imageId {
-                                    currentImageId = imageId
-                                }
-                                if let footnoteRefId = context.footnoteRefId {
-                                    currentFootnoteRefId = footnoteRefId
-                                }
+                                // STICKY LOCK: Only update if bridge provides a non-nil ID
+                                if let aid = context.annotationId { currentAnnotationId = aid }
+                                if let iid = context.imageId { currentImageId = iid }
+                                if let fid = context.footnoteRefId { currentFootnoteRefId = fid }
                             } else {
-                                // MANUAL MODE (Proximity)
-                                // When the user is scrolling manually, we strictly mirror the 
-                                // bridge's calculated selection based on the current viewport.
+                                // MANUAL MODE: Synchronize selection strictly with bridge
                                 currentAnnotationId = context.annotationId
                                 currentImageId = context.imageId
                                 currentFootnoteRefId = context.footnoteRefId
