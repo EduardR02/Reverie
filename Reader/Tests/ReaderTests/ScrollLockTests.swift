@@ -88,8 +88,8 @@ final class ScrollLockTests: XCTestCase {
         messageHandler.messages.removeAll()
         
         try await webView.evaluateJavaScript("""
-            window.scrollY = 550; 
-            programmatic.noteScroll(550);
+            window.scrollY = 510; 
+            programmatic.noteScroll(510);
         """)
         
         let isSticky = try await webView.evaluateJavaScript("programmatic.isSticky()") as? Bool

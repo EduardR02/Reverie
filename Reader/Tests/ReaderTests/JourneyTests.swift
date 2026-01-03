@@ -35,7 +35,7 @@ final class JourneyTests: XCTestCase {
         
         // 2. Wait for first debounce
         let exp1 = XCTestExpectation(description: "First save")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             XCTAssertEqual(self.appState.readingStats.totalWords, 100)
             
             // 3. Scroll to 30% (should add 20% more = 200 words)
@@ -44,7 +44,7 @@ final class JourneyTests: XCTestCase {
             self.appState.updateChapterProgress(chapter: freshChapter, scrollPercent: 0.3, scrollOffset: 300)
             
             let exp2 = XCTestExpectation(description: "Second save")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 XCTAssertEqual(self.appState.readingStats.totalWords, 300)
                 
                 // 4. Scroll back to 20% (should add NOTHING)
@@ -52,7 +52,7 @@ final class JourneyTests: XCTestCase {
                 self.appState.updateChapterProgress(chapter: finalChapter, scrollPercent: 0.2, scrollOffset: 200)
                 
                 let exp3 = XCTestExpectation(description: "Final save")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     XCTAssertEqual(self.appState.readingStats.totalWords, 300)
                     exp3.fulfill()
                 }

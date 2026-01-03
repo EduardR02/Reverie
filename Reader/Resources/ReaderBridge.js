@@ -23,13 +23,16 @@ const focusState = {
     lastScrollY: 0,
     lastVelocity: 0,
     lastReportedScrollY: 0,
+    lastReportedTime: 0,
     currentStationIndex: -1,
+    currentBlockIndex: -1,
     stations: [],       // List of all markers (getMarkers())
     boundaries: [],     // Territory division lines in scrollY space
     stops: [],          // Ideal scroll positions for each marker
     blockPositions: [], // Cached absolute Y positions of blocks
     reachedBottom: false,
-    mapBuilt: false
+    mapBuilt: false,
+    idleTimeout: null
 };
 
 let scrollTicking = false;
@@ -76,7 +79,8 @@ const programmatic = (() => {
         state.timeout = null;
 
         if (wasLocked && !silent) {
-            updateFocus();
+            // Force an update to notify Swift that the lock is released
+            updateFocus(true);
         }
     };
 
@@ -93,7 +97,8 @@ const programmatic = (() => {
         }
         state.timeout = null;
         
-        updateFocus();
+        // Force an update to notify Swift that the animation is done
+        updateFocus(true);
     };
 
     const start = (targetId, targetY) => {
@@ -325,140 +330,152 @@ function buildTerritoryMap() {
 /**
  * Synchronizes Focus with Scroll Position
  */
-function updateFocus() {
+function updateFocus(forceReport = false) {
     const scrollY = window.scrollY;
     const viewportHeight = window.innerHeight;
     const scrollHeight = document.documentElement.scrollHeight;
-    const scrollMax = scrollHeight - viewportHeight;
-    const scrollPercent = scrollMax > 0 ? (scrollY / scrollMax) : 0;
+    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
+    const scrollPercent = scrollY / scrollMax;
+    const now = performance.now();
     
-    // Rebuild map if needed (initial load)
     if (!focusState.mapBuilt) {
         buildTerritoryMap();
     }
 
     const isLocked = programmatic.isSticky();
+    const isAnimating = programmatic.isActive();
     const targetId = programmatic.preferredTargetId();
     
     let newStationIndex = -1;
+    let activeBlockIndex = -1;
 
-    // Fast Math-based visibility data (prevents layout thrashing during scroll)
-    const markerData = focusState.stations.map(station => {
-        // A marker is visible if its center Y is within the viewport (with buffer)
-        const isVisible = (station.y >= scrollY - VISIBILITY_BUFFER) && 
-                          (station.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
-        return { ...station, isVisible };
-    });
-
+    // --- 1. Focus Determination ---
     if (isLocked && targetId) {
-        // Find targeted marker in a locked session
-        newStationIndex = markerData.findIndex(s => {
-            const compositeId = s.type + "-" + s.id;
-            return compositeId === targetId || s.id === targetId;
-        });
-    } else if (markerData.length > 0) {
-        // PASSIVE TRACKING: Look up territory owner
+        newStationIndex = focusState.stations.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
+    } else if (!isAnimating && focusState.stations.length > 0) {
         let idx = focusState.currentStationIndex;
-        
         if (idx === -1) {
-            // Initial lookup
-            idx = focusState.boundaries.findIndex(boundaryY => scrollY <= boundaryY);
-            if (idx === -1) idx = markerData.length - 1;
+            idx = focusState.boundaries.findIndex(b => scrollY <= b);
+            if (idx === -1) idx = focusState.stations.length - 1;
         } else {
-            // Incremental lookup with Hysteresis
             const lowerBound = idx === 0 ? 0 : focusState.boundaries[idx - 1];
             const upperBound = focusState.boundaries[idx];
-            
-            // Check for large jumps
-            const isLargeMove = scrollY > upperBound + 100 || scrollY < lowerBound - 100;
-            
-            if (isLargeMove) {
-                idx = focusState.boundaries.findIndex(boundaryY => scrollY <= boundaryY);
-                if (idx === -1) idx = markerData.length - 1;
+            if (scrollY > upperBound + 100 || scrollY < lowerBound - 100) {
+                idx = focusState.boundaries.findIndex(b => scrollY <= b);
+                if (idx === -1) idx = focusState.stations.length - 1;
             } else {
-                // Directional crossing with hysteresis buffer
-                if (scrollY > upperBound + HYSTERESIS_THRESHOLD && idx < markerData.length - 1) {
-                    idx++;
-                } else if (scrollY < lowerBound - HYSTERESIS_THRESHOLD && idx > 0) {
-                    idx--;
-                }
+                if (scrollY > upperBound + HYSTERESIS_THRESHOLD && idx < focusState.stations.length - 1) idx++;
+                else if (scrollY < lowerBound - HYSTERESIS_THRESHOLD && idx > 0) idx--;
             }
         }
 
-        // SERIAL VISIBILITY GATE: Handle focus handover if owner is off-screen
-        const owner = markerData[idx];
-        if (owner && owner.isVisible) {
+        const owner = focusState.stations[idx];
+        const isOwnerVisible = (owner.y >= scrollY - VISIBILITY_BUFFER) && 
+                               (owner.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
+        
+        if (isOwnerVisible) {
             newStationIndex = idx;
         } else if (owner) {
             if (owner.y < scrollY) {
-                // Owner is off-screen TOP: hand focus forward to next visible
-                const nextVisible = markerData.slice(idx + 1).find(marker => marker.isVisible);
-                if (nextVisible) {
-                    newStationIndex = markerData.indexOf(nextVisible);
-                }
-            } else if (owner.y > scrollY + viewportHeight) {
-                // Owner is off-screen BOTTOM: hand focus back to previous visible
-                const prevVisible = markerData.slice(0, idx).reverse().find(marker => marker.isVisible);
-                if (prevVisible) {
-                    newStationIndex = markerData.indexOf(prevVisible);
-                }
+                const nextVisible = focusState.stations.slice(idx + 1).find(m => 
+                    (m.y >= scrollY - VISIBILITY_BUFFER) && (m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER)
+                );
+                if (nextVisible) newStationIndex = focusState.stations.indexOf(nextVisible);
+            } else {
+                const prevVisible = focusState.stations.slice(0, idx).reverse().find(m => 
+                    (m.y >= scrollY - VISIBILITY_BUFFER) && (m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER)
+                );
+                if (prevVisible) newStationIndex = focusState.stations.indexOf(prevVisible);
             }
         }
     }
 
-    // PARAGRAPH TRACKING (Closest to Eyeline)
-    let activeBlockIndex = -1;
-    let minBlockDist = Infinity;
-    const blockEyeLine = scrollY + (viewportHeight * EYE_LINE_RATIO); 
-    
-    focusState.blockPositions.forEach((pos, i) => {
-        const top = pos.top;
-        const bottom = pos.bottom;
+    // --- 2. Block Tracking ---
+    if (!isAnimating) {
+        const blockEyeLine = scrollY + (viewportHeight * EYE_LINE_RATIO); 
+        let minBlockDist = Infinity;
         
-        let distance = 0;
-        if (blockEyeLine < top) {
-            distance = top - blockEyeLine;
-        } else if (blockEyeLine > bottom) {
-            distance = blockEyeLine - bottom;
-        }
-        
-        if (distance < minBlockDist) { 
-            minBlockDist = distance; 
-            activeBlockIndex = i; 
-        }
-    });
-
-    const hasChangedFocus = newStationIndex !== focusState.currentStationIndex;
-    const movedSignificantly = Math.abs(scrollY - (focusState.lastReportedScrollY || 0)) > 30;
-
-    // Report update to Native App
-    if (hasChangedFocus || movedSignificantly) {
-        const station = markerData[newStationIndex];
-        focusState.currentStationIndex = newStationIndex;
-        focusState.lastReportedScrollY = scrollY;
-        
-        // Visual feedback for manual scroll focus entry
-        if (hasChangedFocus && !isLocked && station && station.isVisible && focusState.lastVelocity < 40) {
-            pulseMarker(station.element);
-        }
-
-        webkit.messageHandlers.readerBridge.postMessage({
-            type: 'scrollPosition',
-            annotationId: station?.type === 'annotation' ? station.id : null, 
-            imageId: station?.type === 'image' ? station.id : null, 
-            footnoteRefId: station?.type === 'footnote' ? station.id : null,
-            blockId: activeBlockIndex + 1,
-            primaryType: station?.type || null,
-            scrollY: scrollY, 
-            scrollPercent: scrollPercent, 
-            viewportHeight: viewportHeight,
-            isProgrammatic: isLocked
+        focusState.blockPositions.forEach((pos, i) => {
+            const top = pos.top;
+            const bottom = pos.bottom;
+            let distance = 0;
+            if (blockEyeLine < top) distance = top - blockEyeLine;
+            else if (blockEyeLine > bottom) distance = blockEyeLine - bottom;
+            
+            if (distance < minBlockDist) { 
+                minBlockDist = distance; 
+                activeBlockIndex = i; 
+            }
         });
     }
 
-    if (DEBUG_MODE) {
-        updateDebugOverlay();
+    // --- 3. Lazy Reporting Logic ---
+    const hasChangedFocus = newStationIndex !== -1 && newStationIndex !== focusState.currentStationIndex;
+    const hasChangedBlock = activeBlockIndex !== -1 && activeBlockIndex !== focusState.currentBlockIndex;
+    
+    // Always keep state indices current so Heartbeat is accurate
+    if (newStationIndex !== -1) focusState.currentStationIndex = newStationIndex;
+    if (activeBlockIndex !== -1) focusState.currentBlockIndex = activeBlockIndex;
+
+    // Efficiency Math:
+    const timeSinceLastReport = now - focusState.lastReportedTime;
+    const movedFarEnough = Math.abs(scrollY - focusState.lastReportedScrollY) > 300;
+    
+    // PRIORITY 0: Forced Report (Bypass all throttles - e.g. Lock Release)
+    if (forceReport) {
+        focusState.lastReportedScrollY = scrollY;
+        focusState.lastReportedTime = now;
+        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, hasChangedFocus);
     }
+    // PRIORITY 1: Focus Change (Must be immediate for UI snap)
+    else if (hasChangedFocus) {
+        focusState.lastReportedScrollY = scrollY;
+        focusState.lastReportedTime = now;
+        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, true);
+    } 
+    // PRIORITY 2: Block Change or Large Move (Gated by time to prevent spam during fast scrolls)
+    else if ((hasChangedBlock || movedFarEnough || isLocked) && timeSinceLastReport > 150) {
+        focusState.lastReportedScrollY = scrollY;
+        focusState.lastReportedTime = now;
+        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, false);
+    }
+
+    // --- 4. Idle Heartbeat (Final persistence safety) ---
+    clearTimeout(focusState.idleTimeout);
+    focusState.idleTimeout = setTimeout(() => {
+        const latestScrollY = window.scrollY;
+        const scrollMaxLatest = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+        const latestScrollPercent = latestScrollY / scrollMaxLatest;
+        
+        // Final sync if we've moved since the last report
+        if (Math.abs(latestScrollY - focusState.lastReportedScrollY) > 5) {
+            reportToNative(latestScrollY, latestScrollPercent, window.innerHeight, programmatic.isSticky(), false);
+        }
+    }, 1000);
+}
+
+function reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, shouldPulse) {
+    const station = focusState.stations[focusState.currentStationIndex];
+    
+    // Trigger pulse on manual entry ONLY if the focus actually changed
+    if (shouldPulse && !isLocked && station && station.element && focusState.lastVelocity < 40) {
+        const isVisible = (station.y >= scrollY - VISIBILITY_BUFFER) && 
+                          (station.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
+        if (isVisible) pulseMarker(station.element);
+    }
+
+    webkit.messageHandlers.readerBridge.postMessage({
+        type: 'scrollPosition',
+        annotationId: station?.type === 'annotation' ? station.id : null, 
+        imageId: station?.type === 'image' ? station.id : null, 
+        footnoteRefId: station?.type === 'footnote' ? station.id : null,
+        blockId: focusState.currentBlockIndex !== -1 ? focusState.currentBlockIndex + 1 : null,
+        primaryType: station?.type || null,
+        scrollY: scrollY, 
+        scrollPercent: scrollPercent, 
+        viewportHeight: viewportHeight,
+        isProgrammatic: isLocked
+    });
 }
 
 /**
