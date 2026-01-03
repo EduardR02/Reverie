@@ -410,28 +410,22 @@ function updateFocus(forceReport = false) {
     }
 
     // --- 3. Lazy Reporting Logic ---
-    const hasChangedFocus = newStationIndex !== -1 && newStationIndex !== focusState.currentStationIndex;
+    const hasChangedFocus = newStationIndex !== focusState.currentStationIndex;
     const hasChangedBlock = activeBlockIndex !== -1 && activeBlockIndex !== focusState.currentBlockIndex;
     
     // Always keep state indices current so Heartbeat is accurate
-    if (newStationIndex !== -1) focusState.currentStationIndex = newStationIndex;
+    focusState.currentStationIndex = newStationIndex;
     if (activeBlockIndex !== -1) focusState.currentBlockIndex = activeBlockIndex;
 
     // Efficiency Math:
     const timeSinceLastReport = now - focusState.lastReportedTime;
     const movedFarEnough = Math.abs(scrollY - focusState.lastReportedScrollY) > 300;
     
-    // PRIORITY 0: Forced Report (Bypass all throttles - e.g. Lock Release)
-    if (forceReport) {
+    // PRIORITY 0: Forced Report or Focus Change (Must be immediate for UI consistency)
+    if (forceReport || hasChangedFocus) {
         focusState.lastReportedScrollY = scrollY;
         focusState.lastReportedTime = now;
         reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, hasChangedFocus);
-    }
-    // PRIORITY 1: Focus Change (Must be immediate for UI snap)
-    else if (hasChangedFocus) {
-        focusState.lastReportedScrollY = scrollY;
-        focusState.lastReportedTime = now;
-        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, true);
     } 
     // PRIORITY 2: Block Change or Large Move (Gated by time to prevent spam during fast scrolls)
     else if ((hasChangedBlock || movedFarEnough || isLocked) && timeSinceLastReport > 150) {
@@ -457,7 +451,7 @@ function updateFocus(forceReport = false) {
 function reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, shouldPulse) {
     const station = focusState.stations[focusState.currentStationIndex];
     
-    // Trigger pulse on manual entry ONLY if the focus actually changed
+    // Trigger pulse on manual entry ONLY if the focus actually changed and we have a station
     if (shouldPulse && !isLocked && station && station.element && focusState.lastVelocity < 40) {
         const isVisible = (station.y >= scrollY - VISIBILITY_BUFFER) && 
                           (station.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
