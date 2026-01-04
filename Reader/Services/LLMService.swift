@@ -42,6 +42,10 @@ final class LLMService {
         var imageSuggestions: [ImageSuggestion] = []
         var summary: String = ""
 
+        enum CodingKeys: String, CodingKey {
+            case annotations, quizQuestions, imageSuggestions, summary
+        }
+
         init(
             annotations: [AnnotationData] = [],
             quizQuestions: [QuizData] = [],
@@ -61,6 +65,13 @@ final class LLMService {
             imageSuggestions = try container.decodeIfPresent([ImageSuggestion].self, forKey: .imageSuggestions) ?? []
             summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
         }
+    }
+
+    enum ChapterAnalysisStreamEvent {
+        case thinking(String)
+        case insightFound
+        case quizQuestionFound
+        case completed(ChapterAnalysis)
     }
 
     struct AnnotationData: Codable {
@@ -100,6 +111,59 @@ final class LLMService {
 
     // MARK: - Analyze Chapter
 
+    func analyzeChapterStreaming(
+        contentWithBlocks: String,
+        rollingSummary: String?,
+        settings: UserSettings
+    ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
+        let prompt = PromptLibrary.analysisPrompt(
+            contentWithBlocks: contentWithBlocks,
+            rollingSummary: rollingSummary,
+            insightDensity: settings.insightDensity,
+            imageDensity: settings.imagesEnabled ? settings.imageDensity : nil
+        )
+
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let stream = streamResponse(
+                        prompt: prompt,
+                        provider: settings.llmProvider,
+                        model: settings.llmModel,
+                        apiKey: apiKey(for: settings.llmProvider, settings: settings),
+                        temperature: settings.temperature,
+                        reasoning: settings.insightReasoningLevel,
+                        schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
+                        webSearch: settings.webSearchEnabled,
+                        nameHint: "chapter_analysis_stream"
+                    )
+
+                    var fullText = ""
+                    var scanner = StreamingJSONScanner()
+
+                    for try await chunk in stream {
+                        if chunk.isThinking {
+                            continuation.yield(.thinking(chunk.text))
+                        } else {
+                            fullText += chunk.text
+                            
+                            let (insights, quizzes) = scanner.update(with: chunk.text)
+                            for _ in 0..<insights { continuation.yield(.insightFound) }
+                            for _ in 0..<quizzes { continuation.yield(.quizQuestionFound) }
+                        }
+                    }
+
+                    // Final parse of the completed JSON
+                    let finalAnalysis: ChapterAnalysis = try self.decodeStructured(ChapterAnalysis.self, from: fullText)
+                    continuation.yield(.completed(finalAnalysis))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     func analyzeChapter(
         contentWithBlocks: String,
         rollingSummary: String?,
@@ -114,7 +178,7 @@ final class LLMService {
 
         return try await requestStructured(
             prompt: prompt,
-            schema: SchemaLibrary.chapterAnalysis,
+            schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
             provider: settings.llmProvider,
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
@@ -493,23 +557,53 @@ final class LLMService {
         print("Captured API response to: \(fileURL.path)")
     }
 
-    private func decodeStructured<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
-        var cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    internal func decodeStructured<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
+        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Remove markdown code blocks if present
-        if cleanText.hasPrefix("```") {
-            let lines = cleanText.components(separatedBy: .newlines)
-            if lines.count >= 2 {
-                // Drop first line (```json) and last line (```)
-                let middleLines = lines.dropFirst().dropLast()
-                cleanText = middleLines.joined(separator: "\n")
+        // 1. Try decoding directly (most efficient)
+        if let data = cleanText.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(T.self, from: data) {
+            return decoded
+        }
+
+        // 2. Search for the longest balanced block (most robust)
+        var bestCandidate: String?
+        
+        for startIndex in cleanText.indices where cleanText[startIndex] == "{" {
+            var depth = 0
+            var isInsideString = false
+            var isEscaped = false
+            
+            for index in cleanText.indices[startIndex...] {
+                let char = cleanText[index]
+                if isEscaped { isEscaped = false; continue }
+                if char == "\\" { isEscaped = true; continue }
+                if char == "\"" { isInsideString.toggle(); continue }
+                
+                if !isInsideString {
+                    if char == "{" { depth += 1 }
+                    else if char == "}" {
+                        depth -= 1
+                        if depth == 0 {
+                            let candidate = String(cleanText[startIndex...index])
+                            // If this candidate is longer than previous best, or if we haven't found one yet, save it
+                            if bestCandidate == nil || candidate.count > (bestCandidate?.count ?? 0) {
+                                bestCandidate = candidate
+                            }
+                            break
+                        }
+                    }
+                }
             }
         }
         
-        guard let data = cleanText.data(using: .utf8) else {
-            throw LLMError.invalidResponse
+        if let json = bestCandidate,
+           let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(T.self, from: data) {
+            return decoded
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        
+        throw LLMError.invalidResponse
     }
 
     private func providerClient(for provider: LLMProvider) -> any LLMProviderClient {
@@ -559,6 +653,7 @@ final class LLMService {
         apiKey: String,
         temperature: Double,
         reasoning: ReasoningLevel,
+        schema: LLMStructuredSchema? = nil,
         webSearch: Bool = false,
         nameHint: String? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
@@ -578,7 +673,7 @@ final class LLMService {
                         apiKey: trimmedKey,
                         temperature: temperature,
                         reasoning: reasoning,
-                        schema: nil,
+                        schema: schema,
                         stream: true,
                         webSearch: webSearch
                     )
@@ -668,5 +763,80 @@ final class LLMService {
                 }
             }
         }
+    }
+}
+
+// MARK: - Streaming JSON Scanner
+
+/// A high-performance byte-based scanner that identifies specific JSON keys in a stream.
+/// It uses a state-machine approach to avoid expensive string allocations and re-scanning.
+internal struct StreamingJSONScanner {
+    private enum MatchState {
+        case searching
+        case foundKey // Found "title" or "question"
+    }
+
+    private let insightKey = Array("\"title\"".utf8)
+    private let quizKey = Array("\"question\"".utf8)
+    
+    // State tracking
+    private var insightMatchIndex = 0
+    private var quizMatchIndex = 0
+    private var insightState: MatchState = .searching
+    private var quizState: MatchState = .searching
+    private var isInsideString = false
+    private var isEscaped = false
+
+    mutating func reset() {
+        insightMatchIndex = 0
+        quizMatchIndex = 0
+        insightState = .searching
+        quizState = .searching
+        isInsideString = false
+        isEscaped = false
+    }
+
+    /// Scans a NEW chunk of text for occurrences of insights and quizzes.
+    mutating func update(with chunk: String) -> (Int, Int) {
+        var insights = 0
+        var quizzes = 0
+        
+        for byte in chunk.utf8 {
+            if isEscaped { isEscaped = false }
+            else if byte == 0x5C { isEscaped = true }
+            else if byte == 0x22 { isInsideString.toggle() }
+            
+            // Insight Key Machine
+            switch insightState {
+            case .searching:
+                if byte == insightKey[insightMatchIndex] {
+                    insightMatchIndex += 1
+                    if insightMatchIndex == insightKey.count {
+                        insightState = .foundKey
+                        insightMatchIndex = 0
+                    }
+                } else { insightMatchIndex = (byte == insightKey[0]) ? 1 : 0 }
+            case .foundKey:
+                if byte == 0x3A { insights += 1; insightState = .searching } // Colon :
+                else if byte > 0x20 { insightState = .searching } // Non-whitespace breaks it
+            }
+
+            // Quiz Key Machine
+            switch quizState {
+            case .searching:
+                if byte == quizKey[quizMatchIndex] {
+                    quizMatchIndex += 1
+                    if quizMatchIndex == quizKey.count {
+                        quizState = .foundKey
+                        quizMatchIndex = 0
+                    }
+                } else { quizMatchIndex = (byte == quizKey[0]) ? 1 : 0 }
+            case .foundKey:
+                if byte == 0x3A { quizzes += 1; quizState = .searching }
+                else if byte > 0x20 { quizState = .searching }
+            }
+        }
+        
+        return (insights, quizzes)
     }
 }

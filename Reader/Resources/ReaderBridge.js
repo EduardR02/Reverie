@@ -1,22 +1,20 @@
 /**
- * ReaderBridge.js
- * 
- * Optimized for "Stop-Centered" scroll-syncing.
- * Implements land-ownership territories with directional handover.
- * Provides density-aware allocation to ensure all markers are reachable.
+ * ReaderBridge.js - Absolute Optimization Edition
  * 
  * CORE ARCHITECTURE:
- * - "Ideal Stops": Every marker has a specific scroll position where it sits at 40% height.
- * - "Territories": Document space is divided halfway between these stops.
- * - "Elastic Spacing": Same-line markers are pushed apart to create distinct landing strips.
+ * - "Stop-Centered" logic: Precision focus targets at 40% height.
+ * - Semantic Diffing: Minimizes bridge overhead by only reporting meaningful changes.
+ * - Layout-Aware: Uses ResizeObserver for automatic map stability.
+ * - Performance: O(log N) focus search and O(1) block detection.
  */
 
 // --- Configuration ---
-const MIN_TERRITORY_HEIGHT = 100; // Minimum scroll height in pixels for each marker's land
-const HYSTERESIS_THRESHOLD = 20;  // Movement buffer to prevent jitter when switching focus
-const EYE_LINE_RATIO = 0.4;       // The vertical 'focal point' (40% of viewport height)
-const VISIBILITY_BUFFER = 5;      // Margin for off-screen detection
-const DEBUG_MODE = false;         // Enable to visualize territories and stops
+const MIN_TERRITORY_HEIGHT = 100;
+const HYSTERESIS_THRESHOLD = 20;
+const EYE_LINE_RATIO = 0.4;
+const VISIBILITY_BUFFER = 5;
+const BLOCK_OFFSET_BUCKETS = 10;
+const HEARTBEAT_MS = 5000;
 
 // --- Global State ---
 const focusState = { 
@@ -27,17 +25,30 @@ const focusState = {
     lastBlockCheckY: 0,
     currentStationIndex: -1,
     currentBlockIndex: -1,
-    stations: [],       // List of all markers (getMarkers())
-    boundaries: [],     // Territory division lines in scrollY space
-    stops: [],          // Ideal scroll positions for each marker
+    currentBlockOffset: 0,
+    stations: [],
+    boundaries: [],
+    stops: [],
     scrollHeight: 0,
     viewportHeight: 0,
     eyeLineY: 0,
     reachedBottom: false,
     mapBuilt: false,
     mapPending: false,
-    idleTimeout: null
+    idleTimeout: null,
+    // Semantic Diff Cache to prevent SwiftUI over-rendering
+    lastSent: {
+        annotationId: null,
+        imageId: null,
+        footnoteRefId: null,
+        blockId: null,
+        blockOffsetBucket: null,
+        scrollPercent: -1,
+        isLocked: false
+    }
 };
+
+let scrollTicking = false;
 
 /**
  * Fast binary search for sorted arrays
@@ -52,35 +63,28 @@ function binarySearch(arr, val) {
     return low;
 }
 
-let scrollTicking = false;
-
 /**
  * Programmatic Scroll & Lock Controller
- * Manages smooth scrolls and prevents focus-tracking from overriding intentional navigation.
  */
 const programmatic = (() => {
     const state = {
-        active: false,    // Scroll animation is currently running
-        sticky: false,    // Selection is locked to a target
-        targetId: null,   // The ID of the locked item
-        targetY: null,    // The scroll destination
-        expectedY: null,  // Expected Y position for drift detection
+        active: false,
+        sticky: false,
+        targetId: null,
+        targetY: null,
+        expectedY: null,
         lastSetAt: 0,
         raf: null,
         timeout: null,
-        sessionId: 0      // Unique ID to track the current scroll session
+        sessionId: 0
     };
 
-    const driftTolerance = 4.0; // Max pixels user can scroll before breaking sticky lock
-    const staleWriteMs = 150;   // Time after which a scroll is considered manual if no updates (increased for robustness)
+    const driftTolerance = 4.0;
+    const staleWriteMs = 150;
 
     const cancel = (silent = false) => {
         const wasLocked = state.sticky;
-        
-        if (state.raf) {
-            cancelAnimationFrame(state.raf);
-        }
-        
+        if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
         state.active = false;
         state.sticky = false; 
@@ -89,99 +93,73 @@ const programmatic = (() => {
         state.expectedY = null;
         state.lastSetAt = 0;
         state.sessionId++; 
-        
-        if (state.timeout) {
-            clearTimeout(state.timeout);
-        }
+        if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
-
-        if (wasLocked && !silent) {
-            // Force an update to notify Swift that the lock is released
-            updateFocus(true);
-        }
+        if (wasLocked && !silent) updateFocus(true);
     };
 
     const complete = () => {
-        if (state.raf) {
-            cancelAnimationFrame(state.raf);
-        }
+        if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
         state.active = false;
         state.expectedY = state.targetY; 
-        
-        if (state.timeout) {
-            clearTimeout(state.timeout);
-        }
+        if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
-        
-        // Force an update to notify Swift that the animation is done
         updateFocus(true);
     };
 
     const start = (targetId, targetY) => {
-        // Cancel existing sessions silently
         cancel(true); 
-
         const currentSession = state.sessionId;
         const startY = window.scrollY;
-        
-        // Ensure targetY is reachable to prevent drift-induced lock breaks
-        const viewportHeight = window.innerHeight;
-        const scrollMax = Math.max(1, document.documentElement.scrollHeight - viewportHeight);
+        const vh = focusState.viewportHeight || window.innerHeight;
+        const scrollMax = Math.max(1, (focusState.scrollHeight || document.documentElement.scrollHeight) - vh);
         const safeTargetY = Math.max(0, Math.min(scrollMax, targetY));
-        
         const distance = Math.abs(safeTargetY - startY);
         
         state.active = true;
         state.sticky = true;
         state.targetId = targetId;
         state.targetY = safeTargetY;
-        state.expectedY = startY;
+        state.expectedY = startY; 
         state.lastSetAt = performance.now();
 
         // Update focus immediately to lock onto the target
         updateFocus();
 
-        // If very close, just snap
         if (distance < 2) {
+            // SNAP: Update expectation BEFORE the synchronous call to prevent drift trigger
+            state.expectedY = safeTargetY;
             window.scrollTo({ top: safeTargetY, behavior: 'auto' });
             complete();
             return;
         }
 
         const duration = Math.min(900, Math.max(280, distance * 0.65));
-        
-        // Watchdog: Ensure state is never stuck if RAF fails
         state.timeout = setTimeout(() => {
-            if (state.active && state.sessionId === currentSession) {
-                complete();
-            }
+            if (state.active && state.sessionId === currentSession) complete();
         }, duration + 500);
 
         const startTime = performance.now();
         const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 
         const step = (now) => {
-            if (!state.active || state.sessionId !== currentSession) {
-                return;
-            }
-
+            if (!state.active || state.sessionId !== currentSession) return;
+            
             const elapsed = now - startTime;
             const progress = Math.min(1, elapsed / duration);
             const eased = easeOutCubic(progress);
             const nextY = startY + (safeTargetY - startY) * eased;
             
+            // IMPORTANT: Update expectedY BEFORE scrolling so noteScroll (which fires on scroll event)
+            // sees the value we intended to reach.
             state.expectedY = nextY;
             state.lastSetAt = performance.now();
             
             window.scrollTo({ top: nextY, behavior: 'auto' });
             
-            if (progress < 1) {
-                state.raf = requestAnimationFrame(step);
-            } else {
-                state.raf = null;
-                complete();
-            }
+            if (progress < 1) state.raf = requestAnimationFrame(step);
+            else { state.raf = null; complete(); }
         };
         
         state.raf = requestAnimationFrame(step);
@@ -191,14 +169,9 @@ const programmatic = (() => {
         start,
         noteScroll: (actualY) => {
             if (!state.sticky) return;
-            
             const drift = state.expectedY === null ? 0 : Math.abs(actualY - state.expectedY);
             const timeSinceLastWrite = performance.now() - state.lastSetAt;
-            
-            // If user scrolled away or if programmatic engine stalled, break lock
-            if (drift > driftTolerance || (state.active && timeSinceLastWrite > staleWriteMs)) {
-                cancel();
-            }
+            if (drift > driftTolerance || (state.active && timeSinceLastWrite > staleWriteMs)) cancel();
         },
         isActive: () => state.active,
         isSticky: () => state.sticky,
@@ -208,148 +181,70 @@ const programmatic = (() => {
 
 // --- DOM Queries ---
 
-/**
- * Returns all potential "anchor" blocks (paragraphs, headers, etc.)
- */
-function getBlocks() {
-    // Optimization: If we have blocks with IDs, use those directly as they are already scoped.
-    const idBlocks = document.querySelectorAll('[id^="block-"]');
-    if (idBlocks.length > 0) {
-        return Array.from(idBlocks);
-    }
-    const selector = 'p, h1, h2, h3, h4, h5, h6, blockquote, li';
-    return Array.from(document.querySelectorAll(selector));
-}
-
 function getBlockByIdOrIndex(blockId) {
     if (!blockId || blockId <= 0) return null;
     const byId = document.getElementById(`block-${blockId}`);
     if (byId) return byId;
-    const blocks = getBlocks();
-    if (blockId <= blocks.length) return blocks[blockId - 1];
-    return null;
+    const idBlocks = document.querySelectorAll('[id^="block-"]');
+    if (idBlocks.length >= blockId) return idBlocks[blockId - 1];
+    const generic = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
+    return generic[blockId - 1] || null;
 }
 
-/**
- * Gathers all insight markers and calculates their physical positions.
- */
 function getMarkers() {
     const selector = '.annotation-marker, .image-marker, .footnote-ref';
     const markerElements = document.querySelectorAll(selector);
     const scrollY = window.scrollY;
     
-    const markers = Array.from(markerElements).map((element, index) => {
+    return Array.from(markerElements).map((element, index) => {
         const rect = element.getBoundingClientRect();
-        
-        // Identify Type
         let type = 'annotation';
-        if (element.classList.contains('image-marker')) {
-            type = 'image';
-        } else if (element.classList.contains('footnote-ref')) {
-            type = 'footnote';
-        }
+        if (element.classList.contains('image-marker')) type = 'image';
+        else if (element.classList.contains('footnote-ref')) type = 'footnote';
 
-        // Extract ID
-        const id = element.dataset.annotationId || 
-                   element.dataset.imageId || 
-                   (element.getAttribute('href')?.split('#')[1]) || 
-                   element.id;
+        const id = element.dataset.annotationId || element.dataset.imageId || 
+                   (element.getAttribute('href')?.split('#')[1]) || element.id;
 
-        // Find Parent Block (Prefer ID attribute for speed)
         const block = element.closest('[id^="block-"]');
-        const blockId = block ? 
-            parseInt(block.id.replace("block-", ""), 10) : 
-            parseInt(element.dataset.blockId || "0", 10);
+        const blockId = block ? parseInt(block.id.replace("block-", ""), 10) : 
+                                parseInt(element.dataset.blockId || "0", 10);
 
-        // Calculate absolute vertical center
-        const centerY = rect.top + scrollY + (rect.height * 0.5);
-
-        return { 
-            element: element, 
-            id: id, 
-            type: type, 
-            order: index, 
-            blockId: blockId, 
-            y: centerY 
-        };
-    });
-
-    // Sort markers by document order (vertical position)
-    return markers.sort((a, b) => {
-        if (a.y !== b.y) {
-            return a.y - b.y;
-        }
-        return a.order - b.order;
-    });
+        return { element, id, type, order: index, blockId, y: rect.top + scrollY + (rect.height * 0.5) };
+    }).sort((a, b) => (a.y !== b.y) ? a.y - b.y : a.order - b.order);
 }
 
 // --- Territory Logic ---
 
-/**
- * Builds the Stop-Centered Territory Map.
- * Calculates where every marker 'wants' to sit and divides land between them.
- */
 function buildTerritoryMap() {
-    // If we're already rebuilding, don't stack them
-    if (focusState.mapPending) return;
-    
     const stations = getMarkers();
-    const viewportHeight = window.innerHeight;
-    const scrollHeight = document.documentElement.scrollHeight;
-    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
-    const stationCount = stations.length;
-
-    // Cache metrics to avoid layout-forcing getters during scroll
-    focusState.viewportHeight = viewportHeight;
-    focusState.scrollHeight = scrollHeight;
-    focusState.eyeLineY = viewportHeight * EYE_LINE_RATIO;
-
-    if (stationCount === 0) {
-        focusState.stations = [];
-        focusState.boundaries = [];
-        focusState.stops = [];
-        focusState.mapBuilt = true;
-        focusState.mapPending = false;
-        return;
-    }
-
-    // Ensure markers don't overlap territories if possible
-    const effectiveMinHeight = Math.min(MIN_TERRITORY_HEIGHT, scrollMax / stationCount);
-
-    // 1. Calculate Ideal Stops (Scroll position where marker is at 40% height)
-    let stops = stations.map(station => {
-        const idealPosition = station.y - focusState.eyeLineY;
-        // Clamp to reachable scroll range
-        return Math.max(0, Math.min(scrollMax, idealPosition));
-    });
-
-    // 2. Forward Pass: Enforce minimum spacing (virtual depth for same-line markers)
-    for (let i = 1; i < stationCount; i++) {
-        const minPos = stops[i - 1] + effectiveMinHeight;
-        if (stops[i] < minPos) {
-            stops[i] = minPos;
-        }
-    }
-
-    // 3. Backward Pass: If spacing pushed us past scrollMax, push back up
-    if (stops[stationCount - 1] > scrollMax) {
-        stops[stationCount - 1] = scrollMax;
-        for (let i = stationCount - 2; i >= 0; i--) {
-            const maxPos = stops[i + 1] - effectiveMinHeight;
-            if (stops[i] > maxPos) {
-                stops[i] = maxPos;
-            }
-        }
-    }
-
-    // 4. Calculate Boundaries (Midway points between stops)
-    let boundaries = [];
-    for (let i = 0; i < stationCount - 1; i++) {
-        const midpoint = (stops[i] + stops[i + 1]) / 2;
-        boundaries.push(midpoint);
-    }
+    const vh = window.innerHeight;
+    const sh = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, sh - vh);
     
-    // Final boundary covers the rest of the document
+    focusState.viewportHeight = vh;
+    focusState.scrollHeight = sh;
+    focusState.eyeLineY = vh * EYE_LINE_RATIO;
+
+    if (stations.length === 0) {
+        focusState.stations = []; focusState.boundaries = []; focusState.stops = [];
+        focusState.mapBuilt = true; focusState.mapPending = false; return;
+    }
+
+    const minH = Math.min(MIN_TERRITORY_HEIGHT, scrollMax / stations.length);
+    let stops = stations.map(s => Math.max(0, Math.min(scrollMax, s.y - focusState.eyeLineY)));
+
+    for (let i = 1; i < stations.length; i++) {
+        if (stops[i] < stops[i - 1] + minH) stops[i] = stops[i - 1] + minH;
+    }
+    if (stops[stations.length - 1] > scrollMax) {
+        stops[stations.length - 1] = scrollMax;
+        for (let i = stations.length - 2; i >= 0; i--) {
+            if (stops[i] > stops[i + 1] - minH) stops[i] = stops[i + 1] - minH;
+        }
+    }
+
+    let boundaries = [];
+    for (let i = 0; i < stations.length - 1; i++) boundaries.push((stops[i] + stops[i + 1]) / 2);
     boundaries.push(scrollMax + 1000);
 
     focusState.stations = stations;
@@ -359,18 +254,11 @@ function buildTerritoryMap() {
     focusState.mapPending = false;
 }
 
-/**
- * Schedules a lazy map rebuild to avoid blocking the UI thread.
- */
 function scheduleMapRebuild() {
     if (focusState.mapPending) return;
     focusState.mapPending = true;
-    
-    // Use requestIdleCallback if available, fallback to setTimeout
-    const scheduler = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
-    scheduler(() => {
+    (window.requestIdleCallback || ((cb) => setTimeout(cb, 50)))(() => {
         buildTerritoryMap();
-        // Force an update to sync the new map state
         updateFocus(true);
     });
 }
@@ -382,12 +270,14 @@ function updateFocus(forceReport = false) {
     const scrollY = window.scrollY;
     const now = performance.now();
     
-    if (!focusState.mapBuilt && !focusState.mapPending) {
+    // Ensure map is built if we have no stations, even if a lazy rebuild is pending
+    if (!focusState.mapBuilt || (focusState.stations.length === 0 && !focusState.mapPending)) {
         buildTerritoryMap();
     }
 
-    const viewportHeight = focusState.viewportHeight;
-    const scrollMax = Math.max(1, focusState.scrollHeight - viewportHeight);
+    const vh = focusState.viewportHeight || window.innerHeight;
+    const sh = focusState.scrollHeight || document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, sh - vh);
     const scrollPercent = scrollY / scrollMax;
 
     const isLocked = programmatic.isSticky();
@@ -397,536 +287,314 @@ function updateFocus(forceReport = false) {
     let newStationIndex = -1;
     let activeBlockIndex = -1;
 
-    // --- 1. Focus Determination (Optimized Binary Search) ---
+    // 1. Focus Determination (Binary Search)
     if (isLocked && targetId) {
-        newStationIndex = focusState.stations.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
+        // Robust matching for various ID formats (string/number/prefixed)
+        newStationIndex = focusState.stations.findIndex(s => {
+            const fullId = s.type + "-" + s.id;
+            return fullId === targetId || String(s.id) === String(targetId) || s.id == targetId;
+        });
     } else if (!isAnimating && focusState.stations.length > 0) {
         let idx = focusState.currentStationIndex;
-        const boundaries = focusState.boundaries;
+        const b = focusState.boundaries;
+        const lowB = idx <= 0 ? 0 : b[idx - 1];
+        const upB = idx === -1 ? -1 : b[idx];
         
-        // Hysteresis Check: Only perform search if we've moved significantly
-        const lowerBound = idx <= 0 ? 0 : boundaries[idx - 1];
-        const upperBound = idx === -1 ? -1 : boundaries[idx];
-        
-        if (idx === -1 || scrollY > upperBound + HYSTERESIS_THRESHOLD || scrollY < lowerBound - HYSTERESIS_THRESHOLD) {
-            // Binary search is O(log N) vs O(N) for findIndex
-            idx = binarySearch(boundaries, scrollY);
+        if (idx === -1 || scrollY > upB + HYSTERESIS_THRESHOLD || scrollY < lowB - HYSTERESIS_THRESHOLD) {
+            idx = binarySearch(b, scrollY);
             if (idx >= focusState.stations.length) idx = focusState.stations.length - 1;
         }
 
         const owner = focusState.stations[idx];
-        const isOwnerVisible = (owner.y >= scrollY - VISIBILITY_BUFFER) && 
-                               (owner.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
-        
-        if (isOwnerVisible) {
+        if (owner && owner.y >= scrollY - VISIBILITY_BUFFER && owner.y <= scrollY + vh + VISIBILITY_BUFFER) {
             newStationIndex = idx;
         } else if (owner) {
-            // No-allocation visibility search (avoids slice/reverse/find)
+            // Zero-allocation visibility check
             if (owner.y < scrollY) {
                 for (let i = idx + 1; i < focusState.stations.length; i++) {
                     const m = focusState.stations[i];
-                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER) {
-                        newStationIndex = i;
-                        break;
-                    }
-                    if (m.y > scrollY + viewportHeight + VISIBILITY_BUFFER) break;
+                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + vh + VISIBILITY_BUFFER) { newStationIndex = i; break; }
+                    if (m.y > scrollY + vh + VISIBILITY_BUFFER) break;
                 }
             } else {
                 for (let i = idx - 1; i >= 0; i--) {
                     const m = focusState.stations[i];
-                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER) {
-                        newStationIndex = i;
-                        break;
-                    }
+                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + vh + VISIBILITY_BUFFER) { newStationIndex = i; break; }
                     if (m.y < scrollY - VISIBILITY_BUFFER) break;
                 }
             }
         }
     }
 
-    // --- 2. Block Tracking (Optimized O(1) hit test + Spatial Throttling) ---
+    // 2. Block Tracking (Spatial Throttling)
     if (!isAnimating) {
-        // Only hit-test if we've moved significantly or haven't checked yet
         if (Math.abs(scrollY - focusState.lastBlockCheckY) > 20 || focusState.currentBlockIndex === -1) {
-            const centerX = window.innerWidth / 2; // Fixed cost
-            const elementAtPoint = document.elementFromPoint(centerX, focusState.eyeLineY);
-            const activeBlock = elementAtPoint?.closest('[id^="block-"]');
-            
-            if (activeBlock) {
-                activeBlockIndex = parseInt(activeBlock.id.replace("block-", ""), 10) - 1;
+            const eyeLine = focusState.eyeLineY || (vh * EYE_LINE_RATIO);
+            const el = document.elementFromPoint(window.innerWidth / 2, eyeLine);
+            const block = el?.closest('[id^="block-"]');
+            if (block) {
+                activeBlockIndex = parseInt(block.id.replace("block-", ""), 10) - 1;
+                const rect = block.getBoundingClientRect();
+                if (rect.height > 0) {
+                    const rawOffset = (eyeLine - rect.top) / rect.height;
+                    focusState.currentBlockOffset = Math.max(0, Math.min(1, rawOffset));
+                }
+            } else {
+                activeBlockIndex = focusState.currentBlockIndex;
             }
             focusState.lastBlockCheckY = scrollY;
-        } else {
-            activeBlockIndex = focusState.currentBlockIndex;
-        }
+        } else activeBlockIndex = focusState.currentBlockIndex;
     }
 
-    // --- 3. Lazy Reporting Logic ---
     const hasChangedFocus = newStationIndex !== focusState.currentStationIndex;
     const hasChangedBlock = activeBlockIndex !== -1 && activeBlockIndex !== focusState.currentBlockIndex;
     
-    // Always keep state indices current so Heartbeat is accurate
     focusState.currentStationIndex = newStationIndex;
     if (activeBlockIndex !== -1) focusState.currentBlockIndex = activeBlockIndex;
 
-    // Efficiency Math:
-    const timeSinceLastReport = now - focusState.lastReportedTime;
-    const movedFarEnough = Math.abs(scrollY - focusState.lastReportedScrollY) > 300;
+    const timeSinceLast = now - focusState.lastReportedTime;
+    const movedFar = Math.abs(scrollY - focusState.lastReportedScrollY) > 300;
     
-    // PRIORITY 0: Forced Report or Focus Change (Must be immediate for UI consistency)
-    if (forceReport || hasChangedFocus) {
-        focusState.lastReportedScrollY = scrollY;
-        focusState.lastReportedTime = now;
-        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, hasChangedFocus);
-    } 
-    // PRIORITY 2: Block Change or Large Move (Gated by time to prevent spam during fast scrolls)
-    else if ((hasChangedBlock || movedFarEnough || isLocked) && timeSinceLastReport > 150) {
-        focusState.lastReportedScrollY = scrollY;
-        focusState.lastReportedTime = now;
-        reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, false);
+    const shouldHeartbeat = !isLocked && (now - focusState.lastReportedTime) > HEARTBEAT_MS;
+    const shouldReport = forceReport || hasChangedFocus || hasChangedBlock || movedFar || shouldHeartbeat || isLocked;
+    const shouldForce = forceReport || hasChangedBlock || movedFar || shouldHeartbeat || isLocked;
+
+    if (shouldReport) {
+        reportToNative(scrollY, scrollPercent, vh, isLocked, hasChangedFocus, shouldForce);
     }
 
-    // --- 4. Debounced Heartbeat ---
-    if (forceReport || hasChangedFocus || hasChangedBlock || timeSinceLastReport > 1000) {
+    // 4. Debounced Heartbeat
+    if (forceReport || hasChangedFocus || hasChangedBlock || timeSinceLast > 1000) {
         clearTimeout(focusState.idleTimeout);
         focusState.idleTimeout = setTimeout(() => {
-            const latestScrollY = window.scrollY;
-            const scrollMaxLatest = Math.max(1, focusState.scrollHeight - focusState.viewportHeight);
-            const latestScrollPercent = latestScrollY / scrollMaxLatest;
-            
-            if (Math.abs(latestScrollY - focusState.lastReportedScrollY) > 5) {
-                reportToNative(latestScrollY, latestScrollPercent, focusState.viewportHeight, programmatic.isSticky(), false);
+            const curY = window.scrollY;
+            const curMax = Math.max(1, (focusState.scrollHeight || document.documentElement.scrollHeight) - (focusState.viewportHeight || window.innerHeight));
+            if (Math.abs(curY - focusState.lastReportedScrollY) > 5) {
+                reportToNative(curY, curY / curMax, focusState.viewportHeight || window.innerHeight, programmatic.isSticky(), false, false);
             }
         }, 1000);
     }
 }
 
-function reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, shouldPulse) {
-    const station = focusState.stations[focusState.currentStationIndex];
-    
-    // Trigger pulse on manual entry ONLY if the focus actually changed and we have a station
-    if (shouldPulse && !isLocked && station && station.element && focusState.lastVelocity < 40) {
-        const isVisible = (station.y >= scrollY - VISIBILITY_BUFFER) && 
-                          (station.y <= scrollY + viewportHeight + VISIBILITY_BUFFER);
-        if (isVisible) pulseMarker(station.element);
+/**
+ * Optimized bridge communicator with Semantic Diffing
+ */
+function reportToNative(scrollY, scrollPercent, vh, isLocked, shouldPulse, forceReport) {
+    const s = focusState.stations[focusState.currentStationIndex];
+    const aId = s?.type === 'annotation' ? s.id : null;
+    const iId = s?.type === 'image' ? s.id : null;
+    const fId = s?.type === 'footnote' ? s.id : null;
+    const bId = focusState.currentBlockIndex !== -1 ? focusState.currentBlockIndex + 1 : null;
+    const bOffset = typeof focusState.currentBlockOffset === 'number' ? focusState.currentBlockOffset : null;
+    const offsetBucket = bOffset === null ? null : Math.floor(bOffset * BLOCK_OFFSET_BUCKETS);
+    const roundedP = Math.round(scrollPercent * 1000) / 1000;
+
+    // SEMANTIC DIFF: Don't hit the bridge if nothing native cares about has changed.
+    const isLockedChanged = isLocked !== focusState.lastSent.isLocked;
+    if (!forceReport && !shouldPulse && !isLockedChanged && !isLocked && 
+        aId === focusState.lastSent.annotationId && 
+        iId === focusState.lastSent.imageId && 
+        fId === focusState.lastSent.footnoteRefId && 
+        bId === focusState.lastSent.blockId && 
+        offsetBucket === focusState.lastSent.blockOffsetBucket &&
+        Math.abs(roundedP - focusState.lastSent.scrollPercent) < 0.005
+    ) return;
+
+    // VERIFIER FIX: Update reporting state ONLY when message actually clears the filter.
+    // This fixes the "Movement Dead Zone" for slow scrolls.
+    focusState.lastReportedScrollY = scrollY;
+    focusState.lastReportedTime = performance.now();
+    focusState.lastSent = { 
+        annotationId: aId, imageId: iId, footnoteRefId: fId, 
+        blockId: bId, blockOffsetBucket: offsetBucket, scrollPercent: roundedP, isLocked: isLocked 
+    };
+
+    if (shouldPulse && !isLocked && s?.element && focusState.lastVelocity < 40) {
+        if (s.y >= scrollY - VISIBILITY_BUFFER && s.y <= scrollY + vh + VISIBILITY_BUFFER) pulseMarker(s.element);
     }
 
     webkit.messageHandlers.readerBridge.postMessage({
-        type: 'scrollPosition',
-        annotationId: station?.type === 'annotation' ? station.id : null, 
-        imageId: station?.type === 'image' ? station.id : null, 
-        footnoteRefId: station?.type === 'footnote' ? station.id : null,
-        blockId: focusState.currentBlockIndex !== -1 ? focusState.currentBlockIndex + 1 : null,
-        primaryType: station?.type || null,
-        scrollY: scrollY, 
-        scrollPercent: scrollPercent, 
-        viewportHeight: viewportHeight,
-        isProgrammatic: isLocked
+        type: 'scrollPosition', annotationId: aId, imageId: iId, footnoteRefId: fId,
+        blockId: bId, blockOffset: bOffset, primaryType: s?.type || null, scrollY, scrollPercent: roundedP,
+        viewportHeight: vh, isProgrammatic: isLocked
     });
 }
 
-/**
- * Visualizes territories for debugging.
- */
-function updateDebugOverlay() {
-    let container = document.getElementById('territoryDebug');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'territoryDebug';
-        container.style = "position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; font-family:monospace;";
-        document.body.appendChild(container);
-    }
-    container.innerHTML = '';
-    
-    const viewportHeight = window.innerHeight;
-    const scrollY = window.scrollY;
-    const scrollHeight = document.documentElement.scrollHeight;
-    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
-    
-    // Sidebar Mini-map
-    const sidebarWidth = 60;
-    const sidebar = document.createElement('div');
-    sidebar.style = `position:fixed; top:0; right:0; width:${sidebarWidth}px; height:100vh; background:rgba(0,0,0,0.05); border-left:1px solid rgba(0,0,0,0.1); z-index:10001;`;
-    container.appendChild(sidebar);
-
-    const scrollIndicator = document.createElement('div');
-    const scrollPosRatio = scrollY / scrollMax;
-    scrollIndicator.style = `position:absolute; top:${scrollPosRatio * 100}%; right:0; width:100%; height:2px; background:red; z-index:10002;`;
-    sidebar.appendChild(scrollIndicator);
-
-    // Territories
-    focusState.boundaries.forEach((boundary, i) => {
-        const start = i === 0 ? 0 : focusState.boundaries[i - 1];
-        const height = boundary - start;
-        if (height <= 0) return;
-
-        const isActive = scrollY >= start && scrollY < boundary;
-        const color = i % 2 === 0 ? '0, 255, 0' : '0, 0, 255';
-        const opacity = isActive ? '0.1' : '0.03';
-
-        // In-situ visualization
-        const box = document.createElement('div');
-        box.style = `position:absolute; top:${start}px; left:0; width:100%; height:${height}px; border-top:1px solid rgba(0,0,0,0.05); box-sizing:border-box;`;
-        box.style.backgroundColor = `rgba(${color}, ${opacity})`;
-        
-        if (isActive) {
-            box.style.borderLeft = "4px solid red";
-        }
-
-        const label = document.createElement('span');
-        const markerType = focusState.stations[i].type.charAt(0).toUpperCase();
-        label.innerText = `T${i}:${markerType} Stop:${Math.round(focusState.stops[i])}`;
-        label.style = `font-size:10px; color:${isActive ? 'red' : 'rgba(0,0,0,0.4)'}; font-weight:${isActive ? 'bold' : 'normal'}; margin-left:10px; position:absolute; top:4px; background:rgba(255,255,255,0.7); padding:2px; border-radius:2px;`;
-        box.appendChild(label);
-
-        // Sidebar Segment
-        const segment = document.createElement('div');
-        const segTop = (start / scrollMax) * 100;
-        const segHeight = (height / scrollMax) * 100;
-        segment.style = `position:absolute; top:${segTop}%; left:0; width:100%; height:${segHeight}%; background:rgba(${color}, 0.2); border-bottom:1px solid rgba(0,0,0,0.1); box-sizing:border-box;`;
-        
-        const stopDot = document.createElement('div');
-        const stopRatio = (focusState.stops[i] / scrollMax) * 100;
-        stopDot.style = `position:absolute; top:${(stopRatio - segTop) / segHeight * 100}%; left:0; width:100%; height:2px; background:magenta;`;
-        segment.appendChild(stopDot);
-        sidebar.appendChild(segment);
-
-        // Ideal Stop Line
-        const stopY = focusState.stops[i];
-        const stopLine = document.createElement('div');
-        stopLine.style = `position:absolute; top:${stopY}px; left:0; width:100%; height:1px; border-top:1px dashed rgba(255,0,255,0.4);`;
-        container.appendChild(stopLine);
-        container.appendChild(box);
-    });
-}
-
-/**
- * Triggers a visual pulse on a marker
- */
-function pulseMarker(element) {
-    if (!element) return;
-    const colorVariable = element.classList.contains('image-marker') ? '--iris' : '--rose';
-    element.style.setProperty('--highlight-color', 'var(' + colorVariable + ')');
-    element.classList.remove('marker-pulse');
-    
-    // Use requestAnimationFrame to avoid layout thrashing while still allowing animation restart
+function pulseMarker(el) {
+    if (!el) return;
+    el.style.setProperty('--highlight-color', 'var(' + (el.classList.contains('image-marker') ? '--iris' : '--rose') + ')');
+    el.classList.remove('marker-pulse');
     requestAnimationFrame(() => {
-        element.classList.add('marker-pulse');
-        setTimeout(() => {
-            element.classList.remove('marker-pulse');
-        }, 650);
+        el.classList.add('marker-pulse');
+        setTimeout(() => el.classList.remove('marker-pulse'), 650);
     });
 }
 
-/**
- * Triggers the persistent highlight animation for markers (dots)
- */
-function highlightMarker(element) {
-    if (!element) return;
-    const isImage = element.classList.contains('image-marker');
-    const colorVar = isImage ? '--iris' : '--rose';
-    
-    element.classList.add('marker-highlight');
-    element.style.setProperty('--highlight-color', 'var(' + colorVar + ')');
-    
-    setTimeout(() => {
-        element.classList.remove('marker-highlight');
-    }, 1500);
+function highlightMarker(el) {
+    if (!el) return;
+    el.classList.add('marker-highlight');
+    el.style.setProperty('--highlight-color', 'var(' + (el.classList.contains('image-marker') ? '--iris' : '--rose') + ')');
+    setTimeout(() => el.classList.remove('marker-highlight'), 1500);
 }
 
-/**
- * Triggers the flash-and-fade highlight animation for content blocks
- */
-function highlightBlock(element) {
-    if (!element) return;
-    
-    element.classList.add('highlight-active');
-    
-    // Force immediate flash state
-    element.style.backgroundColor = 'var(--rose)';
-    element.style.color = 'var(--base)';
-    element.style.transition = 'none';
-
+function highlightBlock(el) {
+    if (!el) return;
+    el.classList.add('highlight-active');
+    el.style.backgroundColor = 'var(--rose)'; el.style.color = 'var(--base)'; el.style.transition = 'none';
     setTimeout(() => {
-        // Start smooth fade-out
-        element.style.transition = 'background-color 1.5s ease-out, color 1.5s ease-out';
-        element.style.backgroundColor = '';
-        element.style.color = '';
-        
-        setTimeout(() => {
-            element.classList.remove('highlight-active');
-            element.style.transition = '';
-        }, 1500);
+        el.style.transition = 'background-color 1.5s ease-out, color 1.5s ease-out';
+        el.style.backgroundColor = ''; el.style.color = '';
+        setTimeout(() => el.classList.remove('highlight-active'), 1500);
     }, 400);
 }
 
-// --- Smooth Scrolling API ---
-
-/**
- * Performs a smooth scroll to a specific element.
- */
-function performSmoothScroll(element, viewportRatio, targetId) {
-    const viewportHeight = window.innerHeight;
-    const scrollHeight = document.documentElement.scrollHeight;
-    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
-    
-    let targetY = null;
-    
-    // Try to find the pre-calculated 'ideal stop' for this specific marker.
-    // This ensures we land in the dead center of its territory.
+function performSmoothScroll(el, ratio, targetId) {
+    const vh = window.innerHeight;
+    const sh = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, sh - vh);
+    let ty = null;
     if (focusState.stations.length > 0) {
-        const index = focusState.stations.findIndex(station => 
-            (station.type + "-" + station.id) === targetId || station.id === targetId
-        );
-        
-        if (index !== -1 && focusState.stops[index] !== undefined) {
-            targetY = focusState.stops[index];
-        }
+        const idx = focusState.stations.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
+        if (idx !== -1 && focusState.stops[idx] !== undefined) ty = focusState.stops[idx];
     }
-    
-    // Fallback to physical calculation if no pre-calculated stop exists (e.g. raw block)
-    if (targetY === null) {
-        const rect = element.getBoundingClientRect();
-        targetY = window.scrollY + rect.top - (viewportHeight * viewportRatio);
-    }
-    
-    // CRITICAL: Clamp targetY to reachable range to prevent drift from breaking the lock.
-    const safeTargetY = Math.max(0, Math.min(scrollMax, targetY));
-    
-    programmatic.start(targetId, safeTargetY);
+    if (ty === null) ty = window.scrollY + el.getBoundingClientRect().top - (vh * ratio);
+    programmatic.start(targetId, Math.max(0, Math.min(scrollMax, ty)));
 }
 
 function scrollToAnnotation(id) {
-    const element = document.querySelector('[data-annotation-id="' + id + '"]');
-    if (element) {
-        performSmoothScroll(element, EYE_LINE_RATIO, 'annotation-' + id);
-        highlightMarker(element);
+    const el = document.querySelector(`[data-annotation-id="${id}"]`);
+    if (el) { performSmoothScroll(el, EYE_LINE_RATIO, 'annotation-' + id); highlightMarker(el); }
+}
+
+function scrollToBlock(id, mId, type) {
+    const b = getBlockByIdOrIndex(id);
+    if (!b) return;
+    const tId = mId && type ? `${type}-${mId}` : `block-${id}`;
+    performSmoothScroll(b, EYE_LINE_RATIO, tId);
+    if (mId && type) {
+        const m = document.querySelector(`[data-${type}-id="${mId}"]`);
+        if (m) highlightMarker(m);
+    } else highlightBlock(b);
+}
+
+function scrollToQuote(qId) {
+    const el = document.querySelector(`[href="#${qId}"], [id="${qId}"]`);
+    if (el) {
+        performSmoothScroll(el, EYE_LINE_RATIO, 'footnote-' + qId);
+        if (el.classList.contains('footnote-ref')) highlightMarker(el);
+        else highlightBlock(el);
     }
 }
 
-function scrollToBlock(id, markerId, type) {
-    const block = getBlockByIdOrIndex(id);
-    if (!block) return;
-    const targetId = markerId && type ? `${type}-${markerId}` : `block-${id}`;
-    
-    performSmoothScroll(block, EYE_LINE_RATIO, targetId);
-    
-    // Target Hijacking: If this scroll is for a specific insight/image, highlight the marker instead of the block
-    if (markerId && type) {
-        const marker = document.querySelector(`[data-${type}-id="${markerId}"]`);
-        if (marker) {
-            highlightMarker(marker);
-        }
-    } else {
-        highlightBlock(block);
-    }
+function scrollToPercent(p) { 
+    window.scrollTo({ top: (document.documentElement.scrollHeight - window.innerHeight) * p, behavior: 'auto' }); 
 }
 
-function scrollToQuote(quoteId) {
-    const selector = '[href="#' + quoteId + '"], [id="' + quoteId + '"]';
-    const element = document.querySelector(selector);
-    if (element) {
-        performSmoothScroll(element, EYE_LINE_RATIO, 'footnote-' + quoteId);
-        
-        // If it's a marker (footnote ref), use marker highlight
-        if (element.classList.contains('footnote-ref')) {
-            highlightMarker(element);
-        } else {
-            highlightBlock(element);
-        }
-    }
-}
-
-function scrollToPercent(percent) { 
-    const scrollMax = document.documentElement.scrollHeight - window.innerHeight;
-    window.scrollTo({ 
-        top: scrollMax * percent, 
-        behavior: 'auto' 
-    }); 
-}
-
-function scrollToOffset(offset) { 
-    window.scrollTo({ 
-        top: offset, 
-        behavior: 'auto' 
-    }); 
-}
+function scrollToOffset(o) { window.scrollTo({ top: o, behavior: 'auto' }); }
 
 // --- Event Listeners ---
 
 window.addEventListener('scroll', () => {
-    const scrollY = window.scrollY;
-    
-    // Update velocity tracking
-    focusState.lastVelocity = Math.abs(scrollY - focusState.lastScrollY);
-    focusState.lastScrollY = scrollY;
-    
-    // Inform programmatic engine
-    programmatic.noteScroll(scrollY);
-    
-    // Throttled update loop
+    const sy = window.scrollY;
+    focusState.lastVelocity = Math.abs(sy - focusState.lastScrollY);
+    focusState.lastScrollY = sy;
+    programmatic.noteScroll(sy);
     if (!scrollTicking) {
         scrollTicking = true;
         window.requestAnimationFrame(() => {
             updateFocus();
-            
-            // Bottom-tug detection
-            const scrollMax = document.documentElement.scrollHeight - window.innerHeight;
-            if (scrollMax > 0 && scrollY >= scrollMax - 1) {
-                focusState.reachedBottom = true;
-            } else if (scrollY < scrollMax - 20) {
-                focusState.reachedBottom = false;
-            }
-            
-            if (focusState.reachedBottom && scrollY > scrollMax + 5) {
+            const max = document.documentElement.scrollHeight - window.innerHeight;
+            if (max > 0 && sy >= max - 1) focusState.reachedBottom = true;
+            else if (sy < max - 20) focusState.reachedBottom = false;
+            if (focusState.reachedBottom && sy > max + 5) {
                 webkit.messageHandlers.readerBridge.postMessage({ type: 'bottomTug' });
                 focusState.reachedBottom = false; 
             }
-            
             scrollTicking = false;
         });
     }
 });
 
-// Selection Overlay Logic
 const selectionOverlay = document.getElementById('selectionOverlay');
+let selectionTicking = false;
 function updateSelectionOverlay() {
-    if (!selectionOverlay) return;
-    
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) { 
-        selectionOverlay.innerHTML = ''; 
-        return; 
-    }
-    
-    const range = selection.getRangeAt(0);
-    const rects = Array.from(range.getClientRects());
-    
-    selectionOverlay.innerHTML = '';
-    rects.forEach(rect => {
-        const div = document.createElement('div');
-        div.className = 'selection-rect';
-        div.style.left = (rect.left + window.scrollX) + 'px';
-        div.style.top = (rect.top + window.scrollY) + 'px';
-        div.style.width = rect.width + 'px';
-        div.style.height = rect.height + 'px';
-        selectionOverlay.appendChild(div);
+    if (!selectionOverlay || selectionTicking) return;
+    selectionTicking = true;
+    window.requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) { selectionOverlay.innerHTML = ''; selectionTicking = false; return; }
+        const rects = sel.getRangeAt(0).getClientRects();
+        selectionOverlay.innerHTML = '';
+        for (const r of rects) {
+            const d = document.createElement('div');
+            d.className = 'selection-rect';
+            d.style.left = (r.left + window.scrollX) + 'px';
+            d.style.top = (r.top + window.scrollY) + 'px';
+            d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
+            selectionOverlay.appendChild(d);
+        }
+        selectionTicking = false;
     });
 }
 
 document.addEventListener('selectionchange', updateSelectionOverlay);
 
-window.addEventListener('resize', () => { 
-    buildTerritoryMap(); 
-    updateFocus(); 
+// High-precision Layout Monitoring
+const layoutObserver = new ResizeObserver(() => scheduleMapRebuild());
+layoutObserver.observe(document.body);
+
+document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.classList.contains('annotation-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'annotationClick', id: t.dataset.annotationId });
+    if (t.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'imageMarkerClick', id: t.dataset.imageId });
 });
 
-// Click Interactions
-document.addEventListener('click', event => {
-    const target = event.target;
-    if (target.classList.contains('annotation-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({ 
-            type: 'annotationClick', 
-            id: target.dataset.annotationId 
-        });
-    }
-    if (target.classList.contains('image-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({ 
-            type: 'imageMarkerClick', 
-            id: target.dataset.imageId 
-        });
-    }
+document.addEventListener('dblclick', e => {
+    if (e.target.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'imageMarkerDblClick', id: e.target.dataset.imageId });
 });
 
-document.addEventListener('dblclick', event => {
-    if (event.target.classList.contains('image-marker')) {
-        webkit.messageHandlers.readerBridge.postMessage({ 
-            type: 'imageMarkerDblClick', 
-            id: event.target.dataset.imageId 
-        });
-    }
-});
-
-// Context Menu / Word Popup Logic
-document.addEventListener('mouseup', event => {
-    // Delay to allow selection to finalize
+document.addEventListener('mouseup', e => {
     setTimeout(() => {
-        const selection = window.getSelection();
-        const text = selection.toString().trim();
+        const sel = window.getSelection();
+        const text = sel.toString().trim();
         const popup = document.getElementById('wordPopup');
-        
-        if (!selection.isCollapsed && text) {
-            const range = selection.getRangeAt(0);
-            const container = range.startContainer.parentElement;
-            const blocks = getBlocks();
-            const blockId = blocks.findIndex(block => block.contains(container)) + 1;
-            
-            popup.style.left = event.clientX + 'px'; 
-            popup.style.top = (event.clientY + 10) + 'px'; 
-            popup.style.display = 'block';
-            
-            // Store global context for popup actions
-            window.selectedWord = text; 
-            window.selectedBlockId = blockId || 1; 
-            window.selectedContext = container.textContent;
-        } else if (!event.target.closest('.word-popup')) {
-            popup.style.display = 'none';
-        }
+        if (!sel.isCollapsed && text) {
+            const container = sel.getRangeAt(0).startContainer.parentElement;
+            // OPTIMIZED O(1) Lookup
+            const block = container.closest('[id^="block-"]');
+            const bId = block ? parseInt(block.id.replace("block-", ""), 10) : 1;
+            popup.style.left = e.clientX + 'px'; popup.style.top = (e.clientY + 10) + 'px'; popup.style.display = 'block';
+            window.selectedWord = text; window.selectedBlockId = bId; window.selectedContext = container.textContent;
+        } else if (!e.target.closest('.word-popup')) popup.style.display = 'none';
     }, 20);
 });
 
-document.addEventListener('mousedown', event => { 
-    if (!event.target.closest('.word-popup')) {
-        document.getElementById('wordPopup').style.display = 'none'; 
-    }
-});
+document.addEventListener('mousedown', e => { if (!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display = 'none'; });
 
-// Popup Handlers
 function handleExplain() { 
-    webkit.messageHandlers.readerBridge.postMessage({
-        type: 'explain', 
-        word: window.selectedWord, 
-        context: window.selectedContext, 
-        blockId: window.selectedBlockId
-    }); 
+    webkit.messageHandlers.readerBridge.postMessage({ type: 'explain', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId }); 
     document.getElementById('wordPopup').style.display = 'none'; 
 }
 
 function handleGenerateImage() { 
-    webkit.messageHandlers.readerBridge.postMessage({
-        type: 'generateImage', 
-        word: window.selectedWord, 
-        context: window.selectedContext, 
-        blockId: window.selectedBlockId
-    }); 
+    webkit.messageHandlers.readerBridge.postMessage({ type: 'generateImage', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId }); 
     document.getElementById('wordPopup').style.display = 'none'; 
 }
 
-// Marker Injections (Triggered by Native App)
-function injectMarkerAtBlock(annotationId, blockIndex) { 
-    const block = getBlockByIdOrIndex(blockIndex);
-    if (!block) return;
-    const marker = document.createElement('span'); 
-    marker.className = 'annotation-marker'; 
-    marker.dataset.annotationId = annotationId; 
-    marker.dataset.blockId = blockIndex; 
-    
-    block.appendChild(marker);
-    
-    // Lazy rebuild as DOM has changed
-    scheduleMapRebuild();
+function injectMarkerAtBlock(aId, bIdx) { 
+    const b = getBlockByIdOrIndex(bIdx);
+    if (b) {
+        const m = document.createElement('span'); m.className = 'annotation-marker'; 
+        m.dataset.annotationId = aId; m.dataset.blockId = bIdx; b.appendChild(m);
+        scheduleMapRebuild();
+    } 
 }
 
-function injectImageMarker(imageId, blockIndex) { 
-    const block = getBlockByIdOrIndex(blockIndex);
-    if (!block) return;
-    const marker = document.createElement('span'); 
-    marker.className = 'image-marker'; 
-    marker.dataset.imageId = imageId; 
-    marker.dataset.blockId = blockIndex; 
-    
-    block.appendChild(marker);
-    
-    // Lazy rebuild as DOM has changed
-    scheduleMapRebuild();
-} 
+function injectImageMarker(iId, bIdx) { 
+    const b = getBlockByIdOrIndex(bIdx);
+    if (b) {
+        const m = document.createElement('span'); m.className = 'image-marker'; 
+        m.dataset.imageId = iId; m.dataset.blockId = bIdx; b.appendChild(m);
+        scheduleMapRebuild();
+    } 
+}

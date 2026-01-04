@@ -13,11 +13,20 @@ struct ReaderView: View {
     @State private var images: [GeneratedImage] = []
 
     @State private var showChapterList = false
-    @State private var isProcessingInsights = false
-    @State private var isProcessingImages = false
-    @State private var processingChapterId: Int64?
+    
+    struct ChapterProcessingState {
+        var isProcessingInsights = false
+        var isProcessingImages = false
+        var liveInsightCount = 0
+        var liveQuizCount = 0
+        var liveThinking = ""
+        var analysisError: String?
+    }
+    @State private var processingStates: [Int64: ChapterProcessingState] = [:]
+    @State private var currentAnalysisTask: Task<Void, Never>?
+    @State private var currentImageTask: Task<Void, Never>?
+    
     @State private var isGeneratingMore = false
-    @State private var analysisError: String?
 
     // Scroll sync
     @State private var currentAnnotationId: Int64?
@@ -51,10 +60,17 @@ struct ReaderView: View {
 
     // Reading speed tracking
     @State private var chapterWPM: Double?
+    @State private var readingTickTask: Task<Void, Never>?
 
     // Image generation
-    @State private var imageGenerating = false
     @State private var expandedImage: GeneratedImage?  // Full-screen image overlay
+
+    // Progress tracking
+    @State private var progressCalculators: [Int64: ChapterProgressCalculator] = [:]
+    @State private var currentLocation: BlockLocation?
+    @State private var furthestLocation: BlockLocation?
+    @State private var currentProgressPercent: Double = 0
+    @State private var furthestProgressPercent: Double = 0
 
     // Error handling
     @State private var loadError: String?
@@ -135,7 +151,17 @@ struct ReaderView: View {
         .task {
             await loadChapters()
         }
-        .onChange(of: appState.currentChapterIndex) { _, newIndex in
+        .onAppear {
+            startReadingTicker()
+        }
+        .onChange(of: appState.currentChapterIndex) { oldIndex, newIndex in
+            // PERSISTENCE: Save progress when leaving a chapter
+            persistCurrentProgress()
+            
+            // BACKGROUND CONTINUITY: Orphan the task reference so UI resets, but don't cancel it.
+            currentAnalysisTask = nil
+            currentImageTask = nil
+            
             Task { await loadChapter(at: newIndex) }
         }
         .onChange(of: appState.currentBook?.classificationStatus) { _, newValue in
@@ -144,23 +170,23 @@ struct ReaderView: View {
             }
         }
         .onDisappear {
-            if let chapter = currentChapter {
-                appState.updateChapterProgress(
-                    chapter: chapter,
-                    scrollPercent: lastScrollPercent,
-                    scrollOffset: lastScrollOffset
-                )
-            }
+            stopReadingTicker()
+            // PERSISTENCE: Final save when leaving the reader
+            persistCurrentProgress()
             if let result = appState.readingSpeedTracker.endSession() {
                 appState.readingStats.addReadingTime(result.seconds)
-                appState.readingStats.addWords(result.words)
             }
+            // BACKGROUND CONTINUITY: Analysis continues if user just went home.
+            currentAnalysisTask = nil
+            currentImageTask = nil
         }
     }
 
     @MainActor
     private var aiPanel: some View {
-        AIPanel(
+        let chapterState = currentChapter?.id.flatMap { processingStates[$0] } ?? ChapterProcessingState()
+
+        return AIPanel(
             chapter: currentChapter,
             annotations: $annotations,
             quizzes: $quizzes,
@@ -169,12 +195,15 @@ struct ReaderView: View {
             currentAnnotationId: currentAnnotationId,
             currentImageId: currentImageId,
             currentFootnoteRefId: currentFootnoteRefId,
-            isProcessingInsights: isProcessingInsights,
-            isProcessingImages: isProcessingImages,
+            isProcessingInsights: chapterState.isProcessingInsights,
+            isProcessingImages: chapterState.isProcessingImages,
+            liveInsightCount: chapterState.liveInsightCount,
+            liveQuizCount: chapterState.liveQuizCount,
+            liveThinking: chapterState.liveThinking,
             isGeneratingMore: isGeneratingMore,
             isClassifying: isClassifying,
             classificationError: classificationError,
-            analysisError: analysisError,
+            analysisError: chapterState.analysisError,
             onScrollTo: { annotationId in
                 suppressContextAutoSwitch()
                 currentAnnotationId = annotationId
@@ -210,6 +239,12 @@ struct ReaderView: View {
             },
             onRetryClassification: {
                 retryClassification()
+            },
+            onCancelAnalysis: {
+                cancelCurrentAnalysis()
+            },
+            onCancelImages: {
+                cancelCurrentImages()
             },
             autoScrollHighlightEnabled: appState.settings.autoScrollHighlightEnabled,
             isProgrammaticScroll: isProgrammaticScroll,
@@ -307,22 +342,30 @@ struct ReaderView: View {
                             isProgrammaticScroll = context.isProgrammatic
 
                             if context.isProgrammatic {
-                                // STICKY LOCK: Only update if bridge provides a non-nil ID
                                 if let aid = context.annotationId { currentAnnotationId = aid }
                                 if let iid = context.imageId { currentImageId = iid }
                                 if let fid = context.footnoteRefId { currentFootnoteRefId = fid }
                             } else {
-                                // MANUAL MODE: Synchronize selection strictly with bridge
                                 currentAnnotationId = context.annotationId
                                 currentImageId = context.imageId
                                 currentFootnoteRefId = context.footnoteRefId
                             }
 
-                            lastScrollPercent = context.scrollPercent
+                            let progress = updateProgress(from: context, chapter: chapter)
+                            currentProgressPercent = progress.current
+                            furthestProgressPercent = progress.furthest
+                            lastScrollPercent = progress.current
                             lastScrollOffset = context.scrollOffset
 
-                            appState.updateChapterProgress(chapter: chapter, scrollPercent: context.scrollPercent, scrollOffset: context.scrollOffset)
-                            appState.readingSpeedTracker.updateSession(scrollPercent: context.scrollPercent)
+                            appState.recordReadingProgress(
+                                chapter: chapter,
+                                currentPercent: progress.current,
+                                furthestPercent: progress.furthest,
+                                scrollOffset: context.scrollOffset
+                            )
+
+                            // LIGHTWEIGHT: Update speed tracker (memory only)
+                            appState.readingSpeedTracker.updateSession(scrollPercent: progress.current)
                             updateBackAnchor(scrollOffset: context.scrollOffset, viewportHeight: context.viewportHeight)
 
                             if context.scrollPercent < 0.85 {
@@ -346,52 +389,58 @@ struct ReaderView: View {
 
                     if showBackButton {
                         HStack(spacing: 0) {
+                            // Back Action Area
                             Button {
                                 returnToBackAnchor()
                             } label: {
-                                HStack(spacing: 6) {
+                                HStack(spacing: 10) {
                                     Image(systemName: "arrow.uturn.backward")
-                                        .font(.system(size: 12, weight: .semibold))
-                                    Text("Back")
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(.system(size: 10, weight: .black))
+                                    Text("RETURN")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .kerning(1.2)
                                 }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
+                                .padding(.leading, 18)
+                                .padding(.trailing, 14)
+                                .padding(.vertical, 12)
+                                .background(Color.black.opacity(0.001)) // Area-wide hit testing
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .onHover { isHovering in
-                                if isHovering { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
-                            }
+                            .buttonStyle(BackAnchorButtonStyle(accentColor: theme.rose))
 
+                            // Thin minimal divider (doesn't reach edges)
                             Rectangle()
-                                .fill(theme.base.opacity(0.25))
-                                .frame(width: 1, height: 14)
+                                .fill(theme.overlay)
+                                .frame(width: 1, height: 18)
 
+                            // Dismiss Action Area
                             Button {
                                 dismissBackAnchor()
                             } label: {
                                 Image(systemName: "xmark")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.leading, 14)
+                                    .padding(.trailing, 18)
+                                    .padding(.vertical, 12)
+                                    .background(Color.black.opacity(0.001)) // Area-wide hit testing
                                     .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .onHover { isHovering in
-                                if isHovering { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
-                            }
+                            .buttonStyle(BackAnchorButtonStyle(accentColor: theme.muted))
                         }
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundColor(theme.base)
-                        .background(theme.rose)
-                        .clipShape(Capsule())
-                        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
-                        .padding(20)
+                        .background(
+                            Capsule()
+                                .fill(theme.surface)
+                                .shadow(color: Color.black.opacity(0.1), radius: 15, y: 8)
+                        )
+                        .overlay {
+                            Capsule()
+                                .stroke(theme.rose.opacity(0.2), lineWidth: 1)
+                        }
+                        .padding(24)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
-                .animation(.easeOut(duration: 0.2), value: showBackButton)
+                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: showBackButton)
             } else {
                 VStack(spacing: 16) {
                     Spacer()
@@ -459,16 +508,6 @@ struct ReaderView: View {
             }
 
             Spacer()
-
-            if imageGenerating {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                    Text("Generating image...")
-                        .font(.system(size: 12))
-                        .foregroundColor(theme.rose)
-                }
-            }
         }
         .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
         .frame(height: ReaderMetrics.headerHeight)
@@ -596,6 +635,7 @@ struct ReaderView: View {
                 appState.currentBook = fresh
             }
             chapters = try appState.database.fetchChapters(for: appState.currentBook!)
+            appState.updateBookProgressCache(book: appState.currentBook!, chapters: chapters)
             if chapters.isEmpty {
                 loadError = "No chapters were found in this book."
                 isLoadingChapters = false
@@ -611,6 +651,21 @@ struct ReaderView: View {
             loadError = "Database error: \(error.localizedDescription)"
             isLoadingChapters = false
         }
+    }
+
+    private func startReadingTicker() {
+        readingTickTask?.cancel()
+        readingTickTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                appState.readingSpeedTracker.tick()
+            }
+        }
+    }
+
+    private func stopReadingTicker() {
+        readingTickTask?.cancel()
+        readingTickTask = nil
     }
 
     @MainActor
@@ -674,6 +729,16 @@ struct ReaderView: View {
         }
     }
 
+    private func persistCurrentProgress() {
+        guard let chapter = currentChapter else { return }
+        appState.recordReadingProgress(
+            chapter: chapter,
+            currentPercent: currentProgressPercent,
+            furthestPercent: furthestProgressPercent,
+            scrollOffset: lastScrollOffset
+        )
+    }
+
     private func refreshCurrentChapterFromChapters() {
         guard let current = currentChapter,
               let index = chapters.firstIndex(where: { $0.id == current.id }) else { return }
@@ -683,6 +748,63 @@ struct ReaderView: View {
     private func processCurrentChapterIfReady() {
         guard let chapter = currentChapter, let currentBook = appState.currentBook, shouldAutoProcess(chapter, in: currentBook) else { return }
         Task { await processChapter(chapter) }
+    }
+
+    // MARK: - Progress Tracking
+
+    private func updateProgress(from context: ScrollContext, chapter: Chapter) -> (current: Double, furthest: Double) {
+        var current = context.scrollPercent
+        var furthest = max(furthestProgressPercent, current)
+
+        if let blockId = context.blockId {
+            let offset = context.blockOffset ?? 0
+            let location = BlockLocation(blockId: blockId, offset: offset)
+            currentLocation = location
+            if let furthestLoc = furthestLocation {
+                if furthestLoc < location { furthestLocation = location }
+            } else {
+                furthestLocation = location
+            }
+
+            if let chapterId = chapter.id, let calculator = progressCalculators[chapterId] {
+                current = calculator.percent(for: location)
+                if let furthestLoc = furthestLocation {
+                    furthest = calculator.percent(for: furthestLoc)
+                }
+            }
+        }
+
+        current = min(max(current, 0), 1)
+        furthest = min(max(max(furthest, current), 0), 1)
+        return (current, furthest)
+    }
+
+    private func ensureProgressCalculator(for chapter: Chapter) {
+        guard let chapterId = chapter.id, progressCalculators[chapterId] == nil else { return }
+        let html = chapter.contentHTML
+        let chapterWordCount = chapter.wordCount
+        Task.detached(priority: .utility) {
+            let parser = ContentBlockParser()
+            let (blocks, _) = parser.parse(html: html)
+            let wordCounts = blocks.map { block in
+                block.text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+            }
+            let computedTotal = wordCounts.reduce(0, +)
+            let totalWords = max(chapterWordCount, computedTotal)
+            let calculator = ChapterProgressCalculator(wordCounts: wordCounts, totalWords: totalWords)
+            await MainActor.run {
+                progressCalculators[chapterId] = calculator
+                guard currentChapter?.id == chapterId else { return }
+                if let loc = currentLocation {
+                    currentProgressPercent = calculator.percent(for: loc)
+                }
+                if let furthestLoc = furthestLocation {
+                    let computedFurthest = calculator.percent(for: furthestLoc)
+                    furthestProgressPercent = max(furthestProgressPercent, computedFurthest)
+                }
+                lastScrollPercent = currentProgressPercent
+            }
+        }
     }
 
     private func shouldAutoProcess(_ chapter: Chapter, in book: Book) -> Bool {
@@ -696,7 +818,6 @@ struct ReaderView: View {
         if let result = appState.readingSpeedTracker.endSession() {
             chapterWPM = result.wpm
             appState.readingStats.addReadingTime(result.seconds)
-            appState.readingStats.addWords(result.words)
         }
         let chapter = chapters[index]
         currentChapter = chapter
@@ -711,8 +832,6 @@ struct ReaderView: View {
         savedScrollOffset = nil
         backAnchorState = .inactive
         chapterWPM = nil
-        let wordCount = estimateWordCount(from: chapter.contentHTML)
-        if wordCount > 0 { appState.readingSpeedTracker.startSession(chapterId: chapter.id!, wordCount: wordCount) }
         let shouldRestore = !didRestoreInitialPosition && index == currentBook.currentChapter
         if shouldRestore {
             if currentBook.currentScrollOffset > 0 {
@@ -731,9 +850,27 @@ struct ReaderView: View {
             lastScrollPercent = 0
             lastScrollOffset = 0
             if didRestoreInitialPosition {
-                appState.updateChapterProgress(chapter: chapter, scrollPercent: 0, scrollOffset: 0)
+                appState.recordReadingProgress(
+                    chapter: chapter,
+                    currentPercent: 0,
+                    furthestPercent: chapter.maxScrollReached,
+                    scrollOffset: 0
+                )
             } else { didRestoreInitialPosition = true }
         }
+        currentProgressPercent = lastScrollPercent
+        furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
+        let wordCount = chapter.wordCount > 0 ? chapter.wordCount : estimateWordCount(from: chapter.contentHTML)
+        if wordCount > 0, let chapterId = chapter.id {
+            appState.readingSpeedTracker.startSession(
+                chapterId: chapterId,
+                wordCount: wordCount,
+                startPercent: currentProgressPercent
+            )
+        }
+        currentLocation = nil
+        furthestLocation = nil
+        ensureProgressCalculator(for: chapter)
         do {
             annotations = try appState.database.fetchAnnotations(for: chapter)
             quizzes = try appState.database.fetchQuizzes(for: chapter)
@@ -754,60 +891,158 @@ struct ReaderView: View {
         Task { await processChapter(chapter) }
     }
 
+    private func cancelCurrentAnalysis() {
+        currentAnalysisTask?.cancel()
+        currentImageTask?.cancel()
+        currentAnalysisTask = nil
+        currentImageTask = nil
+        if let id = currentChapter?.id {
+            processingStates[id]?.isProcessingInsights = false
+            processingStates[id]?.isProcessingImages = false
+        }
+    }
+
+    private func cancelCurrentImages() {
+        currentImageTask?.cancel()
+        currentImageTask = nil
+        if let id = currentChapter?.id {
+            processingStates[id]?.isProcessingImages = false
+        }
+    }
+
     private func processChapter(_ chapter: Chapter) async {
         guard let bookId = appState.currentBook?.id else { return }
         let chapterId = chapter.id!
-        if processingChapterId == chapterId { return }
-        analysisError = nil
-        processingChapterId = chapterId
-        isProcessingInsights = true
-        defer { 
-            if processingChapterId == chapterId {
-                isProcessingInsights = false
-                isProcessingImages = false
-                processingChapterId = nil
-            }
-        }
-        do {
-            let blockParser = ContentBlockParser()
-            let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
-            let analysis = try await appState.llmService.analyzeChapter(contentWithBlocks: contentWithBlocks, rollingSummary: chapter.rollingSummary, settings: appState.settings)
-            if Task.isCancelled { return }
-            let stillOnSameChapter = currentChapter?.id == chapterId
-            var injections: [MarkerInjection] = []
-            for data in analysis.annotations {
-                let type = AnnotationType(rawValue: data.type) ?? .science
-                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
-                var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: validBlockId)
-                try appState.database.saveAnnotation(&annotation)
-                if stillOnSameChapter {
-                    annotations.append(annotation)
-                    if let id = annotation.id { injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId)) }
+        
+        if processingStates[chapterId]?.isProcessingInsights == true { return }
+        
+        processingStates[chapterId] = ChapterProcessingState(isProcessingInsights: true)
+        
+        currentAnalysisTask = Task {
+            do {
+                let blockParser = ContentBlockParser()
+                let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
+                
+                let stream = appState.llmService.analyzeChapterStreaming(
+                    contentWithBlocks: contentWithBlocks,
+                    rollingSummary: chapter.rollingSummary,
+                    settings: appState.settings
+                )
+                
+                var finalAnalysis: LLMService.ChapterAnalysis?
+                var lastThinkingUpdate = Date.distantPast
+
+                for try await event in stream {
+                    if Task.isCancelled { return }
+                    
+                    switch event {
+                    case .thinking(let text):
+                        // Throttle UI updates for thinking text to ~10Hz
+                        if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
+                            await MainActor.run {
+                                processingStates[chapterId]?.liveThinking = text
+                            }
+                            lastThinkingUpdate = Date()
+                        }
+                    case .insightFound:
+                        await MainActor.run {
+                            processingStates[chapterId]?.liveInsightCount += 1
+                        }
+                    case .quizQuestionFound:
+                        await MainActor.run {
+                            processingStates[chapterId]?.liveQuizCount += 1
+                        }
+                    case .completed(let analysis):
+                        finalAnalysis = analysis
+                    }
+                }
+                
+                guard let analysis = finalAnalysis else { return }
+                
+                let stillOnSameChapter = currentChapter?.id == chapterId
+                var injections: [MarkerInjection] = []
+                
+                for data in analysis.annotations {
+                    let type = AnnotationType(rawValue: data.type) ?? .science
+                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
+                    var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: validBlockId)
+                    try appState.database.saveAnnotation(&annotation)
+                    
+                    if stillOnSameChapter {
+                        await MainActor.run {
+                            annotations.append(annotation)
+                        }
+                        if let id = annotation.id { injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId)) }
+                    }
+                }
+                
+                if stillOnSameChapter && !injections.isEmpty { await MainActor.run { pendingMarkerInjections = injections } }
+                
+                await MainActor.run {
+                    processingStates[chapterId]?.isProcessingInsights = false
+                    // Clear reasoning when switching to image phase
+                    processingStates[chapterId]?.liveThinking = ""
+                }
+                
+                for data in analysis.quizQuestions {
+                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
+                    var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: validBlockId)
+                    try appState.database.saveQuiz(&quiz)
+                    if stillOnSameChapter {
+                        await MainActor.run {
+                            quizzes.append(quiz)
+                        }
+                    }
+                }
+                
+                if appState.settings.imagesEnabled && !analysis.imageSuggestions.isEmpty {
+                    let imageTask = Task { [analysis] in
+                        await generateSuggestedImages(
+                            analysis.imageSuggestions,
+                            blockCount: blocks.count,
+                            bookId: bookId,
+                            chapterId: chapterId,
+                            stillOnSameChapter: stillOnSameChapter
+                        )
+                    }
+                    await MainActor.run {
+                        processingStates[chapterId]?.isProcessingImages = true
+                        if currentChapter?.id == chapterId {
+                            currentImageTask = imageTask
+                        }
+                    }
+                    await imageTask.value
+                    await MainActor.run {
+                        processingStates[chapterId]?.isProcessingImages = false
+                        if currentChapter?.id == chapterId {
+                            currentImageTask = nil
+                        }
+                    }
+                }
+                
+                if Task.isCancelled { return }
+                
+                await MainActor.run {
+                    
+                    var updatedChapter = chapter
+                    updatedChapter.processed = true
+                    updatedChapter.summary = analysis.summary
+                    updatedChapter.contentText = contentWithBlocks
+                    updatedChapter.blockCount = blocks.count
+                    try? appState.database.saveChapter(&updatedChapter)
+                    
+                    if stillOnSameChapter { currentChapter = updatedChapter }
+                    if let idx = chapters.firstIndex(where: { $0.id == chapterId }) { chapters[idx] = updatedChapter }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    await MainActor.run {
+                        processingStates[chapterId]?.isProcessingInsights = false
+                        processingStates[chapterId]?.isProcessingImages = false
+                        processingStates[chapterId]?.analysisError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    }
                 }
             }
-            if stillOnSameChapter && !injections.isEmpty { await MainActor.run { pendingMarkerInjections = injections } }
-            if stillOnSameChapter { isProcessingInsights = false }
-            for data in analysis.quizQuestions {
-                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
-                var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: validBlockId)
-                try appState.database.saveQuiz(&quiz)
-                if stillOnSameChapter { quizzes.append(quiz) }
-            }
-            if stillOnSameChapter && appState.settings.imagesEnabled && !analysis.imageSuggestions.isEmpty { isProcessingImages = true }
-            if Task.isCancelled { return }
-            await generateSuggestedImages(analysis.imageSuggestions, blockCount: blocks.count, bookId: bookId, chapterId: chapterId, stillOnSameChapter: stillOnSameChapter)
-            isProcessingImages = false
-            processingChapterId = nil
-            var updatedChapter = chapter
-            updatedChapter.processed = true
-            updatedChapter.summary = analysis.summary
-            updatedChapter.contentText = contentWithBlocks
-            updatedChapter.blockCount = blocks.count
-            try appState.database.saveChapter(&updatedChapter)
-            if stillOnSameChapter { currentChapter = updatedChapter }
-            if let idx = chapters.firstIndex(where: { $0.id == chapterId }) { chapters[idx] = updatedChapter }
-        } catch {
-            if currentChapter?.id == chapterId { analysisError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
         }
     }
 
@@ -815,8 +1050,7 @@ struct ReaderView: View {
         guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
         let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { return }
-        imageGenerating = true
-        defer { imageGenerating = false }
+        
         let inputs = imageInputs(from: suggestions, blockCount: blockCount, rewrite: appState.settings.rewriteImageExcerpts)
         let results = await appState.imageService.generateImages(from: inputs, model: appState.settings.imageModel, apiKey: trimmedKey, maxConcurrent: 5)
         if Task.isCancelled { return }
@@ -949,7 +1183,6 @@ struct ReaderView: View {
             pendingChatPrompt = appState.llmService.explainWordChatPrompt(word: word, context: context)
         case .generateImage:
             guard let chapter = currentChapter, appState.settings.imagesEnabled else { return }
-            imageGenerating = true
             Task {
                 do {
                     let excerpt = word
@@ -962,7 +1195,6 @@ struct ReaderView: View {
                     images.append(image)
                     if let id = image.id { pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId)) }
                 } catch { }
-                imageGenerating = false
             }
         }
     }
@@ -1063,5 +1295,29 @@ struct ReaderView: View {
         let stripped = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
         let words = stripped.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         return words.count
+    }
+}
+
+// MARK: - UI Components
+
+struct BackAnchorButtonStyle: ButtonStyle {
+    let accentColor: Color
+    @State private var isHovered = false
+    @Environment(\.theme) private var theme
+
+    func makeBody(configuration: Configuration) -> some View {
+        let highlightColor = accentColor == theme.muted ? theme.text : accentColor
+        
+        configuration.label
+            .foregroundColor(configuration.isPressed ? highlightColor : (isHovered ? highlightColor : theme.muted))
+            .background(isHovered ? highlightColor.opacity(0.06) : Color.clear)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.2), value: isHovered)
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering { NSCursor.pointingHand.set() }
+                else { NSCursor.arrow.set() }
+            }
     }
 }

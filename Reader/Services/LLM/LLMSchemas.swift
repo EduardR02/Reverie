@@ -79,18 +79,28 @@ enum SchemaLibrary {
         required: ["excerpt", "sourceBlockId"]
     )
 
-    static let chapterAnalysis = LLMStructuredSchema(
-        name: "chapter_analysis",
-        schema: JSONSchemaBuilder.object(
-            properties: [
-                "annotations": JSONSchemaBuilder.array(items: annotation, description: "Chapter insights."),
-                "quizQuestions": JSONSchemaBuilder.array(items: quizQuestion, description: "Quiz questions."),
-                "imageSuggestions": JSONSchemaBuilder.array(items: imageSuggestion, description: "Image excerpts."),
-                "summary": JSONSchemaBuilder.string(description: "2-3 sentence summary.")
-            ],
-            required: ["annotations", "quizQuestions", "imageSuggestions", "summary"]
+    static func chapterAnalysis(imagesEnabled: Bool) -> LLMStructuredSchema {
+        var properties: [String: Any] = [
+            "annotations": JSONSchemaBuilder.array(items: annotation, description: "Chapter insights."),
+            "quizQuestions": JSONSchemaBuilder.array(items: quizQuestion, description: "Quiz questions."),
+            "summary": JSONSchemaBuilder.string(description: "2-3 sentence summary.")
+        ]
+        
+        var required = ["annotations", "quizQuestions", "summary"]
+        
+        if imagesEnabled {
+            properties["imageSuggestions"] = JSONSchemaBuilder.array(items: imageSuggestion, description: "Image excerpts.")
+            required.append("imageSuggestions")
+        }
+        
+        return LLMStructuredSchema(
+            name: "chapter_analysis",
+            schema: JSONSchemaBuilder.object(
+                properties: properties,
+                required: required
+            )
         )
-    )
+    }
 
     static let annotationsOnly = LLMStructuredSchema(
         name: "annotations",

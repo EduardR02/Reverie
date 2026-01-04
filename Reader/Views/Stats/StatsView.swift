@@ -33,9 +33,6 @@ struct StatsView: View {
                             // Right: Quiz performance
                             quizSection
                         }
-
-                        // Reading milestones
-                        milestonesSection
                     }
                     .padding(32)
                 }
@@ -99,7 +96,6 @@ struct StatsView: View {
 
     private var heroStatsSection: some View {
         HStack(spacing: 20) {
-            // Today's reading time
             HeroStatCard(
                 icon: "clock.fill",
                 value: formatTime(appState.readingStats.minutesToday),
@@ -109,33 +105,32 @@ struct StatsView: View {
                 animate: animateStats
             )
 
-            // Words read
             HeroStatCard(
                 icon: "text.word.spacing",
                 value: formatNumber(appState.readingStats.totalWords),
                 label: "Words Read",
                 color: theme.foam,
+                delay: 0.05,
+                animate: animateStats
+            )
+
+            ReadingSpeedCard(
+                value: appState.readingSpeedTracker.formattedAverageWPM,
+                label: "Avg. Speed",
+                color: theme.rose,
                 delay: 0.1,
-                animate: animateStats
+                animate: animateStats,
+                onReset: {
+                    appState.resetReadingSpeed()
+                }
             )
 
-            // Current streak
-            HeroStatCard(
-                icon: "flame.fill",
-                value: "\(appState.readingStats.currentStreak)",
-                label: "Day Streak",
-                color: theme.love,
-                delay: 0.2,
-                animate: animateStats
-            )
-
-            // Books finished
             HeroStatCard(
                 icon: "books.vertical.fill",
                 value: "\(appState.readingStats.totalBooks)",
                 label: "Books Finished",
                 color: theme.gold,
-                delay: 0.3,
+                delay: 0.15,
                 animate: animateStats
             )
         }
@@ -144,36 +139,70 @@ struct StatsView: View {
     // MARK: - Activity Graph Section
 
     private var activityGraphSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: "calendar")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(theme.rose)
+        VStack(alignment: .leading, spacing: 32) {
+            // Header with Streaks integrated
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(theme.rose)
 
-                Text("Reading Activity")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(theme.text)
+                        Text("READING ACTIVITY")
+                            .font(.system(size: 11, weight: .bold))
+                            .kerning(1.2)
+                            .foregroundColor(theme.muted)
+                    }
+
+                    Text("Past 52 weeks")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(theme.text.opacity(0.8))
+                }
 
                 Spacer()
 
-                Text("Last 16 weeks")
-                    .font(.system(size: 12))
-                    .foregroundColor(theme.muted)
+                HStack(spacing: 48) {
+                    integratedStreak(label: "CURRENT STREAK", value: appState.readingStats.currentStreak, color: theme.love)
+                    integratedStreak(label: "BEST RECORD", value: appState.readingStats.maxStreak, color: theme.gold)
+                }
             }
 
-            // GitHub-style contribution graph
+            // Expanded Activity Graph
             ActivityGraph(
                 stats: appState.readingStats,
                 baseColor: theme.foam,
                 emptyColor: theme.overlay
             )
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .padding(20)
+        .padding(32)
         .background(theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 24)
                 .stroke(theme.overlay, lineWidth: 1)
+        }
+    }
+
+    private func integratedStreak(label: String, value: Int, color: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .bold))
+                .kerning(0.8)
+                .foregroundColor(theme.muted)
+            
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: color == theme.love ? "flame.fill" : "trophy.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(color)
+                
+                Text("\(value)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(theme.text)
+                Text("DAYS")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(theme.muted)
+            }
         }
     }
 
@@ -259,7 +288,7 @@ struct StatsView: View {
                 )
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(maxWidth: .infinity)
         .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -285,17 +314,17 @@ struct StatsView: View {
 
             let accuracy = Double(dbStats?.quizzesCorrect ?? 0) / Double(max(dbStats?.quizzesAnswered ?? 0, 1))
 
-            // Large accuracy ring
+            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 AccuracyRing(
                     accuracy: accuracy,
-                    answered: dbStats?.quizzesAnswered ?? 0,
-                    correct: dbStats?.quizzesCorrect ?? 0,
                     animate: animateStats
                 )
+                .scaleEffect(1.2)
                 Spacer()
             }
+            Spacer(minLength: 0)
 
             Divider()
                 .background(theme.overlay)
@@ -340,96 +369,8 @@ struct StatsView: View {
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity)
-        .background(theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(theme.overlay, lineWidth: 1)
-        }
-    }
-
-    // MARK: - Milestones Section
-
-    private var milestonesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: "trophy.fill")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(theme.gold)
-
-                Text("Milestones")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(theme.text)
-            }
-
-            let stats = appState.readingStats
-
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ], spacing: 12) {
-                MilestoneCard(
-                    icon: "clock.fill",
-                    title: "First Hour",
-                    achieved: stats.totalMinutes >= 60,
-                    color: theme.foam
-                )
-
-                MilestoneCard(
-                    icon: "flame.fill",
-                    title: "Week Streak",
-                    achieved: stats.currentStreak >= 7,
-                    color: theme.love
-                )
-
-                MilestoneCard(
-                    icon: "book.closed.fill",
-                    title: "First Book",
-                    achieved: (dbStats?.finishedBooks ?? 0) >= 1,
-                    color: theme.gold
-                )
-
-                MilestoneCard(
-                    icon: "lightbulb.fill",
-                    title: "100 Insights",
-                    achieved: (dbStats?.totalInsights ?? 0) >= 100,
-                    color: theme.iris
-                )
-
-                MilestoneCard(
-                    icon: "text.word.spacing",
-                    title: "10K Words",
-                    achieved: stats.totalWords >= 10000,
-                    color: theme.rose
-                )
-
-                MilestoneCard(
-                    icon: "checkmark.seal.fill",
-                    title: "Quiz Master",
-                    achieved: (dbStats?.quizzesCorrect ?? 0) >= 50,
-                    color: theme.foam
-                )
-
-                MilestoneCard(
-                    icon: "hourglass",
-                    title: "10 Hours",
-                    achieved: stats.totalMinutes >= 600,
-                    color: theme.gold
-                )
-
-                MilestoneCard(
-                    icon: "sparkles",
-                    title: "AI Explorer",
-                    achieved: stats.totalTokens >= 100000,
-                    color: theme.iris
-                )
-            }
-        }
-        .padding(20)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay {
@@ -513,6 +454,105 @@ struct HeroStatCard: View {
     }
 }
 
+// MARK: - Reading Speed Card
+
+struct ReadingSpeedCard: View {
+    let value: String
+    let label: String
+    let color: Color
+    let delay: Double
+    let animate: Bool
+    let onReset: () -> Void
+
+    @Environment(\.theme) private var theme
+    @State private var showConfirm = false
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 12) {
+                // Icon (Identical to HeroStatCard)
+                Image(systemName: "speedometer")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundColor(color)
+                    .frame(width: 48, height: 48)
+                    .background(color.opacity(0.15))
+                    .clipShape(Circle())
+
+                // Value
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(value)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(theme.text)
+                    
+                    if value != "—" {
+                        Text("WPM")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(theme.muted)
+                    }
+                }
+                .scaleEffect(animate ? 1 : 0.5)
+                .opacity(animate ? 1 : 0)
+                .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(delay), value: animate)
+
+                // Label
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.muted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+
+            // Minimalist Zero-Shift Reset
+            if isHovered {
+                Button {
+                    if showConfirm {
+                        onReset()
+                        withAnimation { showConfirm = false }
+                    } else {
+                        withAnimation(.spring(response: 0.2)) {
+                            showConfirm = true
+                        }
+                    }
+                } label: {
+                    ZStack {
+                        if showConfirm {
+                            Text("SURE?")
+                                .font(.system(size: 8, weight: .black))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(theme.love)
+                                .clipShape(Circle())
+                        } else {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(theme.muted)
+                                .frame(width: 36, height: 36)
+                                .background(theme.overlay)
+                                .clipShape(Circle())
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+        }
+        .background(theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(theme.overlay, lineWidth: 1)
+        }
+        .onHover { h in
+            withAnimation(.spring(response: 0.3)) {
+                isHovered = h
+                if !h { showConfirm = false }
+            }
+        }
+    }
+}
+
 // MARK: - Activity Graph
 
 struct ActivityGraph: View {
@@ -522,7 +562,7 @@ struct ActivityGraph: View {
 
     @Environment(\.theme) private var theme
 
-    private let weeks = 16
+    private let weeks = 52
     private let daysPerWeek = 7
 
     var body: some View {
@@ -533,17 +573,17 @@ struct ActivityGraph: View {
                     let dayLabels = ["", "Mon", "", "Wed", "", "Fri", ""]
                     ForEach(Array(dayLabels.enumerated()), id: \.offset) { _, day in
                         Text(day)
-                            .font(.system(size: 9))
+                            .font(.system(size: 8))
                             .foregroundColor(theme.muted)
-                            .frame(height: 12)
+                            .frame(height: 14)
                     }
                 }
-                .frame(width: 28)
+                .frame(width: 24)
 
                 // Grid of days
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     ForEach(0..<weeks, id: \.self) { week in
-                        VStack(spacing: 3) {
+                        VStack(spacing: 4) {
                             ForEach(0..<daysPerWeek, id: \.self) { day in
                                 let date = dateFor(week: week, day: day)
                                 let minutes = stats.minutesFor(date: date)
@@ -551,7 +591,7 @@ struct ActivityGraph: View {
 
                                 RoundedRectangle(cornerRadius: 2)
                                     .fill(colorForIntensity(intensity))
-                                    .frame(width: 12, height: 12)
+                                    .frame(width: 14, height: 14)
                                     .help(tooltipFor(date: date, minutes: minutes))
                             }
                         }
@@ -569,7 +609,7 @@ struct ActivityGraph: View {
                 ForEach(0..<5, id: \.self) { level in
                     RoundedRectangle(cornerRadius: 2)
                         .fill(colorForIntensity(level))
-                        .frame(width: 12, height: 12)
+                        .frame(width: 14, height: 14)
                 }
 
                 Text("More")
@@ -709,8 +749,6 @@ struct MiniStatBadge: View {
 
 struct AccuracyRing: View {
     let accuracy: Double
-    let answered: Int
-    let correct: Int
     let animate: Bool
 
     @Environment(\.theme) private var theme
@@ -746,44 +784,5 @@ struct AccuracyRing: View {
             }
         }
         .padding(.vertical, 8)
-    }
-}
-
-// MARK: - Milestone Card
-
-struct MilestoneCard: View {
-    let icon: String
-    let title: String
-    let achieved: Bool
-    let color: Color
-
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(achieved ? color.opacity(0.2) : theme.overlay)
-                    .frame(width: 44, height: 44)
-
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(achieved ? color : theme.muted)
-            }
-
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(achieved ? theme.text : theme.muted)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(achieved ? color.opacity(0.05) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(achieved ? color.opacity(0.3) : theme.overlay, lineWidth: 1)
-        }
-        .opacity(achieved ? 1 : 0.5)
     }
 }

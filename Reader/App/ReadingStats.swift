@@ -3,6 +3,7 @@ import Foundation
 struct ReadingStats: Codable {
     var secondsToday: Double = 0
     var currentStreak: Int = 0
+    var maxStreak: Int = 0
     var totalSeconds: Double = 0
     var totalBooks: Int = 0
     var lastReadDate: Date?
@@ -58,6 +59,8 @@ struct ReadingStats: Codable {
         } else if lastReadDate == nil {
             currentStreak = 1
         }
+        
+        maxStreak = max(maxStreak, currentStreak)
 
         secondsToday += seconds
         totalSeconds += seconds

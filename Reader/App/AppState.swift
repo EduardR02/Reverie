@@ -58,6 +58,14 @@ final class AppState {
     
     // Throttled Progress Save
     private var pendingProgressSaveTask: Task<Void, Never>?
+    private var maxScrollCache: [Int64: Double] = [:]
+    private var bookProgressCache: [Int64: BookProgressCache] = [:]
+
+    private struct BookProgressCache {
+        var totalWords: Int
+        var wordsRead: Int
+        var chapterWordCounts: [Int64: Int]
+    }
 
     @MainActor
     init(database: DatabaseService? = nil) {
@@ -222,6 +230,10 @@ final class AppState {
         saveStats()
     }
 
+    func resetReadingSpeed() {
+        readingSpeedTracker.reset()
+    }
+
     func saveStats() {
         do {
             try database.saveLifetimeStats(readingStats)
@@ -232,8 +244,43 @@ final class AppState {
 
     // MARK: - Progress Tracking (Throttled)
 
+    func updateBookProgressCache(book: Book, chapters: [Chapter]) {
+        guard let bookId = book.id else { return }
+
+        var totalWords = 0
+        var wordsRead = 0
+        var wordCounts: [Int64: Int] = [:]
+
+        for chapter in chapters {
+            guard let chapterId = chapter.id else { continue }
+            let wordCount = max(0, chapter.wordCount)
+            totalWords += wordCount
+
+            let maxPercent = min(max(chapter.maxScrollReached, 0), 1)
+            let readWords = Int((Double(wordCount) * maxPercent).rounded())
+            wordsRead += readWords
+            wordCounts[chapterId] = wordCount
+
+            let cachedMax = maxScrollCache[chapterId] ?? 0
+            if maxPercent > cachedMax {
+                maxScrollCache[chapterId] = maxPercent
+            }
+        }
+
+        if totalWords > 0 {
+            wordsRead = min(wordsRead, totalWords)
+        }
+
+        bookProgressCache[bookId] = BookProgressCache(
+            totalWords: totalWords,
+            wordsRead: wordsRead,
+            chapterWordCounts: wordCounts
+        )
+    }
+
     func updateChapterProgress(chapter: Chapter, scrollPercent: Double, scrollOffset: Double) {
         guard let book = currentBook else { return }
+        let bookId = book.id
         
         pendingProgressSaveTask?.cancel()
         pendingProgressSaveTask = Task { @MainActor in
@@ -241,27 +288,110 @@ final class AppState {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             
             // 1. Calculate words read delta
-            if scrollPercent > chapter.maxScrollReached {
-                let delta = scrollPercent - chapter.maxScrollReached
-                let wordDelta = Int(Double(chapter.wordCount) * delta)
+            let clampedPercent = max(0, min(scrollPercent, 1))
+            let previousMax = min(max(chapter.id.flatMap { maxScrollCache[$0] } ?? chapter.maxScrollReached, 0), 1)
+            if clampedPercent > previousMax {
+                let chapterId = chapter.id
+                let cachedWordCount: Int? = {
+                    guard let bookId, let chapterId else { return nil }
+                    return bookProgressCache[bookId]?.chapterWordCounts[chapterId]
+                }()
+                let wordCount = cachedWordCount ?? chapter.wordCount
+                let previousWords = Int((Double(wordCount) * previousMax).rounded())
+                let currentWords = Int((Double(wordCount) * clampedPercent).rounded())
+                let wordDelta = currentWords - previousWords
                 if wordDelta > 0 {
                     self.addWords(wordDelta)
+                    if let bookId, var cache = bookProgressCache[bookId], cache.totalWords > 0 {
+                        cache.wordsRead = min(cache.totalWords, cache.wordsRead + wordDelta)
+                        bookProgressCache[bookId] = cache
+                    }
                 }
                 
                 var updatedChapter = chapter
-                updatedChapter.maxScrollReached = scrollPercent
+                updatedChapter.maxScrollReached = clampedPercent
                 try? database.saveChapter(&updatedChapter)
+                if let chapterId = chapter.id {
+                    maxScrollCache[chapterId] = clampedPercent
+                }
             }
             
             // 2. Save book progress
-            let clampedPercent = max(0, min(scrollPercent, 1))
-            let chapterCount = max(1, book.chapterCount)
-            let chapterProgress = Double(self.currentChapterIndex) + clampedPercent
-            let overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
+            let overallProgress: Double
+            if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
+                overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
+            } else {
+                let chapterCount = max(1, book.chapterCount)
+                let chapterProgress = Double(self.currentChapterIndex) + clampedPercent
+                overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
+            }
+
+            var updatedBook = book
+            updatedBook.currentChapter = chapter.index
+            updatedBook.currentScrollPercent = clampedPercent
+            updatedBook.currentScrollOffset = scrollOffset
+            updatedBook.progressPercent = overallProgress
+            updatedBook.lastReadAt = Date()
+
+            do {
+                try database.saveBook(&updatedBook)
+                self.currentBook = updatedBook
+            } catch {
+                print("Failed to save book progress: \(error)")
+            }
+        }
+    }
+
+    func recordReadingProgress(
+        chapter: Chapter,
+        currentPercent: Double,
+        furthestPercent: Double,
+        scrollOffset: Double
+    ) {
+        guard let book = currentBook, let chapterId = chapter.id else { return }
+        let bookId = book.id
+
+        let clampedCurrent = max(0, min(currentPercent, 1))
+        let clampedFurthest = max(0, min(furthestPercent, 1))
+        let effectiveFurthest = max(clampedFurthest, clampedCurrent)
+
+        pendingProgressSaveTask?.cancel()
+        pendingProgressSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            let previousMax = min(max(maxScrollCache[chapterId] ?? chapter.maxScrollReached, 0), 1)
+            if effectiveFurthest > previousMax {
+                let cachedWordCount = bookId.flatMap { bookProgressCache[$0]?.chapterWordCounts[chapterId] }
+                let wordCount = cachedWordCount ?? chapter.wordCount
+                let previousWords = Int((Double(wordCount) * previousMax).rounded())
+                let currentWords = Int((Double(wordCount) * effectiveFurthest).rounded())
+                let wordDelta = currentWords - previousWords
+                if wordDelta > 0 {
+                    self.addWords(wordDelta)
+                    if let bookId, var cache = bookProgressCache[bookId], cache.totalWords > 0 {
+                        cache.wordsRead = min(cache.totalWords, cache.wordsRead + wordDelta)
+                        bookProgressCache[bookId] = cache
+                    }
+                }
+
+                var updatedChapter = chapter
+                updatedChapter.maxScrollReached = effectiveFurthest
+                try? database.saveChapter(&updatedChapter)
+                maxScrollCache[chapterId] = effectiveFurthest
+            }
+
+            let overallProgress: Double
+            if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
+                overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
+            } else {
+                let chapterCount = max(1, book.chapterCount)
+                let chapterProgress = Double(self.currentChapterIndex) + effectiveFurthest
+                overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
+            }
 
             var updatedBook = book
             updatedBook.currentChapter = self.currentChapterIndex
-            updatedBook.currentScrollPercent = clampedPercent
+            updatedBook.currentScrollPercent = clampedCurrent
             updatedBook.currentScrollOffset = scrollOffset
             updatedBook.progressPercent = overallProgress
             updatedBook.lastReadAt = Date()

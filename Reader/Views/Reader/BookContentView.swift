@@ -17,6 +17,7 @@ struct ScrollContext: Equatable {
     let imageId: Int64?
     let footnoteRefId: String?
     let blockId: Int?
+    let blockOffset: Double?
     let primaryType: String?
     let scrollPercent: Double
     let scrollOffset: Double
@@ -328,6 +329,7 @@ struct BookContentView: NSViewRepresentable {
                 let iId = (body["imageId"] as? String).flatMap(Int64.init)
                 let fId = body["footnoteRefId"] as? String
                 let bId = body["blockId"] as? Int
+                let bOffset = (body["blockOffset"] as? Double) ?? (body["blockOffset"] as? Int).map(Double.init)
                 let pT = body["primaryType"] as? String
                 let sY = (body["scrollY"] as? Double) ?? 0
                 let sP = (body["scrollPercent"] as? Double) ?? 0
@@ -339,6 +341,7 @@ struct BookContentView: NSViewRepresentable {
                     imageId: iId,
                     footnoteRefId: fId,
                     blockId: bId,
+                    blockOffset: bOffset,
                     primaryType: pT,
                     scrollPercent: sP,
                     scrollOffset: sY,

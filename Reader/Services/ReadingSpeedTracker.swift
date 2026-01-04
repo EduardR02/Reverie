@@ -8,10 +8,20 @@ final class ReadingSpeedTracker {
     struct ReadingSession: Codable {
         var startTime: Date
         var chapterId: Int64
-        var wordsRead: Int
+        var chapterWordCount: Int
+        var startPercent: Double
+        var maxPercent: Double
         var timeSpentSeconds: Double
         var pauses: [PauseEvent]
         var adjustments: [SpeedAdjustment]
+
+        var wordsRead: Int {
+            guard chapterWordCount > 0 else { return 0 }
+            let clampedStart = min(max(startPercent, 0), 1)
+            let clampedMax = min(max(maxPercent, clampedStart), 1)
+            let delta = clampedMax - clampedStart
+            return Int((Double(chapterWordCount) * delta).rounded())
+        }
 
         var wpm: Double {
             let effectiveTime = timeSpentSeconds - pauses.reduce(0) { $0 + $1.duration }
@@ -64,8 +74,11 @@ final class ReadingSpeedTracker {
     private(set) var isPaused: Bool = false
     private(set) var isLocked: Bool = false  // User locked their reading speed
 
+    static let idleThresholdSeconds: TimeInterval = 120
+
     private var pauseStartTime: Date?
-    private var lastScrollTime: Date?
+    private var lastActivityTime: Date?
+    private var lastTickTime: Date?
 
     // MARK: - Settings Keys
 
@@ -82,31 +95,35 @@ final class ReadingSpeedTracker {
 
     // MARK: - Session Management
 
-    func startSession(chapterId: Int64, wordCount: Int) {
+    func startSession(
+        chapterId: Int64,
+        wordCount: Int,
+        startPercent: Double = 0,
+        now: Date = Date()
+    ) {
+        let clampedStart = min(max(startPercent, 0), 1)
         currentSession = ReadingSession(
-            startTime: Date(),
+            startTime: now,
             chapterId: chapterId,
-            wordsRead: wordCount,
+            chapterWordCount: max(0, wordCount),
+            startPercent: clampedStart,
+            maxPercent: clampedStart,
             timeSpentSeconds: 0,
             pauses: [],
             adjustments: []
         )
-        lastScrollTime = Date()
+        lastActivityTime = now
+        lastTickTime = now
     }
 
-    func updateSession(scrollPercent: Double) {
+    func updateSession(scrollPercent: Double, now: Date = Date()) {
         guard var session = currentSession else { return }
 
-        let now = Date()
-        if let lastScroll = lastScrollTime {
-            let delta = now.timeIntervalSince(lastScroll)
-            // Only count time if under 2 minutes (user might have left)
-            if delta < 120 {
-                session.timeSpentSeconds += delta
-            }
-        }
-        lastScrollTime = now
+        lastActivityTime = now
+        let clamped = min(max(scrollPercent, 0), 1)
+        session.maxPercent = max(session.maxPercent, clamped)
         currentSession = session
+        _ = tick(now: now)
     }
 
     struct SessionResult {
@@ -116,16 +133,9 @@ final class ReadingSpeedTracker {
         let words: Int
     }
 
-    func endSession() -> SessionResult? {
-        guard var session = currentSession else { return nil }
-
-        // Final time update
-        if let lastScroll = lastScrollTime {
-            let delta = Date().timeIntervalSince(lastScroll)
-            if delta < 120 {
-                session.timeSpentSeconds += delta
-            }
-        }
+    func endSession(now: Date = Date()) -> SessionResult? {
+        _ = tick(now: now)
+        guard let session = currentSession else { return nil }
 
         let wpm = session.wpm
         let totalSeconds = session.timeSpentSeconds
@@ -143,7 +153,31 @@ final class ReadingSpeedTracker {
         }
 
         currentSession = nil
+        lastActivityTime = nil
+        lastTickTime = nil
         return SessionResult(wpm: wpm, minutes: max(0, minutes), seconds: max(0, totalSeconds), words: max(0, words))
+    }
+
+    @discardableResult
+    func tick(now: Date = Date()) -> Double {
+        guard var session = currentSession else { return 0 }
+        guard let lastTick = lastTickTime else {
+            lastTickTime = now
+            return 0
+        }
+
+        let delta = now.timeIntervalSince(lastTick)
+        lastTickTime = now
+        guard delta > 0 else { return 0 }
+        guard let lastActivity = lastActivityTime,
+              now.timeIntervalSince(lastActivity) <= Self.idleThresholdSeconds else {
+            currentSession = session
+            return 0
+        }
+
+        session.timeSpentSeconds += delta
+        currentSession = session
+        return delta
     }
 
     // MARK: - Pause Management
@@ -223,6 +257,13 @@ final class ReadingSpeedTracker {
 
     var confidencePercentage: Int {
         Int(confidence * 100)
+    }
+
+    func reset() {
+        historicalWPM.removeAll()
+        averageWPM = 0
+        confidence = 0
+        saveData()
     }
 
     // MARK: - Private Helpers

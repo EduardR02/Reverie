@@ -12,6 +12,9 @@ struct AIPanel: View {
     let currentFootnoteRefId: String?
     let isProcessingInsights: Bool
     let isProcessingImages: Bool
+    let liveInsightCount: Int
+    let liveQuizCount: Int
+    let liveThinking: String
     let isGeneratingMore: Bool
     let isClassifying: Bool
     let classificationError: String?
@@ -24,6 +27,8 @@ struct AIPanel: View {
     let onGenerateMoreQuestions: () -> Void
     let onForceProcess: () -> Void  // Force process garbage chapter
     let onRetryClassification: () -> Void  // Retry failed classification
+    let onCancelAnalysis: () -> Void
+    let onCancelImages: () -> Void
     let autoScrollHighlightEnabled: Bool
     let isProgrammaticScroll: Bool
     @Binding var externalTabSelection: Tab?  // External control for tab switching
@@ -54,6 +59,7 @@ struct AIPanel: View {
     @State private var chatScrollTick = 0
     @State private var scrollRequestCount = 0
     @State private var externalScrollRequest: (id: AnyHashable, tab: Tab)?
+    @State private var isThinkingExpanded = false
     @FocusState private var isChatFocused: Bool
 
     private let chatScrollSpace = "chat-scroll"
@@ -264,8 +270,18 @@ struct AIPanel: View {
     private func tabBadge(for tab: Tab) -> some View {
         if tab == .insights && !annotations.isEmpty {
             badge(text: "\(annotations.count)", color: theme.rose, isSelected: selectedTab == tab)
-        } else if tab == .images && !images.isEmpty {
-            badge(text: "\(images.count)", color: theme.iris, isSelected: selectedTab == tab)
+        } else if tab == .images {
+            if isProcessingImages {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(selectedTab == tab ? theme.base : theme.iris)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(selectedTab == tab ? theme.iris : theme.iris.opacity(0.2))
+                    .clipShape(Capsule())
+            } else if !images.isEmpty {
+                badge(text: "\(images.count)", color: theme.iris, isSelected: selectedTab == tab)
+            }
         } else if tab == .quiz && !quizzes.isEmpty {
             badge(text: "\(quizzes.count)", color: theme.rose, isSelected: selectedTab == tab)
         } else if tab == .footnotes && !footnotes.isEmpty {
@@ -313,7 +329,7 @@ struct AIPanel: View {
 
                     // Processing indicator
                     if isProcessingInsights {
-                        processingBanner(text: "Generating insights...")
+                        processingSkeleton(text: "Analyzing chapter...")
                     }
 
                     if annotations.isEmpty && !isProcessingInsights && !isClassifying && (chapter?.shouldSkipAutoProcessing != true) {
@@ -443,7 +459,7 @@ struct AIPanel: View {
             ScrollView {
                 LazyVStack(spacing: 16) {
                     if isProcessingImages {
-                        processingBanner(text: "Generating images...")
+                        processingSkeleton(text: "Generating illustrations...", isImages: true)
                     }
 
                     if images.isEmpty && !isProcessingImages {
@@ -513,7 +529,7 @@ struct AIPanel: View {
 
                 // Processing indicator
                 if isProcessingInsights {
-                    processingBanner(text: "Generating questions...")
+                    processingSkeleton(text: "Generating questions...", isImages: true)
                 }
 
                 if let analysisError {
@@ -889,22 +905,213 @@ struct AIPanel: View {
         .frame(maxWidth: .infinity, minHeight: 200)
     }
 
-    // MARK: - Processing Banner
+    // MARK: - Processing State
 
-    private func processingBanner(text: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .scaleEffect(0.8)
+    private func processingSkeleton(text: String, isImages: Bool = false) -> some View {
+        AnalysisWorkbench(
+            title: text,
+            isImages: isImages,
+            liveInsightCount: liveInsightCount,
+            liveQuizCount: liveQuizCount,
+            liveThinking: liveThinking,
+            isThinkingExpanded: $isThinkingExpanded,
+            onCancel: {
+                if isImages { onCancelImages() }
+                else { onCancelAnalysis() }
+            }
+        )
+    }
 
-            Text(text)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(theme.rose)
+    private struct AnalysisWorkbench: View {
+        let title: String
+        let isImages: Bool
+        let liveInsightCount: Int
+        let liveQuizCount: Int
+        let liveThinking: String
+        @Binding var isThinkingExpanded: Bool
+        let onCancel: () -> Void
+
+        @Environment(\.theme) private var theme
+        @State private var pulsePhase: CGFloat = 0
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                // Top Progress Line (The "Zen" Indicator)
+                FlowingProgressLine()
+                    .frame(height: 2)
+
+                // Main Header
+                HStack(spacing: 12) {
+                    Text(title.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .kerning(1.2)
+                        .foregroundColor(theme.muted)
+                    
+                    Spacer()
+                    
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(theme.muted.opacity(0.5))
+                            .padding(6)
+                            .background(theme.overlay.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel analysis")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                // Live Metrics (Bloom Animation)
+                if !isImages && (liveInsightCount > 0 || liveQuizCount > 0) {
+                    HStack(spacing: 20) {
+                        if liveInsightCount > 0 {
+                            refinedMetric(icon: "lightbulb.fill", count: liveInsightCount, color: theme.rose)
+                        }
+                        if liveQuizCount > 0 {
+                            refinedMetric(icon: "checkmark.circle.fill", count: liveQuizCount, color: theme.foam)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                }
+
+                // Thinking Stream (Masked & Expandable)
+                if !liveThinking.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Divider().background(theme.overlay.opacity(0.5))
+                        
+                        Button {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                isThinkingExpanded.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "brain.head.profile")
+                                    .font(.system(size: 12))
+                                    .symbolEffect(.pulse, options: .repeating)
+                                
+                                if isThinkingExpanded {
+                                    Text("Reasoning")
+                                        .font(.system(size: 11, weight: .bold))
+                                } else {
+                                    Text(lastThinkingSentence)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .italic()
+                                        .lineLimit(1)
+                                        .mask(
+                                            LinearGradient(
+                                                gradient: Gradient(stops: [
+                                                    .init(color: .black, location: 0.8),
+                                                    .init(color: .clear, location: 1.0)
+                                                ]),
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                }
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .rotationEffect(.degrees(isThinkingExpanded ? 90 : 0))
+                            }
+                            .foregroundColor(theme.rose.opacity(0.8))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(Color.black.opacity(0.001)) // Reliable hit-testing
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if isThinkingExpanded {
+                            Text(liveThinking)
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.text.opacity(0.8))
+                                .lineSpacing(4)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 16)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
+                    .background(theme.overlay.opacity(0.2))
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(theme.surface)
+                    .shadow(color: Color.black.opacity(0.05), radius: 10, y: 4)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(theme.overlay, lineWidth: 1)
+            }
+            .padding(.bottom, 8)
+            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveInsightCount)
+            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveQuizCount)
+            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveThinking)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
-        .background(theme.rose.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+        private var lastThinkingSentence: String {
+            let sentences = liveThinking.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return sentences.last ?? "Processing..."
+        }
+
+        private func refinedMetric(icon: String, count: Int, color: Color) -> some View {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                Text("\(count)")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+            }
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.08))
+            .clipShape(Capsule())
+            .overlay {
+                Capsule().stroke(color.opacity(0.2), lineWidth: 1)
+            }
+        }
+    }
+
+    private struct FlowingProgressLine: View {
+        @Environment(\.theme) private var theme
+        @State private var phase: CGFloat = 0
+        
+        var body: some View {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(theme.overlay.opacity(0.5))
+                    
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [theme.rose.opacity(0), theme.rose, theme.foam, theme.foam.opacity(0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: geo.size.width * 0.4)
+                        .offset(x: -geo.size.width * 0.4 + (geo.size.width * 1.4 * phase))
+                }
+            }
+            .onAppear {
+                withAnimation(.linear(duration: 2.0).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+        }
     }
 
     private func analysisErrorBanner(error: String) -> some View {
