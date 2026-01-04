@@ -83,16 +83,18 @@ struct BookCard: View {
                 }
             }
 
-            // Info section unchanged
+            // Info section
             VStack(alignment: .leading, spacing: 6) {
                 Text(book.title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(theme.text)
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(height: 34, alignment: .topLeading) // Fixed height for 2 lines
 
                 HStack {
                     Text(book.author)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundColor(theme.muted)
                         .lineLimit(1)
                     
@@ -100,7 +102,7 @@ struct BookCard: View {
                     
                     if book.isFinished {
                         Text("FINISHED")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
                             .foregroundColor(theme.foam)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -113,16 +115,18 @@ struct BookCard: View {
                 HStack(spacing: 8) {
                     ProgressView(value: book.isFinished ? 1.0 : book.progressPercent)
                         .tint(book.isFinished ? theme.foam : theme.rose)
-                        .scaleEffect(y: 0.6)
+                        .scaleEffect(y: 0.5)
 
                     Text(book.isFinished ? "100%" : book.displayProgress)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(theme.subtle)
                 }
             }
             .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.surface)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
@@ -186,6 +190,8 @@ struct BookCard: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .layoutPriority(-1) // Allow title to take precedence if needed
             } else {
                 // Placeholder
                 ZStack {
@@ -207,7 +213,6 @@ struct BookCard: View {
             }
         }
         .aspectRatio(2/3, contentMode: .fit)
-        .frame(maxWidth: .infinity)
         .background(theme.overlay)
     }
 }

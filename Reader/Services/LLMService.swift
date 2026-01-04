@@ -566,43 +566,63 @@ final class LLMService {
             return decoded
         }
 
-        // 2. Search for the longest balanced block (most robust)
-        var bestCandidate: String?
-        
-        for startIndex in cleanText.indices where cleanText[startIndex] == "{" {
-            var depth = 0
-            var isInsideString = false
-            var isEscaped = false
-            
-            for index in cleanText.indices[startIndex...] {
-                let char = cleanText[index]
-                if isEscaped { isEscaped = false; continue }
-                if char == "\\" { isEscaped = true; continue }
-                if char == "\"" { isInsideString.toggle(); continue }
-                
-                if !isInsideString {
-                    if char == "{" { depth += 1 }
-                    else if char == "}" {
-                        depth -= 1
-                        if depth == 0 {
-                            let candidate = String(cleanText[startIndex...index])
-                            // If this candidate is longer than previous best, or if we haven't found one yet, save it
-                            if bestCandidate == nil || candidate.count > (bestCandidate?.count ?? 0) {
-                                bestCandidate = candidate
-                            }
-                            break
+        // 2. Scan for any balanced JSON object to tolerate pre/post-amble.
+        var depth = 0
+        var startIndex: String.Index?
+        var isInsideString = false
+        var isEscaped = false
+        var bestDecoded: T?
+        var bestLength = 0
+
+        for index in cleanText.indices {
+            let char = cleanText[index]
+
+            if isInsideString {
+                if isEscaped {
+                    isEscaped = false
+                    continue
+                }
+                if char == "\\" {
+                    isEscaped = true
+                    continue
+                }
+                if char == "\"" {
+                    isInsideString = false
+                }
+                continue
+            }
+
+            if char == "\"" {
+                isInsideString = true
+                continue
+            }
+
+            if char == "{" {
+                if depth == 0 { startIndex = index }
+                depth += 1
+                continue
+            }
+
+            if char == "}" {
+                if depth > 0 { depth -= 1 }
+                if depth == 0, let start = startIndex {
+                    let jsonContent = String(cleanText[start...index])
+                    if let data = jsonContent.data(using: .utf8),
+                       let decoded = try? JSONDecoder().decode(T.self, from: data) {
+                        if jsonContent.count > bestLength {
+                            bestLength = jsonContent.count
+                            bestDecoded = decoded
                         }
                     }
+                    startIndex = nil
                 }
             }
         }
-        
-        if let json = bestCandidate,
-           let data = json.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(T.self, from: data) {
+
+        if let decoded = bestDecoded {
             return decoded
         }
-        
+
         throw LLMError.invalidResponse
     }
 

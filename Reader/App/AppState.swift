@@ -286,6 +286,8 @@ final class AppState {
         pendingProgressSaveTask = Task { @MainActor in
             // Debounce for 1 second to avoid DB thrashing
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let chapterCount = max(1, book.chapterCount)
+            let chapterIndex = min(max(chapter.index, 0), chapterCount - 1)
             
             // 1. Calculate words read delta
             let clampedPercent = max(0, min(scrollPercent, 1))
@@ -321,13 +323,12 @@ final class AppState {
             if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
                 overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
             } else {
-                let chapterCount = max(1, book.chapterCount)
-                let chapterProgress = Double(self.currentChapterIndex) + clampedPercent
+                let chapterProgress = Double(chapterIndex) + clampedPercent
                 overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
             }
 
             var updatedBook = book
-            updatedBook.currentChapter = chapter.index
+            updatedBook.currentChapter = chapterIndex
             updatedBook.currentScrollPercent = clampedPercent
             updatedBook.currentScrollOffset = scrollOffset
             updatedBook.progressPercent = overallProgress
@@ -358,6 +359,8 @@ final class AppState {
         pendingProgressSaveTask?.cancel()
         pendingProgressSaveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let chapterCount = max(1, book.chapterCount)
+            let chapterIndex = min(max(chapter.index, 0), chapterCount - 1)
 
             let previousMax = min(max(maxScrollCache[chapterId] ?? chapter.maxScrollReached, 0), 1)
             if effectiveFurthest > previousMax {
@@ -384,13 +387,12 @@ final class AppState {
             if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
                 overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
             } else {
-                let chapterCount = max(1, book.chapterCount)
-                let chapterProgress = Double(self.currentChapterIndex) + effectiveFurthest
+                let chapterProgress = Double(chapterIndex) + effectiveFurthest
                 overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
             }
 
             var updatedBook = book
-            updatedBook.currentChapter = self.currentChapterIndex
+            updatedBook.currentChapter = chapterIndex
             updatedBook.currentScrollPercent = clampedCurrent
             updatedBook.currentScrollOffset = scrollOffset
             updatedBook.progressPercent = overallProgress
