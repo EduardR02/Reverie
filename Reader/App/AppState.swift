@@ -404,6 +404,7 @@ struct UserSettings: Codable, Equatable {
     var autoSwitchFromChatOnScroll: Bool = true
     var smartAutoScrollEnabled: Bool = true
     var autoScrollHighlightEnabled: Bool = true
+    var activeContentBorderEnabled: Bool = false
     var showReadingSpeedFooter: Bool = true
     var useCheapestModelForClassification: Bool = true
 

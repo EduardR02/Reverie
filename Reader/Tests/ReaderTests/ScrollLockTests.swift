@@ -99,6 +99,26 @@ final class ScrollLockTests: XCTestCase {
         XCTAssertFalse(msg["isProgrammatic"] as? Bool ?? true)
     }
 
+    func testMarkerInjectionTargetsBlockId() async throws {
+        try await webView.evaluateJavaScript("""
+            document.body.innerHTML = `
+                <p>1</p>
+                <p id="block-1">Target</p>
+                <p id="block-2">Later</p>
+            `;
+            injectMarkerAtBlock(42, 1);
+        """)
+
+        let markerOnTarget = try await webView.evaluateJavaScript("document.querySelector('#block-1 .annotation-marker') !== null") as? Bool
+        XCTAssertTrue(markerOnTarget ?? false)
+
+        let markerOnUnnumbered = try await webView.evaluateJavaScript("document.querySelector('p:not([id]) .annotation-marker') !== null") as? Bool
+        XCTAssertFalse(markerOnUnnumbered ?? false)
+
+        let blockId = try await webView.evaluateJavaScript("document.querySelector('#block-1 .annotation-marker')?.dataset.blockId") as? String
+        XCTAssertEqual(blockId, "1")
+    }
+
     // --- Helpers ---
     
     private func parseId(_ value: Any?) -> Int64? {

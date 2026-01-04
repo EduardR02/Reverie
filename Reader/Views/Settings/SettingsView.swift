@@ -352,6 +352,14 @@ struct SettingsView: View {
 
                     Divider().background(theme.overlay)
 
+                    Toggle(isOn: $state.settings.activeContentBorderEnabled) {
+                        toggleLabel(title: "Active Content Border", subtitle: "Highlight border of active insights and images")
+                    }
+                    .toggleStyle(RightAlignedToggleStyle())
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
                     Toggle(isOn: $state.settings.autoSwitchFromChatOnScroll) {
                         toggleLabel(title: "Smart Chat Return", subtitle: "Back to context when scrolling text")
                     }

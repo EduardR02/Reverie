@@ -1367,6 +1367,10 @@ struct AnnotationCard: View {
         return appState.settings.autoScrollHighlightEnabled
     }
 
+    private var showBorder: Bool {
+        showHighlight && appState.settings.activeContentBorderEnabled
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header (always visible)
@@ -1470,7 +1474,7 @@ struct AnnotationCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
-                .stroke(showHighlight ? theme.rose : theme.overlay, lineWidth: showHighlight ? 2 : 1)
+                .stroke(showBorder ? theme.rose : theme.overlay, lineWidth: showBorder ? 2 : 1)
         }
         .animation(.easeOut(duration: 0.2), value: showHighlight)
     }
@@ -2233,6 +2237,10 @@ struct ImageCard: View {
         return appState.settings.autoScrollHighlightEnabled
     }
 
+    private var showBorder: Bool {
+        showHighlight && appState.settings.activeContentBorderEnabled
+    }
+
     var body: some View {
         Button {
             onScrollTo()
@@ -2304,7 +2312,7 @@ struct ImageCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(showHighlight ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+                    .stroke(showBorder ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)

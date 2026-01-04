@@ -24,16 +24,33 @@ const focusState = {
     lastVelocity: 0,
     lastReportedScrollY: 0,
     lastReportedTime: 0,
+    lastBlockCheckY: 0,
     currentStationIndex: -1,
     currentBlockIndex: -1,
     stations: [],       // List of all markers (getMarkers())
     boundaries: [],     // Territory division lines in scrollY space
     stops: [],          // Ideal scroll positions for each marker
-    blockPositions: [], // Cached absolute Y positions of blocks
+    scrollHeight: 0,
+    viewportHeight: 0,
+    eyeLineY: 0,
     reachedBottom: false,
     mapBuilt: false,
+    mapPending: false,
     idleTimeout: null
 };
+
+/**
+ * Fast binary search for sorted arrays
+ */
+function binarySearch(arr, val) {
+    let low = 0, high = arr.length - 1;
+    while (low <= high) {
+        const mid = (low + high) >>> 1;
+        if (arr[mid] < val) low = mid + 1;
+        else high = mid - 1;
+    }
+    return low;
+}
 
 let scrollTicking = false;
 
@@ -195,8 +212,22 @@ const programmatic = (() => {
  * Returns all potential "anchor" blocks (paragraphs, headers, etc.)
  */
 function getBlocks() {
+    // Optimization: If we have blocks with IDs, use those directly as they are already scoped.
+    const idBlocks = document.querySelectorAll('[id^="block-"]');
+    if (idBlocks.length > 0) {
+        return Array.from(idBlocks);
+    }
     const selector = 'p, h1, h2, h3, h4, h5, h6, blockquote, li';
     return Array.from(document.querySelectorAll(selector));
+}
+
+function getBlockByIdOrIndex(blockId) {
+    if (!blockId || blockId <= 0) return null;
+    const byId = document.getElementById(`block-${blockId}`);
+    if (byId) return byId;
+    const blocks = getBlocks();
+    if (blockId <= blocks.length) return blocks[blockId - 1];
+    return null;
 }
 
 /**
@@ -204,9 +235,10 @@ function getBlocks() {
  */
 function getMarkers() {
     const selector = '.annotation-marker, .image-marker, .footnote-ref';
-    const markerElements = Array.from(document.querySelectorAll(selector));
+    const markerElements = document.querySelectorAll(selector);
+    const scrollY = window.scrollY;
     
-    const markers = markerElements.map((element, index) => {
+    const markers = Array.from(markerElements).map((element, index) => {
         const rect = element.getBoundingClientRect();
         
         // Identify Type
@@ -223,14 +255,14 @@ function getMarkers() {
                    (element.getAttribute('href')?.split('#')[1]) || 
                    element.id;
 
-        // Find Parent Block
+        // Find Parent Block (Prefer ID attribute for speed)
         const block = element.closest('[id^="block-"]');
         const blockId = block ? 
             parseInt(block.id.replace("block-", ""), 10) : 
             parseInt(element.dataset.blockId || "0", 10);
 
         // Calculate absolute vertical center
-        const centerY = rect.top + window.scrollY + (rect.height * 0.5);
+        const centerY = rect.top + scrollY + (rect.height * 0.5);
 
         return { 
             element: element, 
@@ -258,27 +290,26 @@ function getMarkers() {
  * Calculates where every marker 'wants' to sit and divides land between them.
  */
 function buildTerritoryMap() {
+    // If we're already rebuilding, don't stack them
+    if (focusState.mapPending) return;
+    
     const stations = getMarkers();
     const viewportHeight = window.innerHeight;
     const scrollHeight = document.documentElement.scrollHeight;
     const scrollMax = Math.max(1, scrollHeight - viewportHeight);
     const stationCount = stations.length;
 
-    // Cache block positions while we're doing layout work anyway
-    const blocks = getBlocks();
-    focusState.blockPositions = blocks.map(block => {
-        const rect = block.getBoundingClientRect();
-        return {
-            top: rect.top + window.scrollY,
-            bottom: rect.bottom + window.scrollY
-        };
-    });
+    // Cache metrics to avoid layout-forcing getters during scroll
+    focusState.viewportHeight = viewportHeight;
+    focusState.scrollHeight = scrollHeight;
+    focusState.eyeLineY = viewportHeight * EYE_LINE_RATIO;
 
     if (stationCount === 0) {
         focusState.stations = [];
         focusState.boundaries = [];
         focusState.stops = [];
         focusState.mapBuilt = true;
+        focusState.mapPending = false;
         return;
     }
 
@@ -287,7 +318,7 @@ function buildTerritoryMap() {
 
     // 1. Calculate Ideal Stops (Scroll position where marker is at 40% height)
     let stops = stations.map(station => {
-        const idealPosition = station.y - (viewportHeight * EYE_LINE_RATIO);
+        const idealPosition = station.y - focusState.eyeLineY;
         // Clamp to reachable scroll range
         return Math.max(0, Math.min(scrollMax, idealPosition));
     });
@@ -325,6 +356,23 @@ function buildTerritoryMap() {
     focusState.stops = stops;
     focusState.boundaries = boundaries;
     focusState.mapBuilt = true;
+    focusState.mapPending = false;
+}
+
+/**
+ * Schedules a lazy map rebuild to avoid blocking the UI thread.
+ */
+function scheduleMapRebuild() {
+    if (focusState.mapPending) return;
+    focusState.mapPending = true;
+    
+    // Use requestIdleCallback if available, fallback to setTimeout
+    const scheduler = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+    scheduler(() => {
+        buildTerritoryMap();
+        // Force an update to sync the new map state
+        updateFocus(true);
+    });
 }
 
 /**
@@ -332,15 +380,15 @@ function buildTerritoryMap() {
  */
 function updateFocus(forceReport = false) {
     const scrollY = window.scrollY;
-    const viewportHeight = window.innerHeight;
-    const scrollHeight = document.documentElement.scrollHeight;
-    const scrollMax = Math.max(1, scrollHeight - viewportHeight);
-    const scrollPercent = scrollY / scrollMax;
     const now = performance.now();
     
-    if (!focusState.mapBuilt) {
+    if (!focusState.mapBuilt && !focusState.mapPending) {
         buildTerritoryMap();
     }
+
+    const viewportHeight = focusState.viewportHeight;
+    const scrollMax = Math.max(1, focusState.scrollHeight - viewportHeight);
+    const scrollPercent = scrollY / scrollMax;
 
     const isLocked = programmatic.isSticky();
     const isAnimating = programmatic.isActive();
@@ -349,24 +397,21 @@ function updateFocus(forceReport = false) {
     let newStationIndex = -1;
     let activeBlockIndex = -1;
 
-    // --- 1. Focus Determination ---
+    // --- 1. Focus Determination (Optimized Binary Search) ---
     if (isLocked && targetId) {
         newStationIndex = focusState.stations.findIndex(s => (s.type + "-" + s.id) === targetId || s.id === targetId);
     } else if (!isAnimating && focusState.stations.length > 0) {
         let idx = focusState.currentStationIndex;
-        if (idx === -1) {
-            idx = focusState.boundaries.findIndex(b => scrollY <= b);
-            if (idx === -1) idx = focusState.stations.length - 1;
-        } else {
-            const lowerBound = idx === 0 ? 0 : focusState.boundaries[idx - 1];
-            const upperBound = focusState.boundaries[idx];
-            if (scrollY > upperBound + 100 || scrollY < lowerBound - 100) {
-                idx = focusState.boundaries.findIndex(b => scrollY <= b);
-                if (idx === -1) idx = focusState.stations.length - 1;
-            } else {
-                if (scrollY > upperBound + HYSTERESIS_THRESHOLD && idx < focusState.stations.length - 1) idx++;
-                else if (scrollY < lowerBound - HYSTERESIS_THRESHOLD && idx > 0) idx--;
-            }
+        const boundaries = focusState.boundaries;
+        
+        // Hysteresis Check: Only perform search if we've moved significantly
+        const lowerBound = idx <= 0 ? 0 : boundaries[idx - 1];
+        const upperBound = idx === -1 ? -1 : boundaries[idx];
+        
+        if (idx === -1 || scrollY > upperBound + HYSTERESIS_THRESHOLD || scrollY < lowerBound - HYSTERESIS_THRESHOLD) {
+            // Binary search is O(log N) vs O(N) for findIndex
+            idx = binarySearch(boundaries, scrollY);
+            if (idx >= focusState.stations.length) idx = focusState.stations.length - 1;
         }
 
         const owner = focusState.stations[idx];
@@ -376,37 +421,44 @@ function updateFocus(forceReport = false) {
         if (isOwnerVisible) {
             newStationIndex = idx;
         } else if (owner) {
+            // No-allocation visibility search (avoids slice/reverse/find)
             if (owner.y < scrollY) {
-                const nextVisible = focusState.stations.slice(idx + 1).find(m => 
-                    (m.y >= scrollY - VISIBILITY_BUFFER) && (m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER)
-                );
-                if (nextVisible) newStationIndex = focusState.stations.indexOf(nextVisible);
+                for (let i = idx + 1; i < focusState.stations.length; i++) {
+                    const m = focusState.stations[i];
+                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER) {
+                        newStationIndex = i;
+                        break;
+                    }
+                    if (m.y > scrollY + viewportHeight + VISIBILITY_BUFFER) break;
+                }
             } else {
-                const prevVisible = focusState.stations.slice(0, idx).reverse().find(m => 
-                    (m.y >= scrollY - VISIBILITY_BUFFER) && (m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER)
-                );
-                if (prevVisible) newStationIndex = focusState.stations.indexOf(prevVisible);
+                for (let i = idx - 1; i >= 0; i--) {
+                    const m = focusState.stations[i];
+                    if (m.y >= scrollY - VISIBILITY_BUFFER && m.y <= scrollY + viewportHeight + VISIBILITY_BUFFER) {
+                        newStationIndex = i;
+                        break;
+                    }
+                    if (m.y < scrollY - VISIBILITY_BUFFER) break;
+                }
             }
         }
     }
 
-    // --- 2. Block Tracking ---
+    // --- 2. Block Tracking (Optimized O(1) hit test + Spatial Throttling) ---
     if (!isAnimating) {
-        const blockEyeLine = scrollY + (viewportHeight * EYE_LINE_RATIO); 
-        let minBlockDist = Infinity;
-        
-        focusState.blockPositions.forEach((pos, i) => {
-            const top = pos.top;
-            const bottom = pos.bottom;
-            let distance = 0;
-            if (blockEyeLine < top) distance = top - blockEyeLine;
-            else if (blockEyeLine > bottom) distance = blockEyeLine - bottom;
+        // Only hit-test if we've moved significantly or haven't checked yet
+        if (Math.abs(scrollY - focusState.lastBlockCheckY) > 20 || focusState.currentBlockIndex === -1) {
+            const centerX = window.innerWidth / 2; // Fixed cost
+            const elementAtPoint = document.elementFromPoint(centerX, focusState.eyeLineY);
+            const activeBlock = elementAtPoint?.closest('[id^="block-"]');
             
-            if (distance < minBlockDist) { 
-                minBlockDist = distance; 
-                activeBlockIndex = i; 
+            if (activeBlock) {
+                activeBlockIndex = parseInt(activeBlock.id.replace("block-", ""), 10) - 1;
             }
-        });
+            focusState.lastBlockCheckY = scrollY;
+        } else {
+            activeBlockIndex = focusState.currentBlockIndex;
+        }
     }
 
     // --- 3. Lazy Reporting Logic ---
@@ -434,18 +486,19 @@ function updateFocus(forceReport = false) {
         reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, false);
     }
 
-    // --- 4. Idle Heartbeat (Final persistence safety) ---
-    clearTimeout(focusState.idleTimeout);
-    focusState.idleTimeout = setTimeout(() => {
-        const latestScrollY = window.scrollY;
-        const scrollMaxLatest = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-        const latestScrollPercent = latestScrollY / scrollMaxLatest;
-        
-        // Final sync if we've moved since the last report
-        if (Math.abs(latestScrollY - focusState.lastReportedScrollY) > 5) {
-            reportToNative(latestScrollY, latestScrollPercent, window.innerHeight, programmatic.isSticky(), false);
-        }
-    }, 1000);
+    // --- 4. Debounced Heartbeat ---
+    if (forceReport || hasChangedFocus || hasChangedBlock || timeSinceLastReport > 1000) {
+        clearTimeout(focusState.idleTimeout);
+        focusState.idleTimeout = setTimeout(() => {
+            const latestScrollY = window.scrollY;
+            const scrollMaxLatest = Math.max(1, focusState.scrollHeight - focusState.viewportHeight);
+            const latestScrollPercent = latestScrollY / scrollMaxLatest;
+            
+            if (Math.abs(latestScrollY - focusState.lastReportedScrollY) > 5) {
+                reportToNative(latestScrollY, latestScrollPercent, focusState.viewportHeight, programmatic.isSticky(), false);
+            }
+        }, 1000);
+    }
 }
 
 function reportToNative(scrollY, scrollPercent, viewportHeight, isLocked, shouldPulse) {
@@ -555,11 +608,14 @@ function pulseMarker(element) {
     const colorVariable = element.classList.contains('image-marker') ? '--iris' : '--rose';
     element.style.setProperty('--highlight-color', 'var(' + colorVariable + ')');
     element.classList.remove('marker-pulse');
-    void element.offsetWidth; // Trigger reflow
-    element.classList.add('marker-pulse');
-    setTimeout(() => {
-        element.classList.remove('marker-pulse');
-    }, 650);
+    
+    // Use requestAnimationFrame to avoid layout thrashing while still allowing animation restart
+    requestAnimationFrame(() => {
+        element.classList.add('marker-pulse');
+        setTimeout(() => {
+            element.classList.remove('marker-pulse');
+        }, 650);
+    });
 }
 
 /**
@@ -649,22 +705,20 @@ function scrollToAnnotation(id) {
 }
 
 function scrollToBlock(id, markerId, type) {
-    const blocks = getBlocks();
-    if (id > 0 && id <= blocks.length) {
-        const block = blocks[id - 1];
-        const targetId = markerId && type ? `${type}-${markerId}` : `block-${id}`;
-        
-        performSmoothScroll(block, EYE_LINE_RATIO, targetId);
-        
-        // Target Hijacking: If this scroll is for a specific insight/image, highlight the marker instead of the block
-        if (markerId && type) {
-            const marker = document.querySelector(`[data-${type}-id="${markerId}"]`);
-            if (marker) {
-                highlightMarker(marker);
-            }
-        } else {
-            highlightBlock(block);
+    const block = getBlockByIdOrIndex(id);
+    if (!block) return;
+    const targetId = markerId && type ? `${type}-${markerId}` : `block-${id}`;
+    
+    performSmoothScroll(block, EYE_LINE_RATIO, targetId);
+    
+    // Target Hijacking: If this scroll is for a specific insight/image, highlight the marker instead of the block
+    if (markerId && type) {
+        const marker = document.querySelector(`[data-${type}-id="${markerId}"]`);
+        if (marker) {
+            highlightMarker(marker);
         }
+    } else {
+        highlightBlock(block);
     }
 }
 
@@ -850,33 +904,29 @@ function handleGenerateImage() {
 
 // Marker Injections (Triggered by Native App)
 function injectMarkerAtBlock(annotationId, blockIndex) { 
-    const blocks = getBlocks(); 
-    if (blockIndex > 0 && blockIndex <= blocks.length) { 
-        const marker = document.createElement('span'); 
-        marker.className = 'annotation-marker'; 
-        marker.dataset.annotationId = annotationId; 
-        marker.dataset.blockId = blockIndex; 
-        
-        blocks[blockIndex - 1].appendChild(marker);
-        
-        // Rebuild map as DOM has changed
-        buildTerritoryMap();
-        updateFocus();
-    } 
+    const block = getBlockByIdOrIndex(blockIndex);
+    if (!block) return;
+    const marker = document.createElement('span'); 
+    marker.className = 'annotation-marker'; 
+    marker.dataset.annotationId = annotationId; 
+    marker.dataset.blockId = blockIndex; 
+    
+    block.appendChild(marker);
+    
+    // Lazy rebuild as DOM has changed
+    scheduleMapRebuild();
 }
 
 function injectImageMarker(imageId, blockIndex) { 
-    const blocks = getBlocks(); 
-    if (blockIndex > 0 && blockIndex <= blocks.length) { 
-        const marker = document.createElement('span'); 
-        marker.className = 'image-marker'; 
-        marker.dataset.imageId = imageId; 
-        marker.dataset.blockId = blockIndex; 
-        
-        blocks[blockIndex - 1].appendChild(marker);
-        
-        // Rebuild map as DOM has changed
-        buildTerritoryMap();
-        updateFocus();
-    } 
-}
+    const block = getBlockByIdOrIndex(blockIndex);
+    if (!block) return;
+    const marker = document.createElement('span'); 
+    marker.className = 'image-marker'; 
+    marker.dataset.imageId = imageId; 
+    marker.dataset.blockId = blockIndex; 
+    
+    block.appendChild(marker);
+    
+    // Lazy rebuild as DOM has changed
+    scheduleMapRebuild();
+} 
