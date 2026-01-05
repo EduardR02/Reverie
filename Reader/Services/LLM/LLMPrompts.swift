@@ -26,7 +26,8 @@ enum PromptLibrary {
         contentWithBlocks: String,
         rollingSummary: String?,
         insightDensity: DensityLevel,
-        imageDensity: DensityLevel?
+        imageDensity: DensityLevel?,
+        wordCount: Int
     ) -> LLMRequestPrompt {
 
         let imageSection: String
@@ -49,28 +50,48 @@ Skip if nothing merits visualization.
         }
 
         let prompt = """
-You're helping a thoughtful reader get more from this chapter. Think of yourself as a well-read friend who notices things they might miss.
+## The Chapter
 
-## What Makes a Good Insight
+Context: \(rollingSummary ?? "This is the beginning of the book.")
 
-GOOD insights bring something from OUTSIDE the text:
-- Real science/engineering that illuminates the fiction (or reveals where it diverges)
-- Historical events, figures, periods that connect to the text
-- Connections to other works, authors, mythology, intellectual traditions
-- The philosophical tradition or thought experiment being engaged (name it specifically)
-- In-universe implications the author left unstated (fiction only)
+Text (blocks numbered for margin placement):
+\(contentWithBlocks)
 
-BAD insights explain what the story already told us:
-- Restating the plot's central mechanism ("The twist reveals X" - we read the twist)
-- Explaining why a character did something when the text made it clear
-- Noting the obvious stakes or conflict
-- Any insight an attentive reader would have on their own
+---
 
-The test: Does this require knowledge or perspective the TEXT ITSELF doesn't provide?
-- If you're explaining what happened → bad
-- If you're connecting it to something external → potentially good
+## What You're Looking For
 
-## Examples
+Insights that bring knowledge from OUTSIDE the text. Be specific—names, dates, sources.
+
+**Science/Engineering**
+- Real physics, biology, chemistry, engineering that illuminates or contradicts the fiction
+- Specific: "Bussard ramjets were proposed by Robert Bussard in 1960 using interstellar hydrogen..."
+- Not: "The science in this chapter is interesting"
+
+**History**
+- Actual events, figures, periods that connect to the narrative
+- Specific: "The political situation mirrors the Weimar Republic's final years, when..."
+- Not: "This has historical parallels"
+
+**Philosophy**
+- Named thought experiments, philosophical traditions, specific thinkers
+- Specific: "This is essentially Newcomb's problem, formulated by William Newcomb in 1960..."
+- Not: "Raises questions about free will"
+
+**Connections**
+- Specific other works, authors, mythological traditions
+- Specific: "Borges' 'The Garden of Forking Paths' (1941) explores identical territory..."
+- Not: "Echoes other science fiction"
+
+**World-Building** (fiction only)
+- In-universe implications the author left unstated
+- Must require inference beyond what's explicitly on the page
+
+---
+
+## The Quality Bar
+
+The test: Does this require knowledge the TEXT ITSELF doesn't provide?
 
 EXCELLENT:
 {
@@ -93,37 +114,41 @@ GENERIC (never do this):
   "title": "Questions of identity",
   "content": "The author explores themes of identity and what it means to be human."
 }
+→ Fails: vague, could apply to any book, names nothing specific
 
 OBVIOUS (equally bad):
 {
   "type": "science",
   "title": "Why FTL was necessary",
-  "content": "The story shows that without faster-than-light travel, the crew couldn't reach their destination in time. This is why the ending works."
+  "content": "The story shows that without faster-than-light travel, the crew couldn't reach their destination in time."
 }
-This fails because the story ITSELF made this clear. The reader understood it. You're explaining the punchline.
+→ Fails: the reader understood this from the text
 
-## The Chapter
+---
 
-Context: \(rollingSummary ?? "This is the beginning of the book.")
+## Your Approach
 
-Text (blocks numbered for margin placement):
-\(contentWithBlocks)
+Use your thinking to work through this systematically:
+
+1. **SCAN**: Read the chapter and identify 10-15 moments where external knowledge would genuinely illuminate the text—scientific claims, historical parallels, philosophical positions, literary echoes.
+
+2. **EVALUATE**: For each candidate, ask: "Could an attentive reader figure this out from the text alone?" If yes, discard it.
+
+3. **RESEARCH**: For survivors, recall the specific external knowledge. Not "this relates to philosophy" but the actual names, dates, works, and facts.
+
+4. **GENERATE**: Only output insights that bring genuinely external knowledge. Be specific. Name names. If you can't be specific, skip it.
+
+\(insightDensity.proportionalGuidance(wordCount: wordCount))
+
+---
 
 ## Output
 
-Generate insights. Density: \(insightDensity.insightGuidance)
-
-For each:
+For each insight:
 - type: science | history | philosophy | connection | world
-- title: Specific and intriguing
-- content: Add real information or a genuine new perspective
-- sourceBlockId: Where should this appear in the margin? The insight can reference anything—other passages, external knowledge, broad themes—the block ID is just placement, indicating where the reader would benefit from seeing this note.
-
-Quality bar: The reader should learn something they COULDN'T have gotten from the text alone.
-- "I didn't know that" (external fact)
-- "I didn't make that connection" (to other works/ideas)
-
-If they could have figured it out just by reading carefully, skip it.
+- title: Specific and intriguing (not generic)
+- content: Real information with specifics—names, dates, works
+- sourceBlockId: Block number [N] where this should appear in the margin
 
 ## Quiz
 
@@ -141,6 +166,23 @@ Each: question, answer, sourceBlockId.
 2-3 sentences: what happened and what matters for understanding the rest.
 """
 
+        return LLMRequestPrompt(text: prompt)
+    }
+
+    // MARK: - Summary Only
+
+    static func summaryPrompt(
+        contentWithBlocks: String,
+        rollingSummary: String?
+    ) -> LLMRequestPrompt {
+        let prompt = """
+Summarize this chapter in 2-3 sentences: what happened and what matters for understanding the rest.
+
+Context: \(rollingSummary ?? "This is the beginning of the book.")
+
+Chapter:
+\(contentWithBlocks)
+"""
         return LLMRequestPrompt(text: prompt)
     }
 

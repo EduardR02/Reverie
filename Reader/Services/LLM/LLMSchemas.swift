@@ -122,6 +122,16 @@ enum SchemaLibrary {
         )
     )
 
+    static let summaryOnly = LLMStructuredSchema(
+        name: "chapter_summary",
+        schema: JSONSchemaBuilder.object(
+            properties: [
+                "summary": JSONSchemaBuilder.string(description: "2-3 sentence chapter summary.")
+            ],
+            required: ["summary"]
+        )
+    )
+
     static let chapterClassification = LLMStructuredSchema(
         name: "chapter_classification",
         schema: JSONSchemaBuilder.object(

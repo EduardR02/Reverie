@@ -2,9 +2,9 @@ import SwiftUI
 
 struct ProcessBookView: View {
     let book: Book
-    @Binding var isProcessing: Bool
-    @Binding var progress: Double
-    @Binding var currentChapter: String
+    let isProcessing: Bool
+    let progress: Double
+    let currentChapter: String
     let onStart: () -> Void
     let onClose: () -> Void
     let onStop: () -> Void
@@ -326,10 +326,12 @@ struct ProcessBookView: View {
                 .buttonStyle(SecondaryButtonStyle())
                 .frame(maxWidth: .infinity)
 
-                Button("Stop") {
+                Button {
                     onStop()
+                } label: {
+                    Label("Cancel", systemImage: "xmark")
                 }
-                .buttonStyle(StopButtonStyle())
+                .buttonStyle(CancelButtonStyle())
                 .frame(maxWidth: .infinity)
             } else {
                 Button("Cancel") {
@@ -621,18 +623,23 @@ private struct MetricCard: View {
     }
 }
 
-private struct StopButtonStyle: ButtonStyle {
+private struct CancelButtonStyle: ButtonStyle {
     @Environment(\.theme) private var theme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .bold))
-            .foregroundColor(theme.base)
-            .padding(.horizontal, 20)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(theme.love)
+            .padding(.horizontal, 18)
             .padding(.vertical, 10)
-            .background(theme.love)
+            .background(theme.love.opacity(0.12))
             .clipShape(Capsule())
-            .opacity(configuration.isPressed ? 0.8 : 1.0)
+            .overlay(
+                Capsule()
+                    .stroke(theme.love.opacity(0.35), lineWidth: 1)
+            )
+            .shadow(color: theme.love.opacity(0.15), radius: 6, y: 2)
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
     }
 }
 

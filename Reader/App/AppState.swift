@@ -44,6 +44,15 @@ final class AppState {
     }
     var splitRatio: CGFloat = 0.65  // Persisted
 
+    // Processing State
+    var isProcessingBook = false
+    var processingProgress: Double = 0
+    var processingChapter: String = ""
+    var processingBookId: Int64?
+    var processingTotalChapters: Int = 0
+    var processingCompletedChapters: Int = 0
+    var processingTask: Task<Void, Never>?
+
     // Services
     let database: DatabaseService
     let llmService: LLMService
@@ -461,6 +470,28 @@ enum DensityLevel: String, Codable, CaseIterable {
         case .high: return "Illustration-heavy"
         case .xhigh: return "Maximal"
         }
+    }
+
+    /// Words per insight target for each density level
+    private var wordsPerInsight: Int {
+        switch self {
+        case .minimal: return 2000
+        case .low: return 1200
+        case .medium: return 800
+        case .high: return 500
+        case .xhigh: return 300
+        }
+    }
+
+    /// Returns proportional guidance string based on chapter word count
+    func proportionalGuidance(wordCount: Int) -> String {
+        let target = max(3, wordCount / wordsPerInsight)
+        let minTarget = max(2, target - 2)
+        let maxTarget = target + 3
+
+        return """
+        This chapter is ~\(wordCount) words. For \(rawValue) density, aim for roughly \(minTarget)-\(maxTarget) insights—but only if the content supports it. Fewer quality insights beats padding with generic observations.
+        """
     }
 }
 

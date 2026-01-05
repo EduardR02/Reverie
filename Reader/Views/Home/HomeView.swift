@@ -12,13 +12,6 @@ struct HomeView: View {
 
     // Process full book
     @State private var bookToProcess: Book?
-    @State private var isProcessingBook = false
-    @State private var processingProgress: Double = 0
-    @State private var processingChapter: String = ""
-    @State private var processingBookId: Int64?
-    @State private var processingTotalChapters: Int = 0
-    @State private var processingCompletedChapters: Int = 0
-    @State private var processingTask: Task<Void, Never>?
 
     // Import error handling
     @State private var importError: String?
@@ -63,9 +56,9 @@ struct HomeView: View {
         .sheet(item: $bookToProcess) { book in
             ProcessBookView(
                 book: book,
-                isProcessing: $isProcessingBook,
-                progress: $processingProgress,
-                currentChapter: $processingChapter,
+                isProcessing: appState.isProcessingBook,
+                progress: appState.processingProgress,
+                currentChapter: appState.processingChapter,
                 onStart: {
                     startProcessing(book)
                 },
@@ -251,22 +244,22 @@ struct HomeView: View {
     }
 
     private func processingStatus(for book: Book) -> BookProcessingStatus? {
-        guard isProcessingBook,
+        guard appState.isProcessingBook,
               let bookId = book.id,
-              bookId == processingBookId else {
+              bookId == appState.processingBookId else {
             return nil
         }
 
         return BookProcessingStatus(
-            progress: processingProgress,
-            completedChapters: processingCompletedChapters,
-            totalChapters: processingTotalChapters
+            progress: appState.processingProgress,
+            completedChapters: appState.processingCompletedChapters,
+            totalChapters: appState.processingTotalChapters
         )
     }
 
     private func handleProcessRequest(_ book: Book) {
-        if isProcessingBook {
-            if let activeId = processingBookId,
+        if appState.isProcessingBook {
+            if let activeId = appState.processingBookId,
                let activeBook = books.first(where: { $0.id == activeId }) {
                 bookToProcess = activeBook
             } else {
@@ -279,14 +272,14 @@ struct HomeView: View {
     }
 
     private func startProcessing(_ book: Book) {
-        guard !isProcessingBook else { return }
-        processingTask?.cancel()
-        processingTask = Task { await processFullBook(book) }
+        guard !appState.isProcessingBook else { return }
+        appState.processingTask?.cancel()
+        appState.processingTask = Task { await processFullBook(book) }
     }
 
     private func cancelProcessing() {
-        processingChapter = "Stopping..."
-        processingTask?.cancel()
+        appState.processingChapter = "Stopping..."
+        appState.processingTask?.cancel()
     }
 
     private func deleteBook(_ book: Book) {
@@ -544,128 +537,158 @@ struct HomeView: View {
         return text?.range(of: "<svg", options: .caseInsensitive) != nil
     }
 
+    private struct InsightWorkItem {
+        let chapter: Chapter
+        let blocks: [ContentBlock]
+        let contentWithBlocks: String
+        let rollingSummary: String?
+    }
+
+    private func appendRollingSummary(_ existing: String?, summary: String) -> String? {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return existing }
+        if let existing, !existing.isEmpty {
+            return existing + "\n\n" + trimmed
+        }
+        return trimmed
+    }
+
     private func processFullBook(_ book: Book) async {
-        isProcessingBook = true
-        processingBookId = book.id
-        processingProgress = 0
-        processingChapter = "Preparing..."
-        processingCompletedChapters = 0
-        processingTotalChapters = 0
+        appState.isProcessingBook = true
+        appState.processingBookId = book.id
+        appState.processingProgress = 0
+        appState.processingChapter = "Preparing..."
+        appState.processingCompletedChapters = 0
+        appState.processingTotalChapters = 0
         defer {
-            isProcessingBook = false
-            processingTask = nil
-            processingBookId = nil
+            appState.isProcessingBook = false
+            appState.processingTask = nil
+            appState.processingBookId = nil
         }
         var didCancel = false
+        var pendingInsightTask: Task<Void, Error>?
+        var pendingInsightTitle: String?
+
+        func awaitPendingInsight() async throws {
+            guard let task = pendingInsightTask else { return }
+            appState.processingChapter = pendingInsightTitle.map { "Insights: \($0)" } ?? "Finishing insights..."
+            try await task.value
+            pendingInsightTask = nil
+            pendingInsightTitle = nil
+        }
+
+        func cancelPendingInsight() async {
+            guard let task = pendingInsightTask else { return }
+            task.cancel()
+            _ = try? await task.value
+            pendingInsightTask = nil
+            pendingInsightTitle = nil
+        }
 
         do {
+            guard let bookId = book.id else { return }
             let chapters = try appState.database.fetchChapters(for: book)
-            var rollingSummary: String? = nil
             let chaptersToProcess = chapters.filter { !$0.processed && !$0.shouldSkipAutoProcessing }
-            processingTotalChapters = chaptersToProcess.count
+            appState.processingTotalChapters = chaptersToProcess.count
 
             if chaptersToProcess.isEmpty {
-                processingProgress = 1.0
-                processingChapter = "Complete!"
+                appState.processingProgress = 1.0
+                appState.processingChapter = "Complete!"
             }
 
-            for (index, chapter) in chaptersToProcess.enumerated() {
+            let blockParser = ContentBlockParser()
+            var rollingSummary: String?
+
+            for chapter in chapters {
                 if Task.isCancelled {
                     didCancel = true
                     break
                 }
 
-                processingChapter = chapter.title
-                processingProgress = Double(index) / Double(max(1, chaptersToProcess.count))
+                if chapter.shouldSkipAutoProcessing {
+                    continue
+                }
 
-                // Parse chapter into blocks
-                let blockParser = ContentBlockParser()
+                if chapter.processed {
+                    if let summary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !summary.isEmpty {
+                        rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
+                    }
+                    continue
+                }
+
+                appState.processingChapter = "Summarizing: \(chapter.title)"
+                appState.processingProgress = Double(appState.processingCompletedChapters)
+                    / Double(max(1, appState.processingTotalChapters))
+
                 let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
+                let chapterRollingSummary = rollingSummary
 
-                // Process chapter
-                let analysis = try await appState.llmService.analyzeChapter(
-                    contentWithBlocks: contentWithBlocks,
-                    rollingSummary: rollingSummary,
-                    settings: appState.settings
-                )
-
-                if Task.isCancelled {
-                    didCancel = true
-                    break
-                }
-
-                // Save annotations
-                for data in analysis.annotations {
-                    let type = AnnotationType(rawValue: data.type) ?? .science
-                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
-                        ? data.sourceBlockId : 1
-                    var annotation = Annotation(
-                        chapterId: chapter.id!,
-                        type: type,
-                        title: data.title,
-                        content: data.content,
-                        sourceBlockId: validBlockId
+                let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let reuseSummary = (existingSummary?.isEmpty == false) && chapter.rollingSummary == chapterRollingSummary
+                let summary = reuseSummary
+                    ? (existingSummary ?? "")
+                    : try await appState.llmService.generateSummary(
+                        contentWithBlocks: contentWithBlocks,
+                        rollingSummary: chapterRollingSummary,
+                        settings: appState.settings
                     )
-                    try appState.database.saveAnnotation(&annotation)
-                }
 
-                // Save quizzes
-                for data in analysis.quizQuestions {
-                    let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count
-                        ? data.sourceBlockId : 1
-                    var quiz = Quiz(
-                        chapterId: chapter.id!,
-                        question: data.question,
-                        answer: data.answer,
-                        sourceBlockId: validBlockId
-                    )
-                    try appState.database.saveQuiz(&quiz)
-                }
-
-                if Task.isCancelled {
-                    didCancel = true
-                    break
-                }
-
-                await generateSuggestedImages(
-                    analysis.imageSuggestions,
-                    blockCount: blocks.count,
-                    bookId: book.id!,
-                    chapterId: chapter.id!
-                )
-
-                if Task.isCancelled {
-                    didCancel = true
-                    break
-                }
-
-                // Update chapter with block info
                 var updatedChapter = chapter
-                updatedChapter.processed = true
-                updatedChapter.summary = analysis.summary
-                updatedChapter.rollingSummary = rollingSummary
+                updatedChapter.summary = summary
+                updatedChapter.rollingSummary = chapterRollingSummary
                 updatedChapter.contentText = contentWithBlocks
                 updatedChapter.blockCount = blocks.count
                 try appState.database.saveChapter(&updatedChapter)
 
-                processingCompletedChapters += 1
-                processingProgress = Double(processingCompletedChapters) / Double(max(1, chaptersToProcess.count))
+                rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
 
-                // Build rolling summary for next chapter
-                if let summary = rollingSummary {
-                    rollingSummary = summary + "\n\n" + analysis.summary
-                } else {
-                    rollingSummary = analysis.summary
+                do {
+                    try await awaitPendingInsight()
+                } catch is CancellationError {
+                    didCancel = true
+                    break
+                }
+
+                if Task.isCancelled {
+                    didCancel = true
+                    break
+                }
+
+                let workItem = InsightWorkItem(
+                    chapter: updatedChapter,
+                    blocks: blocks,
+                    contentWithBlocks: contentWithBlocks,
+                    rollingSummary: chapterRollingSummary
+                )
+                pendingInsightTitle = chapter.title
+                pendingInsightTask = Task { @MainActor in
+                    try await processInsights(for: workItem, bookId: bookId)
                 }
             }
 
             if didCancel {
-                processingChapter = "Cancelled"
+                await cancelPendingInsight()
+                appState.processingChapter = "Cancelled"
+                return
+            }
+
+            do {
+                try await awaitPendingInsight()
+            } catch is CancellationError {
+                didCancel = true
+                await cancelPendingInsight()
+                appState.processingChapter = "Cancelled"
+                return
+            }
+
+            if didCancel {
+                appState.processingChapter = "Cancelled"
                 return
             }
 
             // Mark book as fully processed if all eligible chapters were done
-            if processingCompletedChapters == chaptersToProcess.count {
+            if appState.processingCompletedChapters == chaptersToProcess.count {
                 // Fetch fresh copy to avoid overwriting background classification status
                 if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
                     updatedBook.processedFully = true
@@ -677,18 +700,85 @@ struct HomeView: View {
                 }
             }
 
-            processingProgress = 1.0
-            processingChapter = "Complete!"
+            appState.processingProgress = 1.0
+            appState.processingChapter = "Complete!"
 
             await loadBooks()
 
         } catch {
+            await cancelPendingInsight()
             if error is CancellationError {
-                processingChapter = "Cancelled"
+                appState.processingChapter = "Cancelled"
                 return
             }
             print("Failed to process book: \(error)")
         }
+    }
+
+    @MainActor
+    private func processInsights(
+        for workItem: InsightWorkItem,
+        bookId: Int64
+    ) async throws {
+        guard let chapterId = workItem.chapter.id else { return }
+
+        let analysis = try await appState.llmService.analyzeChapter(
+            contentWithBlocks: workItem.contentWithBlocks,
+            rollingSummary: workItem.rollingSummary,
+            settings: appState.settings
+        )
+
+        if Task.isCancelled { throw CancellationError() }
+
+        for data in analysis.annotations {
+            let type = AnnotationType(rawValue: data.type) ?? .science
+            let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= workItem.blocks.count
+                ? data.sourceBlockId : 1
+            var annotation = Annotation(
+                chapterId: chapterId,
+                type: type,
+                title: data.title,
+                content: data.content,
+                sourceBlockId: validBlockId
+            )
+            try appState.database.saveAnnotation(&annotation)
+        }
+
+        for data in analysis.quizQuestions {
+            let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= workItem.blocks.count
+                ? data.sourceBlockId : 1
+            var quiz = Quiz(
+                chapterId: chapterId,
+                question: data.question,
+                answer: data.answer,
+                sourceBlockId: validBlockId
+            )
+            try appState.database.saveQuiz(&quiz)
+        }
+
+        if Task.isCancelled { throw CancellationError() }
+
+        await generateSuggestedImages(
+            analysis.imageSuggestions,
+            blockCount: workItem.blocks.count,
+            bookId: bookId,
+            chapterId: chapterId
+        )
+
+        if Task.isCancelled { throw CancellationError() }
+
+        var updatedChapter = workItem.chapter
+        updatedChapter.processed = true
+        if updatedChapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            updatedChapter.summary = analysis.summary
+        }
+        updatedChapter.contentText = workItem.contentWithBlocks
+        updatedChapter.blockCount = workItem.blocks.count
+        try appState.database.saveChapter(&updatedChapter)
+
+        appState.processingCompletedChapters += 1
+        appState.processingProgress = Double(appState.processingCompletedChapters)
+            / Double(max(1, appState.processingTotalChapters))
     }
 
     private func generateSuggestedImages(
@@ -698,6 +788,7 @@ struct HomeView: View {
         chapterId: Int64
     ) async {
         guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
+        if Task.isCancelled { return }
 
         let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
@@ -716,6 +807,7 @@ struct HomeView: View {
             apiKey: trimmedKey,
             maxConcurrent: 5
         )
+        if Task.isCancelled { return }
 
         await storeGeneratedImages(
             results,
@@ -748,6 +840,7 @@ struct HomeView: View {
         chapterId: Int64
     ) async {
         for result in results {
+            if Task.isCancelled { return }
             do {
                 let imagePath = try appState.imageService.saveImage(
                     result.imageData,

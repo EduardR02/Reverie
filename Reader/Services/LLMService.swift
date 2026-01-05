@@ -116,11 +116,15 @@ final class LLMService {
         rollingSummary: String?,
         settings: UserSettings
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
+        // Calculate word count for proportional guidance
+        let wordCount = contentWithBlocks.split { $0.isWhitespace || $0.isNewline }.count
+
         let prompt = PromptLibrary.analysisPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
             insightDensity: settings.insightDensity,
-            imageDensity: settings.imagesEnabled ? settings.imageDensity : nil
+            imageDensity: settings.imagesEnabled ? settings.imageDensity : nil,
+            wordCount: wordCount
         )
 
         let stream = streamResponse(
@@ -205,6 +209,42 @@ final class LLMService {
             throw LLMError.invalidResponse
         }
         return finalAnalysis
+    }
+
+    // MARK: - Generate Summary (Fast Path)
+
+    private struct SummaryResponse: Codable {
+        let summary: String
+    }
+
+    /// Generates just the chapter summary using the cheapest available model.
+    /// This enables pipelining: summary for chapter N+1 can start as soon as
+    /// summary for chapter N completes, without waiting for insights.
+    func generateSummary(
+        contentWithBlocks: String,
+        rollingSummary: String?,
+        settings: UserSettings
+    ) async throws -> String {
+        let prompt = PromptLibrary.summaryPrompt(
+            contentWithBlocks: contentWithBlocks,
+            rollingSummary: rollingSummary
+        )
+
+        // Always use cheapest model for summary generation
+        let (provider, model, key) = classificationModelSelection(settings: settings)
+
+        let response: SummaryResponse = try await requestStructured(
+            prompt: prompt,
+            schema: SchemaLibrary.summaryOnly,
+            provider: provider,
+            model: model,
+            apiKey: key,
+            temperature: 0.3,
+            reasoning: .off,
+            nameHint: "chapter_summary"
+        )
+
+        return response.summary
     }
 
     // MARK: - Search Query Distillation
