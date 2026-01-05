@@ -1,58 +1,60 @@
-# Coding Agent Rules
+# Reader App
 
-## CRITICAL SAFETY
-- NEVER delete files via shell commands. If deletion is needed, inform the user and let them handle it.
+A native macOS book reader with AI-generated insights. The only thing that matters is **insight quality**. If the annotations are generic "AI slop," the project is worthless. Every decision - architecture, UI, performance - serves delivering insights that go *beyond* the text: real science, historical context, connections to other works, philosophical depth. Not plot summaries. Not "explores themes of identity." Knowledge the reader couldn't get from the book alone.
 
-## Core Philosophy
-- **Simple > Clever**: If you can't explain it in one sentence, refactor it.
-- **Fast by default**: Performance is a design decision, not an afterthought.
-- **Ground-up thinking**: Fix foundations, not symptoms.
-- **Delete before adding**: The best code is code you don't have to write.
+## Truth Sources
 
-## Code Quality Standards
+Model APIs evolve faster than training data. Before making assumptions about APIs or models:
 
-**Architecture**
-- Identify the actual problem before touching code.
-- Look for systemic issues. If you're fixing the same type of bug twice, the architecture is wrong.
-- Prefer composition over inheritance. Prefer functions over classes when possible.
-- Dependencies should be explicit, minimal, and justified.
+- **`Agents/`** - API docs and working JS reference implementations
+- **`frontend-design-skill.md`** - Required design system for UI work
 
-**Implementation**
-- One function, one purpose. If it has "and" in the description, split it.
-- Three uses minimum before you generalize. Avoid premature abstraction.
-- Error handling with context. Fail fast and loud.
-- Comments explain *why*, not *what*. Clear code doesn't need *what* comments.
+If something seems wrong in these files, ask before assuming it's a bug - the behavior is likely intentional.
 
-**Performance**
-- Know your complexity. Design with scale in mind.
-- Measure before optimizing, but think before measuring.
-- Cache intelligently. Invalidation is the hard part.
+## Hard Rules
 
-**Style**
-- Consistency > personal preference. Match the existing codebase.
-- Names should be obvious. `getUserById` > `fetch` > `get`.
-- Whitespace is free. Use it for clarity.
+**No file deletion via shell.** Inform the user and let them handle it.
 
-## Problem-Solving Process
+**No model downgrades.** If the code has `gemini-3-flash-preview` and you "know" an older version, trust the code. Verify against `Agents/` and notify the user before any model name changes.
 
-1. **Understand**: What's actually broken? Minimal reproduction case?
-2. **Analyze**: Root cause or symptom? What else might be affected?
-3. **Design**: What's the cleanest solution? Can we delete code instead?
-4. **Implement**: Write it right the first time.
-5. **Verify**: Works? Fast enough? Breaks nothing else?
+**No test cheating.** Never hardcode values to pass tests. Never modify existing tests without explicit approval. New features require test coverage (UI-only changes exempt).
 
-## When Adding Features
-- Find the natural place in the architecture. Don't bolt things on.
-- Consider impact on testing, performance, maintainability.
-- If it increases complexity, the value should be clear.
+**Build must pass.** `swift build` and `swift test` must succeed. If the build fails for unrelated reasons, another agent is likely mid-edit - only fix what you broke.
 
-## When Fixing Bugs
-- Find root cause, not symptoms.
-- Ask: "Why did this happen?" If the answer suggests a brittle API, improve the API.
+## How to Write Code
+
+**Rewrite over patch.** If implementing a feature reveals that adjacent code is the root cause of friction, rewrite it properly instead of patching around it. Patches accumulate into unmaintainable code; rewrites fix the foundation. A clean rewrite is fewer lines, better performance, more readable, and won't break next time.
+
+**Eliminate before optimizing.** Before optimizing anything, ask: should this exist? Delete the unnecessary, simplify what remains, then optimize what's left. The fastest code is code that doesn't run.
+
+**Simple and fast.** Simple doesn't mean naive. Think about algorithmic complexity - choose O(n) over O(n²) when the solution is just as clear. Avoid unnecessary allocations, redundant iterations, and work that could be done once instead of repeatedly. Write code that's obvious *and* efficient.
+
+**Trust the code you control.** Validate at system boundaries (user input, external APIs), then trust internal code. If a function's contract guarantees non-nil, don't check for nil. If an internal call can't fail, don't handle failure. No try/catch spam, no redundant guards, no defensive wrappers around your own code.
+
+**Obvious over clever.** Code that needs comments to explain *what* it does is too clever. Fewer lines through intelligence, not compression. Early returns over deep nesting. Named intermediate values over long expressions.
+
+**Generalize late.** Three uses minimum before abstracting. Premature abstraction is worse than duplication.
+
+**Don't add what wasn't asked for.** No unrequested features, no speculative error handling for cases that can't happen, no documentation for code you didn't write. But if the task requires touching adjacent code to do it right, do it right.
+
+## When to Ask
+
+Ask when:
+- Requirements are ambiguous and multiple interpretations would lead to significantly different implementations
+- You're about to do something destructive or hard to reverse
+- You're unsure whether a test failure indicates a bug in your code or a flawed test
+
+Don't ask when:
+- You can figure it out by reading the codebase
+- The choice is minor and easily changed later
+- You're just seeking confirmation for something obvious
+
+## UI
+
+- Native macOS with SwiftUI
+- Rose Pine theme baseline - all UI respects the `Theme` system
+- Navigation stability: programmatic navigation (e.g., clicking an insight to jump to it) takes precedence over passive scroll-tracking to prevent jitter and feedback loops
 
 ## Communication
-- Be direct. "O(n²) complexity" not "might be slow."
-- Explain tradeoffs clearly when proposing changes.
-- Ask when unclear. Assumptions break things.
 
-Every line of code is a liability. Write less, write better. Start with the simplest thing that works, optimize when measurement proves it necessary.
+Be direct. "O(n²) complexity" not "might be slow." State tradeoffs plainly.

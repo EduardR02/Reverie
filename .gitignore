@@ -23,12 +23,5 @@ build/
 Fixtures/
 
 # Local notes and scripts
-api_manager.js
-api_reference.md
-LLMProviders.js
-chat_core.js
-current-plan.md
-2025-12-27-im-thinking-of-making-an-ai-augmented-book-app-on.txt
+Agents/
 frontend-design-skill.md
-image_utils.js
-reboot.md
