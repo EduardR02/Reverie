@@ -26,8 +26,6 @@ struct ReaderView: View {
     @State private var currentAnalysisTask: Task<Void, Never>?
     @State private var currentImageTask: Task<Void, Never>?
     
-    @State private var isGeneratingMore = false
-
     // Scroll sync
     @State private var currentAnnotationId: Int64?
     @State private var currentImageId: Int64?
@@ -200,7 +198,6 @@ struct ReaderView: View {
             liveInsightCount: chapterState.liveInsightCount,
             liveQuizCount: chapterState.liveQuizCount,
             liveThinking: chapterState.liveThinking,
-            isGeneratingMore: isGeneratingMore,
             isClassifying: isClassifying,
             classificationError: classificationError,
             analysisError: chapterState.analysisError,
@@ -910,13 +907,65 @@ struct ReaderView: View {
         }
     }
 
+    @MainActor
+    private func beginInsightProcessing(for chapterId: Int64) {
+        var state = processingStates[chapterId] ?? ChapterProcessingState()
+        state.isProcessingInsights = true
+        state.liveInsightCount = 0
+        state.liveQuizCount = 0
+        state.liveThinking = ""
+        state.analysisError = nil
+        processingStates[chapterId] = state
+    }
+
+    @MainActor
+    private func endInsightProcessing(for chapterId: Int64) {
+        guard var state = processingStates[chapterId] else { return }
+        state.isProcessingInsights = false
+        state.liveThinking = ""
+        processingStates[chapterId] = state
+    }
+
+    private func collectAnalysis(
+        from stream: AsyncThrowingStream<LLMService.ChapterAnalysisStreamEvent, Error>,
+        chapterId: Int64
+    ) async throws -> LLMService.ChapterAnalysis? {
+        var finalAnalysis: LLMService.ChapterAnalysis?
+        var lastThinkingUpdate = Date.distantPast
+
+        for try await event in stream {
+            if Task.isCancelled { throw CancellationError() }
+
+            switch event {
+            case .thinking(let text):
+                if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
+                    await MainActor.run {
+                        processingStates[chapterId]?.liveThinking = text
+                    }
+                    lastThinkingUpdate = Date()
+                }
+            case .insightFound:
+                await MainActor.run {
+                    processingStates[chapterId]?.liveInsightCount += 1
+                }
+            case .quizQuestionFound:
+                await MainActor.run {
+                    processingStates[chapterId]?.liveQuizCount += 1
+                }
+            case .completed(let analysis):
+                finalAnalysis = analysis
+            }
+        }
+
+        return finalAnalysis
+    }
+
     private func processChapter(_ chapter: Chapter) async {
         guard let bookId = appState.currentBook?.id else { return }
         let chapterId = chapter.id!
         
         if processingStates[chapterId]?.isProcessingInsights == true { return }
-        
-        processingStates[chapterId] = ChapterProcessingState(isProcessingInsights: true)
+        beginInsightProcessing(for: chapterId)
         
         currentAnalysisTask = Task {
             do {
@@ -929,35 +978,10 @@ struct ReaderView: View {
                     settings: appState.settings
                 )
                 
-                var finalAnalysis: LLMService.ChapterAnalysis?
-                var lastThinkingUpdate = Date.distantPast
-
-                for try await event in stream {
-                    if Task.isCancelled { return }
-                    
-                    switch event {
-                    case .thinking(let text):
-                        // Throttle UI updates for thinking text to ~10Hz
-                        if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
-                            await MainActor.run {
-                                processingStates[chapterId]?.liveThinking = text
-                            }
-                            lastThinkingUpdate = Date()
-                        }
-                    case .insightFound:
-                        await MainActor.run {
-                            processingStates[chapterId]?.liveInsightCount += 1
-                        }
-                    case .quizQuestionFound:
-                        await MainActor.run {
-                            processingStates[chapterId]?.liveQuizCount += 1
-                        }
-                    case .completed(let analysis):
-                        finalAnalysis = analysis
-                    }
+                guard let analysis = try await collectAnalysis(from: stream, chapterId: chapterId) else {
+                    await MainActor.run { endInsightProcessing(for: chapterId) }
+                    return
                 }
-                
-                guard let analysis = finalAnalysis else { return }
                 
                 let stillOnSameChapter = currentChapter?.id == chapterId
                 var injections: [MarkerInjection] = []
@@ -978,11 +1002,7 @@ struct ReaderView: View {
                 
                 if stillOnSameChapter && !injections.isEmpty { await MainActor.run { pendingMarkerInjections = injections } }
                 
-                await MainActor.run {
-                    processingStates[chapterId]?.isProcessingInsights = false
-                    // Clear reasoning when switching to image phase
-                    processingStates[chapterId]?.liveThinking = ""
-                }
+                await MainActor.run { endInsightProcessing(for: chapterId) }
                 
                 for data in analysis.quizQuestions {
                     let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
@@ -1066,21 +1086,27 @@ struct ReaderView: View {
         }
     }
 
+    @MainActor
     private func startGenerateMoreInsights() {
-        guard let chapterId = currentChapter?.id,
-              processingStates[chapterId]?.isProcessingInsights != true,
-              !isGeneratingMore else { return }
+        guard let chapter = currentChapter, hasLLMKey else { return }
+        let chapterId = chapter.id!
+        guard processingStates[chapterId]?.isProcessingInsights != true else { return }
+
+        beginInsightProcessing(for: chapterId)
         currentAnalysisTask = Task {
-            await generateMoreInsights()
+            await generateMoreInsights(for: chapter)
         }
     }
 
+    @MainActor
     private func startGenerateMoreQuestions() {
-        guard let chapterId = currentChapter?.id,
-              processingStates[chapterId]?.isProcessingInsights != true,
-              !isGeneratingMore else { return }
+        guard let chapter = currentChapter, hasLLMKey else { return }
+        let chapterId = chapter.id!
+        guard processingStates[chapterId]?.isProcessingInsights != true else { return }
+
+        beginInsightProcessing(for: chapterId)
         currentAnalysisTask = Task {
-            await generateMoreQuestions()
+            await generateMoreQuestions(for: chapter)
         }
     }
 
@@ -1099,27 +1125,11 @@ struct ReaderView: View {
         }
     }
 
-    private func generateMoreInsights() async {
-        guard let chapter = currentChapter, hasLLMKey else { return }
+    private func generateMoreInsights(for chapter: Chapter) async {
         let chapterId = chapter.id!
-        await MainActor.run {
-            isGeneratingMore = true
-            var state = processingStates[chapterId] ?? ChapterProcessingState()
-            state.isProcessingInsights = true
-            state.liveInsightCount = 0
-            state.liveQuizCount = 0
-            state.liveThinking = ""
-            state.analysisError = nil
-            processingStates[chapterId] = state
-        }
         defer {
             Task { @MainActor in
-                isGeneratingMore = false
-                if var state = processingStates[chapterId] {
-                    state.isProcessingInsights = false
-                    state.liveThinking = ""
-                    processingStates[chapterId] = state
-                }
+                endInsightProcessing(for: chapterId)
             }
         }
         do {
@@ -1141,33 +1151,7 @@ struct ReaderView: View {
                 existingTitles: existingTitles,
                 settings: appState.settings
             )
-            var finalAnalysis: LLMService.ChapterAnalysis?
-            var lastThinkingUpdate = Date.distantPast
-
-            for try await event in stream {
-                if Task.isCancelled { return }
-                switch event {
-                case .thinking(let text):
-                    if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
-                        await MainActor.run {
-                            processingStates[chapterId]?.liveThinking = text
-                        }
-                        lastThinkingUpdate = Date()
-                    }
-                case .insightFound:
-                    await MainActor.run {
-                        processingStates[chapterId]?.liveInsightCount += 1
-                    }
-                case .quizQuestionFound:
-                    await MainActor.run {
-                        processingStates[chapterId]?.liveQuizCount += 1
-                    }
-                case .completed(let analysis):
-                    finalAnalysis = analysis
-                }
-            }
-
-            guard let analysis = finalAnalysis else { return }
+            guard let analysis = try await collectAnalysis(from: stream, chapterId: chapterId) else { return }
             let stillOnSameChapter = currentChapter?.id == chapterId
             var injections: [MarkerInjection] = []
             for data in analysis.annotations {
@@ -1188,27 +1172,11 @@ struct ReaderView: View {
         }
     }
 
-    private func generateMoreQuestions() async {
-        guard let chapter = currentChapter, hasLLMKey else { return }
+    private func generateMoreQuestions(for chapter: Chapter) async {
         let chapterId = chapter.id!
-        await MainActor.run {
-            isGeneratingMore = true
-            var state = processingStates[chapterId] ?? ChapterProcessingState()
-            state.isProcessingInsights = true
-            state.liveInsightCount = 0
-            state.liveQuizCount = 0
-            state.liveThinking = ""
-            state.analysisError = nil
-            processingStates[chapterId] = state
-        }
         defer {
             Task { @MainActor in
-                isGeneratingMore = false
-                if var state = processingStates[chapterId] {
-                    state.isProcessingInsights = false
-                    state.liveThinking = ""
-                    processingStates[chapterId] = state
-                }
+                endInsightProcessing(for: chapterId)
             }
         }
         do {
@@ -1230,33 +1198,7 @@ struct ReaderView: View {
                 existingQuestions: existingQuestions,
                 settings: appState.settings
             )
-            var finalAnalysis: LLMService.ChapterAnalysis?
-            var lastThinkingUpdate = Date.distantPast
-
-            for try await event in stream {
-                if Task.isCancelled { return }
-                switch event {
-                case .thinking(let text):
-                    if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
-                        await MainActor.run {
-                            processingStates[chapterId]?.liveThinking = text
-                        }
-                        lastThinkingUpdate = Date()
-                    }
-                case .insightFound:
-                    await MainActor.run {
-                        processingStates[chapterId]?.liveInsightCount += 1
-                    }
-                case .quizQuestionFound:
-                    await MainActor.run {
-                        processingStates[chapterId]?.liveQuizCount += 1
-                    }
-                case .completed(let analysis):
-                    finalAnalysis = analysis
-                }
-            }
-
-            guard let analysis = finalAnalysis else { return }
+            guard let analysis = try await collectAnalysis(from: stream, chapterId: chapterId) else { return }
             let stillOnSameChapter = currentChapter?.id == chapterId
             for data in analysis.quizQuestions {
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount ? data.sourceBlockId : 1

@@ -227,32 +227,6 @@ Each: question, answer, sourceBlockId.
         rollingSummary: String?
     ) -> LLMRequestPrompt {
         let prefix = """
-You're discussing this chapter with a reader.
-
-Context: \(rollingSummary ?? "Beginning of book.")
-
-Chapter:
-\(contentWithBlocks)
-
-Question:
-"""
-        let suffix = """
-"\(message)"
-
-Answer using the text and your knowledge. Be substantive and direct. If they ask about future events, say you can only discuss through this chapter.
-"""
-
-        return LLMRequestPrompt(cachePrefix: prefix, cacheSuffix: suffix)
-    }
-
-    // MARK: - Streaming Chat
-
-    static func chatStreamingPrompt(
-        message: String,
-        contentWithBlocks: String,
-        rollingSummary: String?
-    ) -> LLMRequestPrompt {
-        let prefix = """
 Discussing this chapter with a reader.
 
 Story so far: \(rollingSummary ?? "Beginning of book.")
@@ -276,25 +250,6 @@ No spoilers beyond this chapter.
         return LLMRequestPrompt(cachePrefix: prefix, cacheSuffix: suffix)
     }
 
-    // MARK: - Word/Concept Explanation
-
-    static func explainWordPrompt(
-        word: String,
-        context: String,
-        rollingSummary: String?
-    ) -> LLMRequestPrompt {
-        let prompt = """
-Reader clicked "\(word)" in:
-
-"\(context)"
-
-Context: \(rollingSummary ?? "Beginning of book.")
-
-Explain in 2-3 sentences. They're smart and curious. No spoilers.
-"""
-        return LLMRequestPrompt(text: prompt)
-    }
-
     static func explainWordChatPrompt(word: String, context: String) -> String {
         """
 Explain "\(word)" in this context. 2-3 sentences, no spoilers.
@@ -304,17 +259,6 @@ Explain "\(word)" in this context. 2-3 sentences, no spoilers.
     }
 
     // MARK: - Image Prompt
-
-    static func imagePrompt(word: String, context: String) -> LLMRequestPrompt {
-        let prompt = """
-Generate an image prompt for the scene around "\(word)":
-
-"\(context)"
-
-Single vivid prompt. Include setting, lighting, atmosphere, key elements, suggested style. Ground it in what the text describes.
-"""
-        return LLMRequestPrompt(text: prompt)
-    }
 
     static func imagePromptFromExcerpt(_ excerpt: String, rewrite: Bool) -> String {
         let header: String

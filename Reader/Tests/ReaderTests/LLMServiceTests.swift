@@ -57,6 +57,46 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testAnalyzeChapterStreamingFallback() async throws {
+        let jsonResponse = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "{'summary': 'Streamed Summary', 'annotations': [], 'quizQuestions': [], 'imageSuggestions': []}"
+                    }]
+                }
+            }],
+            "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 50 }
+        }
+        """.replacingOccurrences(of: "'", with: "\\\"")
+        MockURLProtocol.stubResponseData = jsonResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        var settings = UserSettings()
+        settings.googleAPIKey = "mock-key"
+        let stream = llmService.analyzeChapterStreaming(
+            contentWithBlocks: "Some content",
+            rollingSummary: nil,
+            settings: settings
+        )
+
+        var finalAnalysis: LLMService.ChapterAnalysis?
+        for try await event in stream {
+            if case .completed(let analysis) = event {
+                finalAnalysis = analysis
+            }
+        }
+
+        XCTAssertEqual(finalAnalysis?.summary, "Streamed Summary")
+    }
+
+    @MainActor
     func testDistillSearchQuerySuccess() async throws {
         let jsonResponse = """
         {

@@ -15,7 +15,6 @@ struct AIPanel: View {
     let liveInsightCount: Int
     let liveQuizCount: Int
     let liveThinking: String
-    let isGeneratingMore: Bool
     let isClassifying: Bool
     let classificationError: String?
     let analysisError: String?
@@ -348,14 +347,8 @@ struct AIPanel: View {
                             onGenerateMoreInsights()
                         } label: {
                             HStack(spacing: 6) {
-                                if isGeneratingMore {
-                                    ProgressView()
-                                        .scaleEffect(0.7)
-                                    Text("Generating...")
-                                } else {
-                                    Image(systemName: "plus.circle")
-                                    Text("More insights")
-                                }
+                                Image(systemName: "plus.circle")
+                                Text("More insights")
                             }
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.rose)
@@ -364,7 +357,6 @@ struct AIPanel: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(isGeneratingMore)
                     }
 
                     // Chapter complete prompt (shows at 90% scroll)
@@ -551,14 +543,8 @@ struct AIPanel: View {
                             onGenerateMoreQuestions()
                         } label: {
                             HStack(spacing: 6) {
-                                if isGeneratingMore {
-                                    ProgressView()
-                                        .scaleEffect(0.7)
-                                    Text("Generating...")
-                                } else {
-                                    Image(systemName: "plus.circle")
-                                    Text("More questions")
-                                }
+                                Image(systemName: "plus.circle")
+                                Text("More questions")
                             }
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.rose)
@@ -567,7 +553,6 @@ struct AIPanel: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(isGeneratingMore)
                     }
                 }
             }

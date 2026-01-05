@@ -135,11 +135,15 @@ final class LLMService {
             nameHint: "chapter_analysis_stream"
         )
 
-        return streamChapterAnalysisEvents(from: stream)
+        return streamChapterAnalysisEvents(
+            from: stream,
+            nameHint: "chapter_analysis_stream"
+        )
     }
 
     internal func streamChapterAnalysisEvents(
-        from stream: AsyncThrowingStream<LLMStreamChunk, Error>
+        from stream: AsyncThrowingStream<LLMStreamChunk, Error>,
+        nameHint: String? = nil
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -159,6 +163,10 @@ final class LLMService {
                         }
                     }
 
+                    if recordMode, let data = fullText.data(using: .utf8), !fullText.isEmpty {
+                        recordResponse(data, name: nameHint ?? "chapter_analysis_stream")
+                    }
+
                     let finalAnalysis: ChapterAnalysis = try self.decodeStructured(ChapterAnalysis.self, from: fullText)
                     continuation.yield(.completed(finalAnalysis))
                     continuation.finish()
@@ -174,71 +182,29 @@ final class LLMService {
         rollingSummary: String?,
         settings: UserSettings
     ) async throws -> ChapterAnalysis {
-        let prompt = PromptLibrary.analysisPrompt(
+        let stream = analyzeChapterStreaming(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
-            insightDensity: settings.insightDensity,
-            imageDensity: settings.imagesEnabled ? settings.imageDensity : nil
+            settings: settings
         )
-
-        return try await requestStructured(
-            prompt: prompt,
-            schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
-            provider: settings.llmProvider,
-            model: settings.llmModel,
-            apiKey: apiKey(for: settings.llmProvider, settings: settings),
-            temperature: settings.temperature,
-            reasoning: settings.insightReasoningLevel,
-            webSearch: settings.webSearchEnabled,
-            nameHint: "chapter_analysis"
-        )
+        return try await collectChapterAnalysis(from: stream)
     }
 
-    // MARK: - Word Explanation
+    private func collectChapterAnalysis(
+        from stream: AsyncThrowingStream<ChapterAnalysisStreamEvent, Error>
+    ) async throws -> ChapterAnalysis {
+        var finalAnalysis: ChapterAnalysis?
 
-    func explainWord(
-        word: String,
-        context: String,
-        rollingSummary: String?,
-        settings: UserSettings
-    ) async throws -> String {
-        let prompt = PromptLibrary.explainWordPrompt(
-            word: word,
-            context: context,
-            rollingSummary: rollingSummary
-        )
+        for try await event in stream {
+            if case .completed(let analysis) = event {
+                finalAnalysis = analysis
+            }
+        }
 
-        return try await requestText(
-            prompt: prompt,
-            provider: settings.llmProvider,
-            model: settings.llmModel,
-            apiKey: apiKey(for: settings.llmProvider, settings: settings),
-            temperature: settings.temperature,
-            reasoning: .off,
-            webSearch: false, // Explicitly false for word explanation
-            nameHint: "explain_word"
-        )
-    }
-
-    // MARK: - Generate Image Prompt
-
-    func generateImagePrompt(
-        word: String,
-        context: String,
-        settings: UserSettings
-    ) async throws -> String {
-        let prompt = PromptLibrary.imagePrompt(word: word, context: context)
-
-        return try await requestText(
-            prompt: prompt,
-            provider: settings.llmProvider,
-            model: settings.llmModel,
-            apiKey: apiKey(for: settings.llmProvider, settings: settings),
-            temperature: settings.temperature,
-            reasoning: .off,
-            webSearch: false, // Explicitly false for image prompts
-            nameHint: "image_prompt"
-        )
+        guard let finalAnalysis else {
+            throw LLMError.invalidResponse
+        }
+        return finalAnalysis
     }
 
     // MARK: - Search Query Distillation
@@ -272,33 +238,7 @@ final class LLMService {
         )
     }
 
-    // MARK: - Chat (Q&A)
-
-    func chat(
-        message: String,
-        contentWithBlocks: String,
-        rollingSummary: String?,
-        settings: UserSettings
-    ) async throws -> String {
-        let prompt = PromptLibrary.chatPrompt(
-            message: message,
-            contentWithBlocks: contentWithBlocks,
-            rollingSummary: rollingSummary
-        )
-
-        return try await requestText(
-            prompt: prompt,
-            provider: settings.llmProvider,
-            model: settings.llmModel,
-            apiKey: apiKey(for: settings.llmProvider, settings: settings),
-            temperature: settings.temperature,
-            reasoning: settings.chatReasoningLevel,
-            webSearch: false, // Explicitly false for chat (as per request)
-            nameHint: "chat"
-        )
-    }
-
-    // MARK: - Streaming Chat
+    // MARK: - Chat (Streaming)
 
     func chatStreaming(
         message: String,
@@ -306,7 +246,7 @@ final class LLMService {
         rollingSummary: String?,
         settings: UserSettings
     ) -> AsyncThrowingStream<StreamChunk, Error> {
-        let prompt = PromptLibrary.chatStreamingPrompt(
+        let prompt = PromptLibrary.chatPrompt(
             message: message,
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary
@@ -351,7 +291,10 @@ final class LLMService {
             nameHint: "more_insights_stream"
         )
 
-        return streamChapterAnalysisEvents(from: stream)
+        return streamChapterAnalysisEvents(
+            from: stream,
+            nameHint: "more_insights_stream"
+        )
     }
 
     func generateMoreQuestionsStreaming(
@@ -378,7 +321,10 @@ final class LLMService {
             nameHint: "more_questions_stream"
         )
 
-        return streamChapterAnalysisEvents(from: stream)
+        return streamChapterAnalysisEvents(
+            from: stream,
+            nameHint: "more_questions_stream"
+        )
     }
 
     // MARK: - Chapter Classification
@@ -709,6 +655,13 @@ final class LLMService {
                     }
 
                     if httpResponse.statusCode != 200 {
+                        var errorData = Data()
+                        for try await byte in bytes {
+                            errorData.append(byte)
+                        }
+                        if let message = parseErrorMessage(from: errorData) {
+                            throw LLMError.apiError(message)
+                        }
                         throw LLMError.httpError(httpResponse.statusCode)
                     }
 
@@ -717,18 +670,34 @@ final class LLMService {
                         Task {
                             do {
                                 var lineParser = SSELineParser()
-                                for try await byte in bytes {
-                                    try lineParser.append(byte: byte) { line in
-                                        guard let payload = ssePayload(from: line) else { return }
-                                        if payload == "[DONE]" { return }
+                                var rawData = Data()
+                                var sawPayload = false
 
-                                        guard let data = payload.data(using: .utf8),
-                                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                                            return
-                                        }
+                                func handleLine(_ line: String) throws {
+                                    guard let payload = ssePayload(from: line) else { return }
+                                    sawPayload = true
+                                    if payload == "[DONE]" { return }
 
-                                        try client.handleStreamEvent(json, continuation: inner)
+                                    guard let data = payload.data(using: .utf8),
+                                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                                        return
                                     }
+
+                                    try client.handleStreamEvent(json, continuation: inner)
+                                }
+
+                                for try await byte in bytes {
+                                    if !sawPayload {
+                                        rawData.append(byte)
+                                    }
+                                    try lineParser.append(byte: byte, onLine: handleLine)
+                                }
+                                try lineParser.finalize(onLine: handleLine)
+
+                                if !sawPayload {
+                                    let (text, usage) = try client.parseResponseText(from: rawData)
+                                    if let usage { inner.yield(.usage(usage)) }
+                                    inner.yield(.content(text))
                                 }
                                 inner.finish()
                             } catch {
