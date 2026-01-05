@@ -123,21 +123,27 @@ final class LLMService {
             imageDensity: settings.imagesEnabled ? settings.imageDensity : nil
         )
 
-        return AsyncThrowingStream { continuation in
+        let stream = streamResponse(
+            prompt: prompt,
+            provider: settings.llmProvider,
+            model: settings.llmModel,
+            apiKey: apiKey(for: settings.llmProvider, settings: settings),
+            temperature: settings.temperature,
+            reasoning: settings.insightReasoningLevel,
+            schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
+            webSearch: settings.webSearchEnabled,
+            nameHint: "chapter_analysis_stream"
+        )
+
+        return streamChapterAnalysisEvents(from: stream)
+    }
+
+    internal func streamChapterAnalysisEvents(
+        from stream: AsyncThrowingStream<LLMStreamChunk, Error>
+    ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
             Task {
                 do {
-                    let stream = streamResponse(
-                        prompt: prompt,
-                        provider: settings.llmProvider,
-                        model: settings.llmModel,
-                        apiKey: apiKey(for: settings.llmProvider, settings: settings),
-                        temperature: settings.temperature,
-                        reasoning: settings.insightReasoningLevel,
-                        schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
-                        webSearch: settings.webSearchEnabled,
-                        nameHint: "chapter_analysis_stream"
-                    )
-
                     var fullText = ""
                     var scanner = StreamingJSONScanner()
 
@@ -146,14 +152,13 @@ final class LLMService {
                             continuation.yield(.thinking(chunk.text))
                         } else {
                             fullText += chunk.text
-                            
+
                             let (insights, quizzes) = scanner.update(with: chunk.text)
                             for _ in 0..<insights { continuation.yield(.insightFound) }
                             for _ in 0..<quizzes { continuation.yield(.quizQuestionFound) }
                         }
                     }
 
-                    // Final parse of the completed JSON
                     let finalAnalysis: ChapterAnalysis = try self.decodeStructured(ChapterAnalysis.self, from: fullText)
                     continuation.yield(.completed(finalAnalysis))
                     continuation.finish()
@@ -321,12 +326,12 @@ final class LLMService {
 
     // MARK: - Generate More Content
 
-    func generateMoreInsights(
+    func generateMoreInsightsStreaming(
         contentWithBlocks: String,
         rollingSummary: String?,
         existingTitles: [String],
         settings: UserSettings
-    ) async throws -> [AnnotationData] {
+    ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         let prompt = PromptLibrary.moreInsightsPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
@@ -334,46 +339,46 @@ final class LLMService {
             insightDensity: settings.insightDensity
         )
 
-        let analysis: ChapterAnalysis = try await requestStructured(
+        let stream = streamResponse(
             prompt: prompt,
-            schema: SchemaLibrary.annotationsOnly,
             provider: settings.llmProvider,
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
+            schema: SchemaLibrary.annotationsOnly,
             webSearch: settings.webSearchEnabled,
-            nameHint: "more_insights"
+            nameHint: "more_insights_stream"
         )
 
-        return analysis.annotations
+        return streamChapterAnalysisEvents(from: stream)
     }
 
-    func generateMoreQuestions(
+    func generateMoreQuestionsStreaming(
         contentWithBlocks: String,
         rollingSummary: String?,
         existingQuestions: [String],
         settings: UserSettings
-    ) async throws -> [QuizData] {
+    ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         let prompt = PromptLibrary.moreQuestionsPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
             existingQuestions: existingQuestions
         )
 
-        let analysis: ChapterAnalysis = try await requestStructured(
+        let stream = streamResponse(
             prompt: prompt,
-            schema: SchemaLibrary.quizOnly,
             provider: settings.llmProvider,
             model: settings.llmModel,
             apiKey: apiKey(for: settings.llmProvider, settings: settings),
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
+            schema: SchemaLibrary.quizOnly,
             webSearch: settings.webSearchEnabled, // Quiz generation also gets it
-            nameHint: "more_questions"
+            nameHint: "more_questions_stream"
         )
 
-        return analysis.quizQuestions
+        return streamChapterAnalysisEvents(from: stream)
     }
 
     // MARK: - Chapter Classification

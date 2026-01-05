@@ -529,7 +529,7 @@ struct AIPanel: View {
 
                 // Processing indicator
                 if isProcessingInsights {
-                    processingSkeleton(text: "Generating questions...", isImages: true)
+                    processingSkeleton(text: "Generating questions...")
                 }
 
                 if let analysisError {

@@ -44,6 +44,47 @@ final class StreamingAnalysisTests: XCTestCase {
     }
 
     @MainActor
+    func testStreamChapterAnalysisEvents() async throws {
+        let service = LLMService()
+        let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
+            continuation.yield(.thinking("Thinking..."))
+            continuation.yield(.content("{ \"annotations\": ["))
+            continuation.yield(.content("{ \"type\": \"science\", \"ti"))
+            continuation.yield(.content("tle\": \"Insight\", \"content\": \"...\", \"sourceBlockId\": 1 }"))
+            continuation.yield(.content("], \"quizQuestions\": ["))
+            continuation.yield(.content("{ \"question\": \"Q?\", \"answer\": \"A\", \"sourceBlockId\": 2 }"))
+            continuation.yield(.content("], \"summary\": \"Sum\" }"))
+            continuation.finish()
+        }
+
+        let eventStream = service.streamChapterAnalysisEvents(from: stream)
+        var insights = 0
+        var quizzes = 0
+        var didThink = false
+        var finalAnalysis: LLMService.ChapterAnalysis?
+
+        for try await event in eventStream {
+            switch event {
+            case .thinking:
+                didThink = true
+            case .insightFound:
+                insights += 1
+            case .quizQuestionFound:
+                quizzes += 1
+            case .completed(let analysis):
+                finalAnalysis = analysis
+            }
+        }
+
+        XCTAssertTrue(didThink)
+        XCTAssertEqual(insights, 1)
+        XCTAssertEqual(quizzes, 1)
+        XCTAssertEqual(finalAnalysis?.summary, "Sum")
+        XCTAssertEqual(finalAnalysis?.annotations.count, 1)
+        XCTAssertEqual(finalAnalysis?.quizQuestions.count, 1)
+    }
+
+    @MainActor
     func testDecodeStructuredRobustness() throws {
         let service = LLMService()
         let json = "{ \"annotations\": [], \"quizQuestions\": [], \"imageSuggestions\": [], \"summary\": \"Test\" }"
