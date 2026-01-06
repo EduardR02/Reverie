@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BB007F5D2F057A2000926C8E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = BB007F5C2F057A2000926C8E /* GRDB */; };
+		BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */; };
 		F001 /* ReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReaderApp.swift */; };
@@ -49,6 +50,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExpandedProcessingCard.swift; path = Reader/Views/Home/ExpandedProcessingCard.swift; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterProgressCalculator.swift; path = Reader/Services/ChapterProgressCalculator.swift; sourceTree = "<group>"; };
 		PROD /* Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reader.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -158,6 +160,7 @@
 				READER /* Reader */,
 				PRODUCTS /* Products */,
 				BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */,
+				BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -327,6 +330,7 @@
 				F002 /* AppState.swift in Sources */,
 				F035 /* ReadingStats.swift in Sources */,
 				F003 /* Book.swift in Sources */,
+				BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */,
 				F004 /* Chapter.swift in Sources */,
 				F005 /* Annotation.swift in Sources */,
 				F006 /* Quiz.swift in Sources */,

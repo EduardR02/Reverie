@@ -952,6 +952,8 @@ struct ReaderView: View {
                 await MainActor.run {
                     processingStates[chapterId]?.liveQuizCount += 1
                 }
+            case .usage:
+                break  // Token tracking handled globally by LLMService
             case .completed(let analysis):
                 finalAnalysis = analysis
             }

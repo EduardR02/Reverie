@@ -71,6 +71,8 @@ final class StreamingAnalysisTests: XCTestCase {
                 insights += 1
             case .quizQuestionFound:
                 quizzes += 1
+            case .usage:
+                break
             case .completed(let analysis):
                 finalAnalysis = analysis
             }

@@ -2,7 +2,6 @@ import SwiftUI
 
 struct BookCard: View {
     let book: Book
-    let processingStatus: BookProcessingStatus?
     let onOpen: () -> Void
     let onProcess: () -> Void
     let onDelete: () -> Void
@@ -36,8 +35,8 @@ struct BookCard: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .opacity(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0)
-                    .scaleEffect(isHovered && !book.processedFully && processingStatus == nil ? 1 : 0.9)
+                    .opacity(isHovered && !book.processedFully ? 1 : 0)
+                    .scaleEffect(isHovered && !book.processedFully ? 1 : 0.9)
 
                     Spacer()
 
@@ -75,12 +74,6 @@ struct BookCard: View {
                 }
                 .padding(8)
 
-                // BOTTOM-LEADING: Active Processing Badge
-                if let processingStatus {
-                    processingBadge(status: processingStatus)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
             }
 
             // Info section
@@ -159,25 +152,6 @@ struct BookCard: View {
                 onDelete()
             }
         }
-    }
-
-    private func processingBadge(status: BookProcessingStatus) -> some View {
-        let percent = Int(status.progress * 100)
-        let detail = status.totalChapters > 0
-            ? "\(status.completedChapters)/\(status.totalChapters)"
-            : "\(percent)%"
-        return HStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 10, weight: .semibold))
-            Text("Processing \(detail)")
-                .font(.system(size: 11, weight: .semibold))
-        }
-        .foregroundColor(theme.base)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(theme.rose)
-        .clipShape(Capsule())
-        .shadow(color: theme.rose.opacity(0.3), radius: 6, y: 2)
     }
 
     // MARK: - Cover View

@@ -13,6 +13,16 @@ struct HomeView: View {
     // Process full book
     @State private var bookToProcess: Book?
 
+    // Live streaming state for expanded progress card
+    @State private var liveSummaryCount = 0
+    @State private var liveInsightCount = 0
+    @State private var liveQuizCount = 0
+    @State private var processingStartTime: Date?
+    @State private var summaryPhase = ""
+    @State private var insightPhase = ""
+    @State private var liveInputTokens = 0
+    @State private var liveOutputTokens = 0
+
     // Import error handling
     @State private var importError: String?
     @State private var showImportError = false
@@ -27,9 +37,9 @@ struct HomeView: View {
             theme.base.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Header
+                // Header (always visible)
                 header
-                    .zIndex(10)  // Keep header above cards
+                    .zIndex(10)
 
                 // Content
                 if books.isEmpty {
@@ -147,27 +157,60 @@ struct HomeView: View {
 
     private var bookGrid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 24) {
-                ForEach(books) { book in
-                    BookCard(
-                        book: book,
-                        processingStatus: processingStatus(for: book)
-                    ) {
-                        appState.openBook(book)
-                    } onProcess: {
-                        handleProcessRequest(book)
-                    } onDelete: {
-                        deleteBook(book)
-                    } onToggleFinished: {
-                        appState.toggleBookFinished(book)
-                        Task { await loadBooks() }
+            VStack(spacing: 24) {
+                // Processing card at top when active
+                if appState.isProcessingBook,
+                   let processingBook = books.first(where: { $0.id == appState.processingBookId }) {
+                    processingCard(for: processingBook)
+                        .padding(.horizontal, 32)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                            removal: .opacity
+                        ))
+                }
+
+                // Book grid (exclude processing book to avoid duplication)
+                LazyVGrid(columns: columns, spacing: 24) {
+                    ForEach(books.filter { $0.id != appState.processingBookId }) { book in
+                        BookCard(
+                            book: book
+                        ) {
+                            appState.openBook(book)
+                        } onProcess: {
+                            handleProcessRequest(book)
+                        } onDelete: {
+                            deleteBook(book)
+                        } onToggleFinished: {
+                            appState.toggleBookFinished(book)
+                            Task { await loadBooks() }
+                        }
                     }
                 }
+                .padding(.horizontal, 32)
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 8)  // Breathing room below header
+            .padding(.top, 8)
             .padding(.bottom, 32)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: appState.isProcessingBook)
         }
+    }
+
+    // MARK: - Processing Card
+
+    private func processingCard(for book: Book) -> some View {
+        ExpandedProcessingCard(
+            book: book,
+            status: processingStatus(for: book) ?? BookProcessingStatus(progress: 0, completedChapters: 0, totalChapters: 0),
+            summariesCompleted: liveSummaryCount,
+            totalChapters: appState.processingTotalChapters,
+            liveInsightCount: liveInsightCount,
+            liveQuizCount: liveQuizCount,
+            summaryPhase: summaryPhase,
+            insightPhase: insightPhase,
+            liveInputTokens: liveInputTokens,
+            liveOutputTokens: liveOutputTokens,
+            startTime: processingStartTime,
+            onCancel: { cancelProcessing() }
+        )
     }
 
     // MARK: - Empty State
@@ -273,12 +316,22 @@ struct HomeView: View {
 
     private func startProcessing(_ book: Book) {
         guard !appState.isProcessingBook else { return }
-        appState.processingTask?.cancel()
-        appState.processingTask = Task { await processFullBook(book) }
+        bookToProcess = nil  // Close sheet immediately
+        let previousTask = appState.processingTask
+        previousTask?.cancel()
+        appState.processingTask = Task { [previousTask] in
+            if let previousTask {
+                await previousTask.value
+            }
+            await processFullBook(book)
+        }
     }
 
     private func cancelProcessing() {
-        appState.processingChapter = "Stopping..."
+        // Immediately hide the processing UI
+        appState.isProcessingBook = false
+        appState.processingBookId = nil
+        // Cancel the task - it will finish in-flight requests silently
         appState.processingTask?.cancel()
     }
 
@@ -557,32 +610,66 @@ struct HomeView: View {
         appState.isProcessingBook = true
         appState.processingBookId = book.id
         appState.processingProgress = 0
-        appState.processingChapter = "Preparing..."
         appState.processingCompletedChapters = 0
         appState.processingTotalChapters = 0
+        appState.processingChapter = "Preparing..."
+
+        // Initialize streaming state
+        liveSummaryCount = 0
+        liveInsightCount = 0
+        liveQuizCount = 0
+        liveInputTokens = 0
+        liveOutputTokens = 0
+        summaryPhase = ""
+        insightPhase = ""
+        processingStartTime = Date()
+
         defer {
             appState.isProcessingBook = false
             appState.processingTask = nil
             appState.processingBookId = nil
+            appState.processingChapter = ""
+            // Reset streaming state
+            liveSummaryCount = 0
+            liveInsightCount = 0
+            liveQuizCount = 0
+            liveInputTokens = 0
+            liveOutputTokens = 0
+            summaryPhase = ""
+            insightPhase = ""
+            processingStartTime = nil
         }
-        var didCancel = false
-        var pendingInsightTask: Task<Void, Error>?
-        var pendingInsightTitle: String?
 
-        func awaitPendingInsight() async throws {
-            guard let task = pendingInsightTask else { return }
-            appState.processingChapter = pendingInsightTitle.map { "Insights: \($0)" } ?? "Finishing insights..."
-            try await task.value
-            pendingInsightTask = nil
-            pendingInsightTitle = nil
+        // Track all running insight tasks for true parallelism
+        var runningInsightTasks: [Task<Void, Error>] = []
+        var runningInsightCount = 0
+        var lastInsightTitle: String?
+
+        func updateInsightPhase() {
+            guard runningInsightCount > 0 else {
+                insightPhase = ""
+                if summaryPhase.isEmpty {
+                    appState.processingChapter = ""
+                }
+                return
+            }
+
+            let title = lastInsightTitle ?? "Insights"
+            let suffix = runningInsightCount > 1 ? " (+\(runningInsightCount - 1) more)" : ""
+            insightPhase = "\(title)\(suffix)"
+            if summaryPhase.isEmpty {
+                appState.processingChapter = "Insights: \(insightPhase)"
+            }
         }
 
-        func cancelPendingInsight() async {
-            guard let task = pendingInsightTask else { return }
-            task.cancel()
-            _ = try? await task.value
-            pendingInsightTask = nil
-            pendingInsightTitle = nil
+        func cancelAllInsightTasks() async {
+            for task in runningInsightTasks {
+                task.cancel()
+            }
+            for task in runningInsightTasks {
+                _ = try? await task.value
+            }
+            runningInsightTasks.removeAll()
         }
 
         do {
@@ -593,7 +680,9 @@ struct HomeView: View {
 
             if chaptersToProcess.isEmpty {
                 appState.processingProgress = 1.0
+                summaryPhase = "Complete!"
                 appState.processingChapter = "Complete!"
+                return
             }
 
             let blockParser = ContentBlockParser()
@@ -601,8 +690,8 @@ struct HomeView: View {
 
             for chapter in chapters {
                 if Task.isCancelled {
-                    didCancel = true
-                    break
+                    await cancelAllInsightTasks()
+                    return
                 }
 
                 if chapter.shouldSkipAutoProcessing {
@@ -617,6 +706,8 @@ struct HomeView: View {
                     continue
                 }
 
+                // Update summary phase UI
+                summaryPhase = chapter.title
                 appState.processingChapter = "Summarizing: \(chapter.title)"
                 appState.processingProgress = Double(appState.processingCompletedChapters)
                     / Double(max(1, appState.processingTotalChapters))
@@ -626,13 +717,21 @@ struct HomeView: View {
 
                 let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let reuseSummary = (existingSummary?.isEmpty == false) && chapter.rollingSummary == chapterRollingSummary
-                let summary = reuseSummary
-                    ? (existingSummary ?? "")
-                    : try await appState.llmService.generateSummary(
+                let summary: String
+                if reuseSummary {
+                    summary = existingSummary ?? ""
+                } else {
+                    let (generatedSummary, usage) = try await appState.llmService.generateSummary(
                         contentWithBlocks: contentWithBlocks,
                         rollingSummary: chapterRollingSummary,
                         settings: appState.settings
                     )
+                    summary = generatedSummary
+                    if let usage {
+                        liveInputTokens += usage.input
+                        liveOutputTokens += usage.output
+                    }
+                }
 
                 var updatedChapter = chapter
                 updatedChapter.summary = summary
@@ -641,50 +740,58 @@ struct HomeView: View {
                 updatedChapter.blockCount = blocks.count
                 try appState.database.saveChapter(&updatedChapter)
 
+                liveSummaryCount += 1
                 rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
 
-                do {
-                    try await awaitPendingInsight()
-                } catch is CancellationError {
-                    didCancel = true
-                    break
-                }
-
                 if Task.isCancelled {
-                    didCancel = true
-                    break
+                    await cancelAllInsightTasks()
+                    return
                 }
 
+                // Fire insight task in parallel - DO NOT AWAIT
                 let workItem = InsightWorkItem(
                     chapter: updatedChapter,
                     blocks: blocks,
                     contentWithBlocks: contentWithBlocks,
                     rollingSummary: chapterRollingSummary
                 )
-                pendingInsightTitle = chapter.title
-                pendingInsightTask = Task { @MainActor in
+                let chapterTitle = chapter.title
+                lastInsightTitle = chapterTitle
+                runningInsightCount += 1
+                updateInsightPhase()
+
+                let task = Task { @MainActor in
+                    defer {
+                        runningInsightCount -= 1
+                        updateInsightPhase()
+                    }
                     try await processInsights(for: workItem, bookId: bookId)
                 }
+                runningInsightTasks.append(task)
+
+                // Continue to next summary immediately - don't await insights!
             }
 
-            if didCancel {
-                await cancelPendingInsight()
-                appState.processingChapter = "Cancelled"
-                return
+            // All summaries done, now wait for remaining insight tasks
+            summaryPhase = ""
+            updateInsightPhase()
+            if insightPhase.isEmpty {
+                appState.processingChapter = "Finalizing..."
             }
 
-            do {
-                try await awaitPendingInsight()
-            } catch is CancellationError {
-                didCancel = true
-                await cancelPendingInsight()
-                appState.processingChapter = "Cancelled"
-                return
-            }
-
-            if didCancel {
-                appState.processingChapter = "Cancelled"
-                return
+            for task in runningInsightTasks {
+                if Task.isCancelled {
+                    await cancelAllInsightTasks()
+                    return
+                }
+                do {
+                    try await task.value
+                } catch is CancellationError {
+                    await cancelAllInsightTasks()
+                    return
+                } catch {
+                    print("Insight task failed: \(error)")
+                }
             }
 
             // Mark book as fully processed if all eligible chapters were done
@@ -701,14 +808,14 @@ struct HomeView: View {
             }
 
             appState.processingProgress = 1.0
+            insightPhase = ""
             appState.processingChapter = "Complete!"
 
             await loadBooks()
 
         } catch {
-            await cancelPendingInsight()
+            await cancelAllInsightTasks()
             if error is CancellationError {
-                appState.processingChapter = "Cancelled"
                 return
             }
             print("Failed to process book: \(error)")
@@ -722,11 +829,39 @@ struct HomeView: View {
     ) async throws {
         guard let chapterId = workItem.chapter.id else { return }
 
-        let analysis = try await appState.llmService.analyzeChapter(
+        // Reset per-chapter live counters (accumulate across chapters for total count)
+        // Note: We don't reset here anymore - we want cumulative counts
+
+        // Use streaming API for live telemetry
+        let stream = appState.llmService.analyzeChapterStreaming(
             contentWithBlocks: workItem.contentWithBlocks,
             rollingSummary: workItem.rollingSummary,
             settings: appState.settings
         )
+
+        var analysis: LLMService.ChapterAnalysis?
+
+        for try await event in stream {
+            if Task.isCancelled { throw CancellationError() }
+
+            switch event {
+            case .thinking:
+                break  // Not displaying thinking in takeover view
+            case .insightFound:
+                liveInsightCount += 1
+            case .quizQuestionFound:
+                liveQuizCount += 1
+            case .usage(let usage):
+                liveInputTokens += usage.input
+                liveOutputTokens += usage.output
+            case .completed(let result):
+                analysis = result
+            }
+        }
+
+        guard let analysis else {
+            throw CancellationError()
+        }
 
         if Task.isCancelled { throw CancellationError() }
 

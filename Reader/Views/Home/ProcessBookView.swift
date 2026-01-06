@@ -439,10 +439,17 @@ struct ProcessBookView: View {
     }
 
     private var chapterCountLabel: String {
-        guard usesGarbageFilter, chapterStats.excludedChapters > 0 else {
-            return "\(estimatedChapterCount)"
+        // Show remaining chapters to process
+        let remaining = chapterStats.includedChapters
+        let total = chapterStats.totalChapters
+        let processed = chapterStats.alreadyProcessedChapters
+
+        if remaining == 0 && processed > 0 {
+            return "All done"
+        } else if processed > 0 || chapterStats.excludedChapters > 0 {
+            return "\(remaining)/\(total)"
         }
-        return "\(estimatedChapterCount)/\(chapterStats.totalChapters)"
+        return "\(remaining)"
     }
 
     private var classificationKeyMissing: Bool {
@@ -505,12 +512,17 @@ struct ProcessBookView: View {
         do {
             let chapters = try appState.database.fetchChapters(for: book)
             let totalWords = chapters.reduce(0) { $0 + $1.wordCount }
-            let excluded = chapters.filter { $0.shouldSkipAutoProcessing }
-            let included = chapters.filter { !$0.shouldSkipAutoProcessing }
+
+            // Exclude garbage chapters AND already processed chapters
+            let excluded = chapters.filter { $0.shouldSkipAutoProcessing || $0.processed }
+            let included = chapters.filter { !$0.shouldSkipAutoProcessing && !$0.processed }
             let includedWords = included.reduce(0) { $0 + $1.wordCount }
             let previewWords = chapters.reduce(0) { total, chapter in
                 total + min(chapter.wordCount, CostEstimates.classificationPreviewWordLimit)
             }
+
+            // Count already processed separately for display
+            let alreadyProcessed = chapters.filter { $0.processed }.count
 
             chapterStats = ChapterEstimateStats(
                 totalWords: totalWords,
@@ -518,7 +530,8 @@ struct ProcessBookView: View {
                 excludedChapters: excluded.count,
                 includedWords: includedWords,
                 includedChapters: included.count,
-                classificationPreviewWords: previewWords
+                classificationPreviewWords: previewWords,
+                alreadyProcessedChapters: alreadyProcessed
             )
         } catch {
             print("Failed to fetch chapters for estimate: \(error)")
@@ -650,4 +663,5 @@ private struct ChapterEstimateStats {
     var includedWords: Int = 0
     var includedChapters: Int = 0
     var classificationPreviewWords: Int = 0
+    var alreadyProcessedChapters: Int = 0
 }

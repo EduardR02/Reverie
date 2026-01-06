@@ -71,6 +71,7 @@ final class LLMService {
         case thinking(String)
         case insightFound
         case quizQuestionFound
+        case usage(TokenUsage)
         case completed(ChapterAnalysis)
     }
 
@@ -156,12 +157,14 @@ final class LLMService {
                     var scanner = StreamingJSONScanner()
 
                     for try await chunk in stream {
-                        if chunk.isThinking {
-                            continuation.yield(.thinking(chunk.text))
-                        } else {
-                            fullText += chunk.text
-
-                            let (insights, quizzes) = scanner.update(with: chunk.text)
+                        switch chunk {
+                        case .thinking(let text):
+                            continuation.yield(.thinking(text))
+                        case .usage(let usage):
+                            continuation.yield(.usage(usage))
+                        case .content(let text):
+                            fullText += text
+                            let (insights, quizzes) = scanner.update(with: text)
                             for _ in 0..<insights { continuation.yield(.insightFound) }
                             for _ in 0..<quizzes { continuation.yield(.quizQuestionFound) }
                         }
@@ -224,7 +227,7 @@ final class LLMService {
         contentWithBlocks: String,
         rollingSummary: String?,
         settings: UserSettings
-    ) async throws -> String {
+    ) async throws -> (summary: String, usage: TokenUsage?) {
         let prompt = PromptLibrary.summaryPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary
@@ -233,7 +236,7 @@ final class LLMService {
         // Always use cheapest model for summary generation
         let (provider, model, key) = classificationModelSelection(settings: settings)
 
-        let response: SummaryResponse = try await requestStructured(
+        let (response, usage): (SummaryResponse, TokenUsage?) = try await requestStructuredWithUsage(
             prompt: prompt,
             schema: SchemaLibrary.summaryOnly,
             provider: provider,
@@ -244,7 +247,7 @@ final class LLMService {
             nameHint: "chapter_summary"
         )
 
-        return response.summary
+        return (response.summary, usage)
     }
 
     // MARK: - Search Query Distillation
@@ -524,6 +527,43 @@ final class LLMService {
         return try decodeStructured(T.self, from: text)
     }
 
+    private func requestStructuredWithUsage<T: Decodable>(
+        prompt: LLMRequestPrompt,
+        schema: LLMStructuredSchema,
+        provider: LLMProvider,
+        model: String,
+        apiKey: String,
+        temperature: Double,
+        reasoning: ReasoningLevel,
+        webSearch: Bool = false,
+        nameHint: String? = nil
+    ) async throws -> (T, TokenUsage?) {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            throw LLMError.noAPIKey(provider)
+        }
+
+        let client = providerClient(for: provider)
+        let request = try client.makeRequest(
+            prompt: prompt,
+            model: model,
+            apiKey: trimmedKey,
+            temperature: temperature,
+            reasoning: reasoning,
+            schema: schema,
+            stream: false,
+            webSearch: webSearch
+        )
+
+        let data = try await performRequest(request)
+        if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
+
+        let (text, usage) = try client.parseResponseText(from: data)
+        if let usage { recordUsage(usage) }
+        let result: T = try decodeStructured(T.self, from: text)
+        return (result, usage)
+    }
+
     private func recordUsage(_ usage: TokenUsage) {
         guard let appState = self.appState else { return }
         Task { @MainActor in
@@ -747,9 +787,11 @@ final class LLMService {
                     }
 
                     for try await chunk in interceptor {
-                        if case .usage(let usage) = chunk {
+                        switch chunk {
+                        case .usage(let usage):
                             self.recordUsage(usage)
-                        } else {
+                            continuation.yield(.usage(usage))
+                        default:
                             continuation.yield(chunk)
                         }
                     }
