@@ -2,30 +2,30 @@
 import PackageDescription
 
 let package = Package(
-    name: "Reader",
+    name: "Reverie",
     platforms: [.macOS(.v15)],
     products: [
-        .executable(name: "Reader", targets: ["Reader"])
+        .executable(name: "Reverie", targets: ["Reverie"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.9.0")
     ],
     targets: [
         .executableTarget(
-            name: "Reader",
+            name: "Reverie",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift")
             ],
-            path: "Reader",
+            path: "Reverie",
             exclude: ["Tests"],
             resources: [
                 .process("Resources")
             ]
         ),
         .testTarget(
-            name: "ReaderTests",
-            dependencies: ["Reader"],
-            path: "Reader/Tests/ReaderTests",
+            name: "ReverieTests",
+            dependencies: ["Reverie"],
+            path: "Reverie/Tests/ReverieTests",
             resources: [
                 .copy("../Fixtures")
             ]

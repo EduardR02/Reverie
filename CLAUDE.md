@@ -1,4 +1,4 @@
-# Reader App
+# Reverie
 
 A native macOS book reader with AI-generated insights. The only thing that matters is **insight quality**. If the annotations are generic "AI slop," the project is worthless. Every decision - architecture, UI, performance - serves delivering insights that go *beyond* the text: real science, historical context, connections to other works, philosophical depth. Not plot summaries. Not "explores themes of identity." Knowledge the reader couldn't get from the book alone.
 
