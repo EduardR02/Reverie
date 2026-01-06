@@ -3,7 +3,7 @@
 A macOS book reader that shows you interesting things while you read.
 
 ![Reverie screenshot](images/screenshot.png)
-*Screenshots from qntm's "Valuable Humans in Transit"*
+*Screenshot from qntm's "Valuable Humans in Transit"*
 
 ## Install
 
@@ -40,6 +40,7 @@ You're reading a sci-fi novel. A passage describes a spacecraft in vivid detail�
 Reverie recognizes visual moments automatically. When a scene is worth seeing, it generates an image and shows it to you—in the same panel, synchronized to your scroll position, alongside everything else. You keep reading. The ship appears when you get there.
 
 ![Generated image example](images/screenshot-image.png)
+*Screenshot from Stanisław Lem's "Fiasco"*
 
 ## Footnotes
 
@@ -75,3 +76,9 @@ Insight quality depends entirely on the model. Stronger models produce deeper, m
 swift build
 swift test
 ```
+
+## Contributing
+
+This project was vibe-coded with Claude Code, Codex, and Gemini CLI. Contributions are welcome.
+
+The only thing that matters is **insight quality** and the reading experience. If you want to contribute, focus on that—better prompts, smarter extraction, smoother UX. Bug fixes are always welcome. Random features that don't serve the core experience are not.
