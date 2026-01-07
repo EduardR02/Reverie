@@ -195,7 +195,12 @@ struct BookContentView: NSViewRepresentable {
                 .word-popup { position: fixed; background: var(--surface); border: 1px solid var(--rose); border-radius: 8px; padding: 8px; display: none; z-index: 1000; }
                 .word-popup button { display: block; width: 100%; padding: 8px; background: transparent; border: none; color: var(--text); cursor: pointer; text-align: left; }
                 .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
-                
+
+                /* Link styling - themed to match Rose Pine */
+                a { color: var(--rose); text-decoration: none; transition: color 0.15s ease, opacity 0.15s ease; }
+                a:hover { opacity: 0.8; text-decoration: underline; text-underline-offset: 2px; }
+                a:visited { color: var(--rose); opacity: 0.85; }
+
                 /* Highlight animations */
                 .highlight-active { border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
                 .marker-highlight { 
@@ -351,6 +356,35 @@ struct BookContentView: NSViewRepresentable {
                 parent.onScrollPositionChange(context)
             default: break
             }
+        }
+
+        // Intercept link navigation
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Allow file:// URLs (internal content, including chapter resources)
+            if url.isFileURL {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Allow same-document anchor navigation (handled by browser)
+            if url.scheme == nil || url.scheme == "about" {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Block external http/https URLs - don't navigate away from reader
+            if url.scheme == "http" || url.scheme == "https" {
+                decisionHandler(.cancel)
+                return
+            }
+
+            // Allow other navigation (e.g., javascript:)
+            decisionHandler(.allow)
         }
     }
 }

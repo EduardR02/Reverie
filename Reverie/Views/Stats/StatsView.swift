@@ -232,6 +232,16 @@ struct StatsView: View {
                     animate: animateStats
                 )
 
+                if stats.tokensCached > 0 {
+                    TokenBar(
+                        label: "  └ Cached",
+                        value: stats.tokensCached,
+                        total: max(total, 1),
+                        color: theme.gold,
+                        animate: animateStats
+                    )
+                }
+
                 TokenBar(
                     label: "Reasoning",
                     value: stats.tokensReasoning,

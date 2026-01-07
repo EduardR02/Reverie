@@ -63,7 +63,10 @@ struct OpenAIProvider: LLMProviderClient {
         }
 
         if reasoner {
-            body["reasoning"] = ["effort": reasoning.openAIEffort]
+            body["reasoning"] = [
+                "effort": reasoning.openAIEffort,
+                "summary": "auto"
+            ]
         } else {
             body["temperature"] = temperature
         }
@@ -104,11 +107,15 @@ struct OpenAIProvider: LLMProviderClient {
         if let usageData = json["usage"] as? [String: Any] {
             let inputDetails = usageData["input_tokens_details"] as? [String: Any]
             let outputDetails = usageData["output_tokens_details"] as? [String: Any]
+            // OpenAI: output_tokens INCLUDES reasoning_tokens (subset structure)
+            // Normalize to: output = visible output only, reasoning = separate
+            let totalOutput = usageData["output_tokens"] as? Int ?? 0
+            let reasoning = outputDetails?["reasoning_tokens"] as? Int ?? 0
             usage = LLMService.TokenUsage(
                 input: usageData["input_tokens"] as? Int ?? 0,
-                output: usageData["output_tokens"] as? Int ?? 0,
+                visibleOutput: totalOutput - reasoning,
                 cached: inputDetails?["cached_tokens"] as? Int,
-                reasoning: outputDetails?["reasoning_tokens"] as? Int
+                reasoning: reasoning
             )
         }
 
@@ -122,14 +129,19 @@ struct OpenAIProvider: LLMProviderClient {
         let type = json["type"] as? String ?? ""
         if type == "response.output_text.delta", let delta = json["delta"] as? String {
             continuation.yield(.content(delta))
+        } else if type == "response.reasoning_summary_text.delta", let delta = json["delta"] as? String {
+            continuation.yield(.thinking(delta))
         } else if type == "response.completed", let response = json["response"] as? [String: Any], let usageData = response["usage"] as? [String: Any] {
             let inputDetails = usageData["input_tokens_details"] as? [String: Any]
             let outputDetails = usageData["output_tokens_details"] as? [String: Any]
+            // OpenAI: output_tokens INCLUDES reasoning_tokens (subset structure)
+            let totalOutput = usageData["output_tokens"] as? Int ?? 0
+            let reasoning = outputDetails?["reasoning_tokens"] as? Int ?? 0
             let usage = LLMService.TokenUsage(
                 input: usageData["input_tokens"] as? Int ?? 0,
-                output: usageData["output_tokens"] as? Int ?? 0,
+                visibleOutput: totalOutput - reasoning,
                 cached: inputDetails?["cached_tokens"] as? Int,
-                reasoning: outputDetails?["reasoning_tokens"] as? Int
+                reasoning: reasoning
             )
             continuation.yield(.usage(usage))
         } else if type == "error",
@@ -241,10 +253,12 @@ struct GeminiProvider: LLMProviderClient {
             let prompt = usageData["promptTokenCount"] as? Int ?? 0
             let candidates = usageData["candidatesTokenCount"] as? Int ?? 0
             let thoughts = usageData["thoughtsTokenCount"] as? Int ?? 0
-            
+
+            // Note: output is candidates only, reasoning is thoughts only - they're tracked separately
+            // to avoid double-counting in totalTokens (input + reasoning + output)
             usage = LLMService.TokenUsage(
                 input: prompt,
-                output: candidates + thoughts,
+                visibleOutput: candidates,
                 cached: nil,
                 reasoning: thoughts
             )
@@ -262,17 +276,24 @@ struct GeminiProvider: LLMProviderClient {
             throw LLMService.LLMError.apiError(message)
         }
 
-        if let usageData = json["usageMetadata"] as? [String: Any] {
+        // Check if this is the final chunk (has finishReason)
+        let candidates = json["candidates"] as? [[String: Any]]
+        let finishReason = candidates?.first?["finishReason"] as? String
+        let isFinalChunk = finishReason != nil
+
+        // Only yield usage on final chunk - Gemini sends cumulative counts on every chunk,
+        // not deltas, so recording on every chunk would cause massive inflation
+        if isFinalChunk, let usageData = json["usageMetadata"] as? [String: Any] {
             let usage = LLMService.TokenUsage(
                 input: usageData["promptTokenCount"] as? Int ?? 0,
-                output: (usageData["candidatesTokenCount"] as? Int ?? 0) + (usageData["thoughtsTokenCount"] as? Int ?? 0),
+                visibleOutput: usageData["candidatesTokenCount"] as? Int ?? 0,
                 cached: nil,
                 reasoning: usageData["thoughtsTokenCount"] as? Int
             )
             continuation.yield(.usage(usage))
         }
 
-        guard let candidates = json["candidates"] as? [[String: Any]],
+        guard let candidates,
               let content = candidates.first?["content"] as? [String: Any],
               let parts = content["parts"] as? [[String: Any]] else {
             return
@@ -401,15 +422,14 @@ struct AnthropicProvider: LLMProviderClient {
 
         var usage: LLMService.TokenUsage?
         if let usageData = json["usage"] as? [String: Any] {
+            // Anthropic: input_tokens is total billable input (includes cache_read as subset)
+            // cache_creation_input_tokens is additional tokens written to cache
             let input = usageData["input_tokens"] as? Int ?? 0
             let cacheCreation = usageData["cache_creation_input_tokens"] as? Int ?? 0
             let cacheRead = usageData["cache_read_input_tokens"] as? Int ?? 0
-            let output = usageData["output_tokens"] as? Int ?? 0
-            
-            // Note: For Anthropic, input_tokens usually includes cached tokens
             usage = LLMService.TokenUsage(
-                input: input + cacheCreation + cacheRead,
-                output: output,
+                input: input + cacheCreation,
+                visibleOutput: usageData["output_tokens"] as? Int ?? 0,
                 cached: cacheRead,
                 reasoning: nil
             )
@@ -436,22 +456,15 @@ struct AnthropicProvider: LLMProviderClient {
             } else if let thinking = delta["thinking"] as? String {
                 continuation.yield(.thinking(thinking))
             }
-        } else if type == "message_start", let message = json["message"] as? [String: Any], let usageData = message["usage"] as? [String: Any] {
+        } else if type == "message_delta", let usageData = json["usage"] as? [String: Any] {
+            // Anthropic: input_tokens includes cache_read (subset), cache_creation is additional
             let input = usageData["input_tokens"] as? Int ?? 0
             let cacheCreation = usageData["cache_creation_input_tokens"] as? Int ?? 0
             let cacheRead = usageData["cache_read_input_tokens"] as? Int ?? 0
             let usage = LLMService.TokenUsage(
-                input: input + cacheCreation + cacheRead,
-                output: usageData["output_tokens"] as? Int ?? 0,
+                input: input + cacheCreation,
+                visibleOutput: usageData["output_tokens"] as? Int ?? 0,
                 cached: cacheRead,
-                reasoning: nil
-            )
-            continuation.yield(.usage(usage))
-        } else if type == "message_delta", let usageData = json["usage"] as? [String: Any] {
-            let usage = LLMService.TokenUsage(
-                input: 0,
-                output: usageData["output_tokens"] as? Int ?? 0,
-                cached: nil,
                 reasoning: nil
             )
             continuation.yield(.usage(usage))

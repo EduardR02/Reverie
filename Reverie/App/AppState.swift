@@ -225,8 +225,8 @@ final class AppState {
         saveStats()
     }
 
-    func addTokens(input: Int, reasoning: Int, output: Int) {
-        readingStats.addTokens(input: input, reasoning: reasoning, output: output)
+    func addTokens(input: Int, reasoning: Int, output: Int, cached: Int) {
+        readingStats.addTokens(input: input, reasoning: reasoning, output: output, cached: cached)
         saveStats()
     }
 
@@ -578,6 +578,7 @@ struct UserSettings: Codable, Equatable {
     var activeContentBorderEnabled: Bool = false
     var showReadingSpeedFooter: Bool = true
     var useCheapestModelForClassification: Bool = true
+    var autoAIProcessingEnabled: Bool = true
 
     static func load() -> UserSettings {
         guard let data = UserDefaults.standard.data(forKey: "userSettings"),

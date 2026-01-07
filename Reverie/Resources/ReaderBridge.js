@@ -33,6 +33,7 @@ const focusState = {
     viewportHeight: 0,
     eyeLineY: 0,
     reachedBottom: false,
+    bottomArrivalTime: 0,
     mapBuilt: false,
     mapPending: false,
     idleTimeout: null,
@@ -504,11 +505,24 @@ window.addEventListener('scroll', () => {
         window.requestAnimationFrame(() => {
             updateFocus();
             const max = document.documentElement.scrollHeight - window.innerHeight;
-            if (max > 0 && sy >= max - 1) focusState.reachedBottom = true;
-            else if (sy < max - 20) focusState.reachedBottom = false;
+            // Two-step tug: first arrival at bottom doesn't trigger, only deliberate second tug after settling
+            if (max > 0 && sy >= max - 1) {
+                if (!focusState.reachedBottom) {
+                    focusState.reachedBottom = true;
+                    focusState.bottomArrivalTime = Date.now();
+                }
+            } else if (sy < max - 20) {
+                focusState.reachedBottom = false;
+                focusState.bottomArrivalTime = 0;
+            }
+            // Only fire tug if settled at bottom for at least 300ms (prevents first-arrival overshoot)
             if (focusState.reachedBottom && sy > max + 5) {
-                webkit.messageHandlers.readerBridge.postMessage({ type: 'bottomTug' });
-                focusState.reachedBottom = false; 
+                const timeSinceArrival = Date.now() - focusState.bottomArrivalTime;
+                if (timeSinceArrival > 300) {
+                    webkit.messageHandlers.readerBridge.postMessage({ type: 'bottomTug' });
+                }
+                focusState.reachedBottom = false;
+                focusState.bottomArrivalTime = 0;
             }
             scrollTicking = false;
         });

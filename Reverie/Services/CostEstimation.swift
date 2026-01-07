@@ -2,11 +2,22 @@ import Foundation
 
 enum CostEstimates {
     static let tokensPerWord: Double = 1.3
-    static let analysisOutputTokensPerChapterRange: ClosedRange<Int> = 2_000...4_000
     static let classificationPreviewWordLimit: Int = 200
     static let classificationOutputTokensPerChapter: Int = 20
     static let imagePromptTokensPerImage: Int = 200
     static let imageOutputTokensPerImage: Int = 1_200
+
+    /// Model-specific output token ranges based on real chapter analysis data
+    static func analysisOutputTokensPerChapterRange(for modelId: String) -> ClosedRange<Int> {
+        if modelId.hasPrefix("gemini") {
+            return 2_000...4_000
+        } else if modelId.hasPrefix("gpt") {
+            return 4_000...6_000
+        } else if modelId.hasPrefix("claude") {
+            return 5_000...7_000
+        }
+        return 3_000...5_000  // fallback
+    }
 
     static func imagesPerChapter(for density: DensityLevel) -> Double {
         switch density {

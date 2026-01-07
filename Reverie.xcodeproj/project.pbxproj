@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BB007F5D2F057A2000926C8E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = BB007F5C2F057A2000926C8E /* GRDB */; };
+		BB06EE412F0EF7C400E925E2 /* AIProcessingToggle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */; };
 		BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */; };
 		BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
@@ -51,6 +52,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AIProcessingToggle.swift; path = Reverie/Views/Home/AIProcessingToggle.swift; sourceTree = "<group>"; };
 		BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExpandedProcessingCard.swift; path = Reverie/Views/Home/ExpandedProcessingCard.swift; sourceTree = "<group>"; };
 		BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
@@ -160,6 +162,7 @@
 		ROOT = {
 			isa = PBXGroup;
 			children = (
+				BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */,
 				READER /* Reverie */,
 				PRODUCTS /* Products */,
 				BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */,
@@ -353,6 +356,7 @@
 				F014 /* ImportSheet.swift in Sources */,
 				F036 /* ProcessBookView.swift in Sources */,
 				F033 /* BookProcessingStatus.swift in Sources */,
+				BB06EE412F0EF7C400E925E2 /* AIProcessingToggle.swift in Sources */,
 				F015 /* ReaderView.swift in Sources */,
 				F016 /* BookContentView.swift in Sources */,
 				F017 /* AIPanel.swift in Sources */,

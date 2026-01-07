@@ -103,6 +103,10 @@ struct ReaderView: View {
                 } else if oldTab == .chat {
                     appState.readingSpeedTracker.endPause()
                 }
+                // Reset quiz auto-switch flag when manually leaving quiz - enables repeated tug gestures
+                if oldTab == .quiz && newTab != .quiz {
+                    hasAutoSwitchedToQuiz = false
+                }
             }
             .onChange(of: expandedImage) { oldImage, newImage in
                 if newImage != nil {
@@ -185,6 +189,13 @@ struct ReaderView: View {
         }
         .onChange(of: appState.currentBook?.classificationStatus) { _, newValue in
             if newValue == .completed {
+                // Check if current chapter was classified as garbage - end reading session if so
+                if let book = appState.currentBook,
+                   let freshChapters = try? appState.database.fetchChapters(for: book),
+                   appState.currentChapterIndex < freshChapters.count,
+                   freshChapters[appState.currentChapterIndex].isGarbage {
+                    _ = appState.readingSpeedTracker.endSession()
+                }
                 Task { await loadChapter(at: appState.currentChapterIndex) }
             }
         }
@@ -527,31 +538,39 @@ struct ReaderView: View {
     // MARK: - Chapter List Popover
 
     private var chapterListPopover: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(chapters) { chapter in
-                    Button {
-                        appState.currentChapterIndex = chapter.index
-                        showChapterList = false
-                    } label: {
-                        HStack {
-                            Text(chapter.title)
-                                .font(.system(size: 13))
-                                .foregroundColor(chapter.id == currentChapter?.id ? theme.rose : theme.text)
-                            Spacer()
-                            if chapter.processed {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(theme.foam)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(chapters) { chapter in
+                        Button {
+                            appState.currentChapterIndex = chapter.index
+                            showChapterList = false
+                        } label: {
+                            HStack {
+                                Text(chapter.title)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(chapter.id == currentChapter?.id ? theme.rose : theme.text)
+                                Spacer()
+                                if chapter.processed {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(theme.foam)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(chapter.id == currentChapter?.id ? theme.overlay : Color.clear)
+                            .contentShape(Rectangle())
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(chapter.id == currentChapter?.id ? theme.overlay : Color.clear)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .id(chapter.id)
                     }
-                    .buttonStyle(.plain)
+                }
+            }
+            .onAppear {
+                if let currentId = currentChapter?.id {
+                    proxy.scrollTo(currentId, anchor: .center)
                 }
             }
         }
@@ -680,6 +699,7 @@ struct ReaderView: View {
 
     @MainActor
     private func startClassificationIfNeeded() {
+        guard appState.settings.autoAIProcessingEnabled else { return }
         guard var currentBook = appState.currentBook, currentBook.needsClassification, !isClassifying, !hasAttemptedClassification else { return }
         hasAttemptedClassification = true
         isClassifying = true
@@ -818,7 +838,7 @@ struct ReaderView: View {
     }
 
     private func shouldAutoProcess(_ chapter: Chapter, in book: Book) -> Bool {
-        hasLLMKey && book.classificationStatus == .completed && !chapter.processed && !chapter.shouldSkipAutoProcessing
+        appState.settings.autoAIProcessingEnabled && hasLLMKey && book.classificationStatus == .completed && !chapter.processed && !chapter.shouldSkipAutoProcessing
     }
 
     private func loadChapter(at index: Int) async {
@@ -871,7 +891,10 @@ struct ReaderView: View {
         currentProgressPercent = lastScrollPercent
         furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
         let wordCount = chapter.wordCount > 0 ? chapter.wordCount : estimateWordCount(from: chapter.contentHTML)
-        if wordCount > 0, let chapterId = chapter.id {
+        // Don't track reading speed until classification confirms it's content (not front/back matter)
+        // This prevents contaminating WPM history if classification hasn't run yet
+        let isClassifiedContent = currentBook.classificationStatus == .completed && !chapter.isGarbage
+        if wordCount > 0, let chapterId = chapter.id, isClassifiedContent {
             appState.readingSpeedTracker.startSession(
                 chapterId: chapterId,
                 wordCount: wordCount,

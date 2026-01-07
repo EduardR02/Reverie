@@ -398,7 +398,7 @@ struct ProcessBookView: View {
     }
 
     private var estimatedOutputTokensRange: ClosedRange<Double> {
-        let perChapter = CostEstimates.analysisOutputTokensPerChapterRange
+        let perChapter = CostEstimates.analysisOutputTokensPerChapterRange(for: appState.settings.llmModel)
         let minTokens = Double(estimatedChapterCount * perChapter.lowerBound)
         let maxTokens = Double(estimatedChapterCount * perChapter.upperBound)
         return minTokens...maxTokens

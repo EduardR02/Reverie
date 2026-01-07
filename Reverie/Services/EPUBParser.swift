@@ -341,6 +341,19 @@ final class EPUBParser {
             candidates.append((href: item.href, mediaType: item.mediaType))
         }
 
+        // Fallback: look for first image in common cover locations
+        let commonCoverPaths = ["cover.jpg", "cover.jpeg", "cover.png", "images/cover.jpg", "Images/cover.jpg", "OEBPS/cover.jpg"]
+        for path in commonCoverPaths {
+            if let item = package.manifest.values.first(where: { $0.href.lowercased() == path.lowercased() }) {
+                candidates.append((href: item.href, mediaType: item.mediaType))
+            }
+        }
+
+        // Last resort: first image file in manifest (some EPUBs just use the first image)
+        if candidates.isEmpty, let item = package.manifest.values.first(where: { ($0.mediaType ?? "").lowercased().hasPrefix("image/") }) {
+            candidates.append((href: item.href, mediaType: item.mediaType))
+        }
+
         for candidate in candidates {
             if let cover = resolveCover(href: candidate.href, mediaType: candidate.mediaType, baseDir: opfDir) {
                 return cover

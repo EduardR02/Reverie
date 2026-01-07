@@ -29,11 +29,13 @@ final class LLMService {
 
     struct TokenUsage: Codable {
         var input: Int = 0
-        var output: Int = 0
+        /// Output tokens excluding reasoning (visible text only)
+        var visibleOutput: Int = 0
         var cached: Int?
         var reasoning: Int?
 
-        var total: Int { input + output }
+        /// Total tokens including reasoning
+        var total: Int { input + visibleOutput + (reasoning ?? 0) }
     }
 
     struct ChapterAnalysis: Codable {
@@ -570,11 +572,12 @@ final class LLMService {
             appState.addTokens(
                 input: usage.input,
                 reasoning: usage.reasoning ?? 0,
-                output: usage.output
+                output: usage.visibleOutput,
+                cached: usage.cached ?? 0
             )
             appState.updateProcessingCost(
                 inputTokens: usage.input,
-                outputTokens: usage.output,
+                outputTokens: usage.visibleOutput + (usage.reasoning ?? 0),  // Total billable output
                 model: model
             )
         }
@@ -584,13 +587,45 @@ final class LLMService {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
         let captureDir = docs.appendingPathComponent("Reverie/Captures", isDirectory: true)
-        
+
         try? fm.createDirectory(at: captureDir, withIntermediateDirectories: true)
-        
+
         let timestamp = Int(Date().timeIntervalSince1970)
         let fileURL = captureDir.appendingPathComponent("\(name)_\(timestamp).json")
         try? data.write(to: fileURL)
         print("Captured API response to: \(fileURL.path)")
+    }
+
+    /// Records streaming chunks to a JSONL file (one JSON object per line)
+    private class StreamingRecorder {
+        private var chunks: [Data] = []
+        private let name: String
+        private let timestamp: Int
+
+        init(name: String) {
+            self.name = name
+            self.timestamp = Int(Date().timeIntervalSince1970)
+        }
+
+        func recordChunk(_ payload: String) {
+            if let data = payload.data(using: .utf8) {
+                chunks.append(data)
+            }
+        }
+
+        func save() {
+            guard !chunks.isEmpty else { return }
+            let fm = FileManager.default
+            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let captureDir = docs.appendingPathComponent("Reverie/Captures", isDirectory: true)
+
+            try? fm.createDirectory(at: captureDir, withIntermediateDirectories: true)
+
+            let fileURL = captureDir.appendingPathComponent("\(name)_stream_\(timestamp).jsonl")
+            let content = chunks.compactMap { String(data: $0, encoding: .utf8) }.joined(separator: "\n")
+            try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+            print("Captured \(chunks.count) streaming chunks to: \(fileURL.path)")
+        }
     }
 
     internal func decodeStructured<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
@@ -751,6 +786,7 @@ final class LLMService {
                     }
 
                     // A temporary continuation to intercept usage chunks
+                    let streamRecorder = self.recordMode ? StreamingRecorder(name: nameHint ?? "stream") : nil
                     let interceptor = AsyncThrowingStream<StreamChunk, Error> { inner in
                         Task {
                             do {
@@ -762,6 +798,9 @@ final class LLMService {
                                     guard let payload = ssePayload(from: line) else { return }
                                     sawPayload = true
                                     if payload == "[DONE]" { return }
+
+                                    // Record each streaming chunk for test fixture generation
+                                    streamRecorder?.recordChunk(payload)
 
                                     guard let data = payload.data(using: .utf8),
                                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -784,8 +823,10 @@ final class LLMService {
                                     if let usage { inner.yield(.usage(usage)) }
                                     inner.yield(.content(text))
                                 }
+                                streamRecorder?.save()
                                 inner.finish()
                             } catch {
+                                streamRecorder?.save()
                                 inner.finish(throwing: error)
                             }
                         }

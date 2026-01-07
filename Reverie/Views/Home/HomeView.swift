@@ -27,8 +27,14 @@ struct HomeView: View {
     @State private var importError: String?
     @State private var showImportError = false
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 160, maximum: 180), spacing: 24)
+    // Expanded cards grid (first row)
+    private let expandedColumns = [
+        GridItem(.adaptive(minimum: 160, maximum: 180), spacing: 24, alignment: .top)
+    ]
+
+    // Compact cards grid (remaining rows) - Tighter for focused look
+    private let compactColumns = [
+        GridItem(.adaptive(minimum: 180, maximum: 220), spacing: 12)
     ]
 
     var body: some View {
@@ -94,7 +100,7 @@ struct HomeView: View {
 
     private var header: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Library")
                         .font(.system(size: 28, weight: .semibold, design: .rounded))
@@ -106,6 +112,15 @@ struct HomeView: View {
                 }
 
                 Spacer()
+
+                // AI Processing toggle
+                AIProcessingToggle(
+                    isEnabled: appState.settings.autoAIProcessingEnabled,
+                    action: {
+                        appState.settings.autoAIProcessingEnabled.toggle()
+                        appState.settings.save()
+                    }
+                )
 
                 // Stats button
                 Button(action: { appState.openStats() }) {
@@ -156,41 +171,69 @@ struct HomeView: View {
     // MARK: - Book Grid
 
     private var bookGrid: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // Processing card at top when active
-                if appState.isProcessingBook,
-                   let processingBook = books.first(where: { $0.id == appState.processingBookId }) {
-                    processingCard(for: processingBook)
-                        .padding(.horizontal, 32)
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.95)),
-                            removal: .opacity
-                        ))
-                }
+        GeometryReader { geometry in
+            let availableWidth = geometry.size.width - 64 // Account for horizontal padding
+            let cardWidth: CGFloat = 170 // Average of min/max (160-180)
+            let spacing: CGFloat = 24
+            let expandedCount = max(1, Int((availableWidth + spacing) / (cardWidth + spacing)))
 
-                // Book grid (exclude processing book to avoid duplication)
-                LazyVGrid(columns: columns, spacing: 24) {
-                    ForEach(books.filter { $0.id != appState.processingBookId }) { book in
-                        BookCard(
-                            book: book
-                        ) {
-                            appState.openBook(book)
-                        } onProcess: {
-                            handleProcessRequest(book)
-                        } onDelete: {
-                            deleteBook(book)
-                        } onToggleFinished: {
-                            appState.toggleBookFinished(book)
-                            Task { await loadBooks() }
+            let displayBooks = books.filter { $0.id != appState.processingBookId }
+            let expandedBooks = Array(displayBooks.prefix(expandedCount))
+            let compactBooks = Array(displayBooks.dropFirst(expandedCount))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Processing card at top when active
+                    if appState.isProcessingBook,
+                       let processingBook = books.first(where: { $0.id == appState.processingBookId }) {
+                        processingCard(for: processingBook)
+                            .padding(.horizontal, 32)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                                removal: .opacity
+                            ))
+                    }
+
+                    // First row: Expanded vertical cards
+                    if !expandedBooks.isEmpty {
+                        LazyVGrid(columns: expandedColumns, alignment: .leading, spacing: 24) {
+                            ForEach(expandedBooks) { book in
+                                bookCard(for: book, variant: .expanded)
+                            }
                         }
+                        .padding(.horizontal, 32)
+                    }
+
+                    // Remaining rows: Compact horizontal cards
+                    if !compactBooks.isEmpty {
+                        LazyVGrid(columns: compactColumns, alignment: .leading, spacing: 12) {
+                            ForEach(compactBooks) { book in
+                                bookCard(for: book, variant: .compact)
+                            }
+                        }
+                        .padding(.horizontal, 32)
                     }
                 }
-                .padding(.horizontal, 32)
+                .padding(.top, 16)
+                .padding(.bottom, 32)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: appState.isProcessingBook)
             }
-            .padding(.top, 8)
-            .padding(.bottom, 32)
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: appState.isProcessingBook)
+        }
+    }
+
+    private func bookCard(for book: Book, variant: CardVariant) -> some View {
+        BookCard(
+            book: book,
+            variant: variant
+        ) {
+            appState.openBook(book)
+        } onProcess: {
+            handleProcessRequest(book)
+        } onDelete: {
+            deleteBook(book)
+        } onToggleFinished: {
+            appState.toggleBookFinished(book)
+            Task { await loadBooks() }
         }
     }
 
@@ -731,7 +774,7 @@ struct HomeView: View {
                     summary = generatedSummary
                     if let usage {
                         liveInputTokens += usage.input
-                        liveOutputTokens += usage.output
+                        liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
                     }
                 }
 
@@ -855,7 +898,7 @@ struct HomeView: View {
                 liveQuizCount += 1
             case .usage(let usage):
                 liveInputTokens += usage.input
-                liveOutputTokens += usage.output
+                liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
             case .completed(let result):
                 analysis = result
             }

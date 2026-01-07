@@ -21,6 +21,7 @@ struct ReadingStats: Codable {
     var tokensInput: Int = 0
     var tokensReasoning: Int = 0
     var tokensOutput: Int = 0
+    var tokensCached: Int = 0
 
     var totalTokens: Int {
         tokensInput + tokensReasoning + tokensOutput
@@ -70,10 +71,11 @@ struct ReadingStats: Codable {
         dailyLog[dateKey, default: 0] += seconds
     }
 
-    mutating func addTokens(input: Int, reasoning: Int, output: Int) {
+    mutating func addTokens(input: Int, reasoning: Int, output: Int, cached: Int) {
         tokensInput += input
         tokensReasoning += reasoning
         tokensOutput += output
+        tokensCached += cached
     }
 
     mutating func recordInsightSeen() {

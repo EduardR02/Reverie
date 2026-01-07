@@ -188,7 +188,12 @@ struct AIPanel: View {
     }
 
     private var shouldShowSpeedPrompt: Bool {
-        scrollPercent > 0.9 && showedSpeedPromptForChapter != chapter?.id
+        // Only show speed prompt for classified content chapters
+        let isClassifiedContent = appState.currentBook?.classificationStatus == .completed
+            && chapter?.isGarbage != true
+        return scrollPercent > 0.9
+            && showedSpeedPromptForChapter != chapter?.id
+            && isClassifiedContent
     }
 
     @ViewBuilder
@@ -332,11 +337,16 @@ struct AIPanel: View {
                     }
 
                     if annotations.isEmpty && !isProcessingInsights && !isClassifying && (chapter?.shouldSkipAutoProcessing != true) {
-                        emptyState(
-                            icon: "lightbulb",
-                            title: "No insights yet",
-                            subtitle: "Insights will appear as you read"
-                        )
+                        // Manual trigger when auto-processing is disabled
+                        if !appState.settings.autoAIProcessingEnabled && chapter?.processed != true {
+                            manualProcessingPrompt
+                        } else {
+                            emptyState(
+                                icon: "lightbulb",
+                                title: "No insights yet",
+                                subtitle: "Insights will appear as you read"
+                            )
+                        }
                     } else if !annotations.isEmpty {
                         annotationList
                     }
@@ -890,6 +900,45 @@ struct AIPanel: View {
         .frame(maxWidth: .infinity, minHeight: 200)
     }
 
+    private var manualProcessingPrompt: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Image(systemName: "sparkles")
+                .font(.system(size: 32, weight: .light))
+                .foregroundColor(theme.muted)
+
+            VStack(spacing: 4) {
+                Text("AI processing paused")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(theme.text)
+
+                Text("Auto-processing is disabled")
+                    .font(.system(size: 13))
+                    .foregroundColor(theme.muted)
+            }
+
+            Button {
+                onForceProcess()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                    Text("Generate insights")
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(theme.base)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(theme.rose)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, minHeight: 200)
+    }
+
     // MARK: - Processing State
 
     private func processingSkeleton(text: String, isImages: Bool = false) -> some View {
@@ -917,7 +966,7 @@ struct AIPanel: View {
         let onCancel: () -> Void
 
         @Environment(\.theme) private var theme
-        @State private var pulsePhase: CGFloat = 0
+        @State private var displayedThinking: String = ""
 
         var body: some View {
             VStack(alignment: .leading, spacing: 0) {
@@ -985,14 +1034,14 @@ struct AIPanel: View {
                                     Text("Reasoning")
                                         .font(.system(size: 11, weight: .bold))
                                 } else {
-                                    Text(lastThinkingSentence)
+                                    Text(displayedSentence)
                                         .font(.system(size: 11, weight: .medium))
                                         .italic()
                                         .lineLimit(1)
                                         .mask(
                                             LinearGradient(
                                                 gradient: Gradient(stops: [
-                                                    .init(color: .black, location: 0.8),
+                                                    .init(color: .black, location: 0.92),
                                                     .init(color: .clear, location: 1.0)
                                                 ]),
                                                 startPoint: .leading,
@@ -1041,11 +1090,20 @@ struct AIPanel: View {
             .padding(.bottom, 8)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveInsightCount)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveQuizCount)
-            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveThinking)
+            .onChange(of: liveThinking) { _, newValue in
+                if newValue.isEmpty || displayedThinking.isEmpty {
+                    displayedThinking = newValue
+                    return
+                }
+                let delta = newValue.count - displayedThinking.count
+                if delta >= 80 || (delta > 0 && newValue.suffix(delta).contains { ".!?\n".contains($0) }) {
+                    displayedThinking = newValue
+                }
+            }
         }
 
-        private var lastThinkingSentence: String {
-            let sentences = liveThinking.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+        private var displayedSentence: String {
+            let sentences = displayedThinking.components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
             return sentences.last ?? "Processing..."
