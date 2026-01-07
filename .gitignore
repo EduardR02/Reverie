@@ -6,6 +6,8 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 *.app
+*.dmg
+*.zip
 build/
 
 # SwiftPM
@@ -25,3 +27,4 @@ Fixtures/
 # Local notes and scripts
 Agents/
 frontend-design-skill.md
+plan.md
