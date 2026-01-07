@@ -345,7 +345,7 @@ struct SettingsView: View {
                     Divider().background(theme.overlay)
 
                     Toggle(isOn: $state.settings.autoScrollHighlightEnabled) {
-                        toggleLabel(title: "Auto-scroll Highlighting", subtitle: "Outline active items while scrolling")
+                        toggleLabel(title: "Auto-scroll Highlighting", subtitle: "Auto-selects insights as you scroll through the book")
                     }
                     .toggleStyle(RightAlignedToggleStyle())
                     .padding(.vertical, 12)
@@ -374,7 +374,7 @@ struct SettingsView: View {
             settingsCard {
                 VStack(alignment: .leading, spacing: 0) {
                     Toggle(isOn: $state.settings.smartAutoScrollEnabled) {
-                        toggleLabel(title: "Smart Auto-Scroll", subtitle: "Scroll based on reading speed")
+                        toggleLabel(title: "Smart Auto-Scroll", subtitle: "Auto-scrolls the reader based on your reading speed")
                     }
                     .toggleStyle(RightAlignedToggleStyle())
                     .padding(.vertical, 12)

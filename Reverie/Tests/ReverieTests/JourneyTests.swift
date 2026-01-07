@@ -16,7 +16,7 @@ final class JourneyTests: XCTestCase {
     }
 
     @MainActor
-    func testWordCountingComplexDelta() {
+    func testWordCountingComplexDelta() async {
         var book = Book(title: "Test Book", author: "Author", epubPath: "/tmp/test.epub")
         try! db.saveBook(&book)
         appState.currentBook = book
@@ -30,37 +30,19 @@ final class JourneyTests: XCTestCase {
         )
         try! db.saveChapter(&chapter)
         
-        // 1. Scroll to 10%
         appState.updateChapterProgress(chapter: chapter, scrollPercent: 0.1, scrollOffset: 100)
+        try! await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(self.appState.readingStats.totalWords, 100)
         
-        // 2. Wait for first debounce
-        let exp1 = XCTestExpectation(description: "First save")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            XCTAssertEqual(self.appState.readingStats.totalWords, 100)
-            
-            // 3. Scroll to 30% (should add 20% more = 200 words)
-            // Fetch fresh chapter from DB to get updated maxScrollReached
-            let freshChapter = try! self.db.fetchChapters(for: book).first!
-            self.appState.updateChapterProgress(chapter: freshChapter, scrollPercent: 0.3, scrollOffset: 300)
-            
-            let exp2 = XCTestExpectation(description: "Second save")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                XCTAssertEqual(self.appState.readingStats.totalWords, 300)
-                
-                // 4. Scroll back to 20% (should add NOTHING)
-                let finalChapter = try! self.db.fetchChapters(for: book).first!
-                self.appState.updateChapterProgress(chapter: finalChapter, scrollPercent: 0.2, scrollOffset: 200)
-                
-                let exp3 = XCTestExpectation(description: "Final save")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    XCTAssertEqual(self.appState.readingStats.totalWords, 300)
-                    exp3.fulfill()
-                }
-                exp2.fulfill()
-            }
-            exp1.fulfill()
-        }
-        wait(for: [exp1], timeout: 5.0)
+        let freshChapter = try! self.db.fetchChapters(for: book).first!
+        self.appState.updateChapterProgress(chapter: freshChapter, scrollPercent: 0.3, scrollOffset: 300)
+        try! await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(self.appState.readingStats.totalWords, 300)
+        
+        let finalChapter = try! self.db.fetchChapters(for: book).first!
+        self.appState.updateChapterProgress(chapter: finalChapter, scrollPercent: 0.2, scrollOffset: 200)
+        try! await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(self.appState.readingStats.totalWords, 300)
     }
 
     @MainActor
@@ -76,11 +58,6 @@ final class JourneyTests: XCTestCase {
         XCTAssertEqual(annotations[0].title, "First")
         XCTAssertEqual(annotations[1].title, "Middle")
         XCTAssertEqual(annotations[2].title, "Last")
-    }
-
-    @MainActor
-    func testStreakLogic() {
-        // ... (existing code)
     }
 
     @MainActor

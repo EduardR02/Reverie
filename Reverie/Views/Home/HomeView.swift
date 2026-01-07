@@ -209,7 +209,8 @@ struct HomeView: View {
             liveInputTokens: liveInputTokens,
             liveOutputTokens: liveOutputTokens,
             startTime: processingStartTime,
-            onCancel: { cancelProcessing() }
+            onCancel: { cancelProcessing() },
+            processingCost: appState.processingCostEstimate
         )
     }
 
@@ -613,6 +614,7 @@ struct HomeView: View {
         appState.processingCompletedChapters = 0
         appState.processingTotalChapters = 0
         appState.processingChapter = "Preparing..."
+        appState.processingCostEstimate = 0
 
         // Initialize streaming state
         liveSummaryCount = 0

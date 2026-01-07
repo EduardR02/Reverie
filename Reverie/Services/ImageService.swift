@@ -8,9 +8,13 @@ final class ImageService {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 600 // 10 minutes
+        config.timeoutIntervalForRequest = 600
         config.timeoutIntervalForResource = 600
         self.session = URLSession(configuration: config)
+    }
+
+    init(session: URLSession) {
+        self.session = session
     }
 
     struct ImageSuggestionInput {
@@ -292,6 +296,16 @@ final class ImageService {
 
     func loadImage(at path: String) -> NSImage? {
         NSImage(contentsOfFile: path)
+    }
+
+    // MARK: - Test Helpers
+
+    func testSanitizeBase64Image(_ raw: String, mimeType: String) -> String {
+        sanitizeBase64Image(raw, mimeType: mimeType)
+    }
+
+    func testFindPngEnd(_ data: Data) -> Int? {
+        findPngEnd(data)
     }
 
     enum ImageError: LocalizedError {

@@ -52,6 +52,7 @@ final class AppState {
     var processingTotalChapters: Int = 0
     var processingCompletedChapters: Int = 0
     var processingTask: Task<Void, Never>?
+    var processingCostEstimate: Double = 0
 
     // Services
     let database: DatabaseService
@@ -227,6 +228,13 @@ final class AppState {
     func addTokens(input: Int, reasoning: Int, output: Int) {
         readingStats.addTokens(input: input, reasoning: reasoning, output: output)
         saveStats()
+    }
+
+    func updateProcessingCost(inputTokens: Int, outputTokens: Int, model: String) {
+        guard let pricing = PricingCatalog.textPricing(for: model) else { return }
+        let inputCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
+        let outputCost = (Double(outputTokens) / 1_000_000) * pricing.outputPerMToken
+        processingCostEstimate += inputCost + outputCost
     }
 
     func recordFollowup() {

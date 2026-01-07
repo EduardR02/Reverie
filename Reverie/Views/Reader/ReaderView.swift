@@ -87,17 +87,42 @@ struct ReaderView: View {
     }
 
     var body: some View {
+        mainContent
+            .onDisappear {
+                stopReadingTicker()
+                persistCurrentProgress()
+                if let result = appState.readingSpeedTracker.endSession() {
+                    appState.readingStats.addReadingTime(result.seconds)
+                }
+                currentAnalysisTask = nil
+                currentImageTask = nil
+            }
+            .onChange(of: aiPanelSelectedTab) { oldTab, newTab in
+                if newTab == .chat {
+                    appState.readingSpeedTracker.startPause(reason: .chatting)
+                } else if oldTab == .chat {
+                    appState.readingSpeedTracker.endPause()
+                }
+            }
+            .onChange(of: expandedImage) { oldImage, newImage in
+                if newImage != nil {
+                    appState.readingSpeedTracker.startPause(reason: .viewingImage)
+                } else if oldImage != nil {
+                    appState.readingSpeedTracker.endPause()
+                }
+            }
+    }
+
+    private var mainContent: some View {
         GeometryReader { proxy in
             let totalWidth = proxy.size.width
             let readerIdealWidth = totalWidth * appState.splitRatio
             let aiIdealWidth = totalWidth - readerIdealWidth
 
             HSplitView {
-                // Left: Book Content
                 bookContentPanel
                     .frame(minWidth: 400, idealWidth: readerIdealWidth)
 
-                // Right: AI Panel
                 aiPanel
                     .frame(minWidth: 280, idealWidth: aiIdealWidth)
             }
@@ -112,9 +137,9 @@ struct ReaderView: View {
                         return .handled
                     }
                 }
-                
-                guard !isChatInputFocused else { return .ignored } 
-                
+
+                guard !isChatInputFocused else { return .ignored }
+
                 switch press.key {
                 case .upArrow:
                     scrollByAmount = -200
@@ -153,30 +178,15 @@ struct ReaderView: View {
             startReadingTicker()
         }
         .onChange(of: appState.currentChapterIndex) { oldIndex, newIndex in
-            // PERSISTENCE: Save progress when leaving a chapter
             persistCurrentProgress()
-            
-            // BACKGROUND CONTINUITY: Orphan the task reference so UI resets, but don't cancel it.
             currentAnalysisTask = nil
             currentImageTask = nil
-            
             Task { await loadChapter(at: newIndex) }
         }
         .onChange(of: appState.currentBook?.classificationStatus) { _, newValue in
             if newValue == .completed {
                 Task { await loadChapter(at: appState.currentChapterIndex) }
             }
-        }
-        .onDisappear {
-            stopReadingTicker()
-            // PERSISTENCE: Final save when leaving the reader
-            persistCurrentProgress()
-            if let result = appState.readingSpeedTracker.endSession() {
-                appState.readingStats.addReadingTime(result.seconds)
-            }
-            // BACKGROUND CONTINUITY: Analysis continues if user just went home.
-            currentAnalysisTask = nil
-            currentImageTask = nil
         }
     }
 
@@ -363,6 +373,9 @@ struct ReaderView: View {
 
                             // LIGHTWEIGHT: Update speed tracker (memory only)
                             appState.readingSpeedTracker.updateSession(scrollPercent: progress.current)
+                            if !context.isProgrammatic && appState.readingSpeedTracker.isPaused {
+                                appState.readingSpeedTracker.endPause()
+                            }
                             updateBackAnchor(scrollOffset: context.scrollOffset, viewportHeight: context.viewportHeight)
 
                             if context.scrollPercent < 0.85 {
@@ -1135,17 +1148,7 @@ struct ReaderView: View {
             }
         }
         do {
-            let blockParser = ContentBlockParser()
-            let contentWithBlocks: String
-            let blockCount: Int
-            if let cached = chapter.contentText {
-                contentWithBlocks = cached
-                blockCount = chapter.blockCount
-            } else {
-                let (blocks, text) = blockParser.parse(html: chapter.contentHTML)
-                contentWithBlocks = text
-                blockCount = blocks.count
-            }
+            let (contentWithBlocks, blockCount) = chapter.getContentText()
             let existingTitles = annotations.map { $0.title }
             let stream = appState.llmService.generateMoreInsightsStreaming(
                 contentWithBlocks: contentWithBlocks,
@@ -1182,17 +1185,7 @@ struct ReaderView: View {
             }
         }
         do {
-            let blockParser = ContentBlockParser()
-            let contentWithBlocks: String
-            let blockCount: Int
-            if let cached = chapter.contentText {
-                contentWithBlocks = cached
-                blockCount = chapter.blockCount
-            } else {
-                let (blocks, text) = blockParser.parse(html: chapter.contentHTML)
-                contentWithBlocks = text
-                blockCount = blocks.count
-            }
+            let (contentWithBlocks, blockCount) = chapter.getContentText()
             let existingQuestions = quizzes.map { $0.question }
             let stream = appState.llmService.generateMoreQuestionsStreaming(
                 contentWithBlocks: contentWithBlocks,
@@ -1287,6 +1280,11 @@ struct ReaderView: View {
     }
 
     private func handleAutoSwitch(context: ScrollContext) {
+        if appState.settings.autoSwitchFromChatOnScroll && aiPanelSelectedTab == .chat && !context.isProgrammatic {
+            aiPanelSelectedTab = .insights
+            return
+        }
+
         guard appState.settings.autoSwitchContextTabs else { return }
         let now = Date().timeIntervalSinceReferenceDate
         if now < suppressContextAutoSwitchUntil { return }

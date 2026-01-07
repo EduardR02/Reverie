@@ -487,7 +487,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "text_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage) }
+        if let usage { recordUsage(usage, model: model) }
         return text
     }
 
@@ -523,7 +523,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage) }
+        if let usage { recordUsage(usage, model: model) }
         return try decodeStructured(T.self, from: text)
     }
 
@@ -559,18 +559,23 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
 
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage) }
+        if let usage { recordUsage(usage, model: model) }
         let result: T = try decodeStructured(T.self, from: text)
         return (result, usage)
     }
 
-    private func recordUsage(_ usage: TokenUsage) {
+    private func recordUsage(_ usage: TokenUsage, model: String) {
         guard let appState = self.appState else { return }
         Task { @MainActor in
             appState.addTokens(
                 input: usage.input,
                 reasoning: usage.reasoning ?? 0,
                 output: usage.output
+            )
+            appState.updateProcessingCost(
+                inputTokens: usage.input,
+                outputTokens: usage.output,
+                model: model
             )
         }
     }
@@ -789,7 +794,7 @@ final class LLMService {
                     for try await chunk in interceptor {
                         switch chunk {
                         case .usage(let usage):
-                            self.recordUsage(usage)
+                            self.recordUsage(usage, model: model)
                             continuation.yield(.usage(usage))
                         default:
                             continuation.yield(chunk)

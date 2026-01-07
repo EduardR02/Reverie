@@ -50,10 +50,6 @@ final class DatabaseServiceTests: XCTestCase {
         XCTAssertEqual(fetched.first?.refinedSearchQuery, "Refined Query")
     }
 
-    func testSaveChapterUpdatesExisting() throws {
-        // ... (existing code)
-    }
-
     func testBookNeedsClassificationLogic() {
         var book = Book(title: "Test", author: "A", epubPath: "P")
         

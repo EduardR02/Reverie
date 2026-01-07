@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-struct GeneratedImage: Identifiable, Codable, FetchableRecord, MutablePersistableRecord {
+struct GeneratedImage: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, Equatable {
     var id: Int64?
     var chapterId: Int64
     var prompt: String

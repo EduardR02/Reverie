@@ -13,6 +13,7 @@ struct ExpandedProcessingCard: View {
     let liveOutputTokens: Int
     let startTime: Date?
     let onCancel: () -> Void
+    let processingCost: Double
 
     @Environment(\.theme) private var theme
 
@@ -86,6 +87,8 @@ struct ExpandedProcessingCard: View {
                         label: "Questions",
                         color: theme.foam
                     )
+
+                    costTelemetryItem
 
                     tokenTelemetryItem
 
@@ -161,6 +164,27 @@ struct ExpandedProcessingCard: View {
                     .foregroundColor(theme.subtle)
             }
         }
+    }
+
+    // MARK: - Cost Telemetry
+
+    private var costTelemetryItem: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "dollarsign.circle.fill")
+                .font(.system(size: 12))
+                .foregroundColor(theme.rose)
+
+            Text(String(format: "$%.2f", processingCost))
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundColor(theme.text)
+                .contentTransition(.numericText())
+                .animation(.spring(response: 0.3), value: processingCost)
+
+            Text("Spent")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(theme.muted)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Token Telemetry

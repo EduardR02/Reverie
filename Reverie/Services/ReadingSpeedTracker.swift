@@ -74,7 +74,7 @@ final class ReadingSpeedTracker {
     private(set) var isPaused: Bool = false
     private(set) var isLocked: Bool = false  // User locked their reading speed
 
-    static let idleThresholdSeconds: TimeInterval = 120
+    static let idleThresholdSeconds: TimeInterval = 300
 
     private var pauseStartTime: Date?
     private var lastActivityTime: Date?

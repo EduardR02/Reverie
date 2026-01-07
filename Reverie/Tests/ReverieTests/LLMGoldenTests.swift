@@ -125,4 +125,40 @@ final class LLMGoldenTests: XCTestCase {
         XCTAssertEqual(usage?.input, 411 + 100 + 50)
         XCTAssertEqual(usage?.cached, 50)
     }
+
+    @MainActor
+    func testAnnotationSourceBlockIdParsedCorrectly() throws {
+        let data = try getFixtureData(name: "analysis_gemini_3_flash.json")
+        let provider = GeminiProvider()
+
+        let (text, _) = try provider.parseResponseText(from: data)
+
+        let decoder = JSONDecoder()
+        let analysis = try decoder.decode(LLMService.ChapterAnalysis.self, from: text.data(using: .utf8)!)
+
+        XCTAssertGreaterThan(analysis.annotations.count, 0)
+
+        for annotation in analysis.annotations {
+            XCTAssertGreaterThan(annotation.sourceBlockId, 0, "sourceBlockId should be positive integer")
+            XCTAssertFalse(annotation.content.isEmpty, "Annotation content should not be empty")
+            XCTAssertFalse(annotation.title.isEmpty, "Annotation title should not be empty")
+        }
+
+        let blockIds = analysis.annotations.map { $0.sourceBlockId }
+        XCTAssertEqual(Set(blockIds).count, blockIds.count, "All sourceBlockId values should be unique")
+    }
+
+    func testAllGeminiAnnotationsHaveValidBlockIds() throws {
+        let data = try getFixtureData(name: "analysis_gemini_3_flash.json")
+        let provider = GeminiProvider()
+
+        let (text, _) = try provider.parseResponseText(from: data)
+
+        let decoder = JSONDecoder()
+        let analysis = try decoder.decode(LLMService.ChapterAnalysis.self, from: text.data(using: .utf8)!)
+
+        for annotation in analysis.annotations {
+            XCTAssertGreaterThanOrEqual(annotation.sourceBlockId, 1, "Block ID should be >= 1")
+        }
+    }
 }

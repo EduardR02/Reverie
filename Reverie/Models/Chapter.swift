@@ -50,21 +50,13 @@ struct Chapter: Identifiable, Codable, FetchableRecord, MutablePersistableRecord
 
     // MARK: - Computed
 
-    var readingTime: String {
-        let minutes = max(1, wordCount / 200)
-        return "\(minutes) min"
-    }
-
-    /// Get or generate clean text with block markers
-    mutating func getContentText() -> String {
+    /// Get cached content text and block count, or parse HTML if not cached
+    func getContentText() -> (text: String, blockCount: Int) {
         if let text = contentText {
-            return text
+            return (text, blockCount)
         }
-        let parser = ContentBlockParser()
-        let (blocks, cleanText) = parser.parse(html: contentHTML)
-        contentText = cleanText
-        blockCount = blocks.count
-        return cleanText
+        let (blocks, cleanText) = ContentBlockParser().parse(html: contentHTML)
+        return (cleanText, blocks.count)
     }
 }
 

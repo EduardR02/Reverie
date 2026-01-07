@@ -270,12 +270,10 @@ struct ProcessBookView: View {
     private var processingView: some View {
         VStack(spacing: 32) {
             ZStack {
-                // Outer glow circle
                 Circle()
                     .stroke(theme.rose.opacity(0.1), lineWidth: 8)
                     .frame(width: 180, height: 180)
                 
-                // Progress circle
                 Circle()
                     .trim(from: 0, to: progress)
                     .stroke(
@@ -311,6 +309,13 @@ struct ProcessBookView: View {
                 Text("Estimated time remaining: \(formatRemainingTime())")
                     .font(.system(size: 13))
                     .foregroundColor(theme.muted)
+                
+                if appState.processingCostEstimate > 0 {
+                    Text(String(format: "$%.2f spent", appState.processingCostEstimate))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundColor(theme.foam)
+                        .padding(.top, 4)
+                }
             }
         }
     }

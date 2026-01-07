@@ -1291,14 +1291,7 @@ struct AIPanel: View {
                 var contentBuffer = ""
                 var thinkingBuffer = ""
 
-                // Get or generate clean text with block markers
-                let contentWithBlocks: String
-                if let cached = chapter.contentText {
-                    contentWithBlocks = cached
-                } else {
-                    let (_, text) = ContentBlockParser().parse(html: chapter.contentHTML)
-                    contentWithBlocks = text
-                }
+                let (contentWithBlocks, _) = chapter.getContentText()
 
                 // If we have context, prepend it to the message or use a specialized prompt
                 let finalQuery: String
