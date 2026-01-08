@@ -2,13 +2,35 @@ import Foundation
 
 enum LibraryPaths {
     private static let readerFolderName = "Reverie"
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _rootOverride: URL?
+
+    static func configureTestRoot(_ url: URL?) {
+        #if DEBUG
+        lock.lock()
+        _rootOverride = url
+        lock.unlock()
+        #endif
+    }
+
+    private static var rootOverride: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _rootOverride
+    }
 
     static var appSupport: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        if let override = rootOverride {
+            return override
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     }
 
     static var readerRoot: URL {
-        appSupport.appendingPathComponent(readerFolderName, isDirectory: true)
+        if let override = rootOverride {
+            return override.appendingPathComponent(readerFolderName, isDirectory: true)
+        }
+        return appSupport.appendingPathComponent(readerFolderName, isDirectory: true)
     }
 
     static var booksDirectory: URL {

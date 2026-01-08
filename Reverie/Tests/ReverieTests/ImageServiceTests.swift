@@ -16,9 +16,11 @@ final class ImageServiceTests: XCTestCase {
 
         tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        LibraryPaths.configureTestRoot(tempDir)
     }
 
     override func tearDown() async throws {
+        LibraryPaths.configureTestRoot(nil)
         MockURLProtocol.stubResponseData = nil
         MockURLProtocol.stubError = nil
         MockURLProtocol.stubResponse = nil
