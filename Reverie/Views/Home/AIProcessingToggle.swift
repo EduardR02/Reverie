@@ -14,7 +14,7 @@ struct AIProcessingToggle: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 14, weight: .medium))
                     .frame(width: 36, height: 36)
-                    .foregroundColor(isEnabled ? theme.subtle : theme.iris)
+                    .foregroundColor(isEnabled ? theme.subtle : theme.love)
                     .overlay {
                         Image(systemName: "sparkles")
                             .font(.system(size: 14, weight: .medium))
@@ -22,12 +22,12 @@ struct AIProcessingToggle: View {
                             .opacity(isEnabled && isHovered ? 1.0 : 0.0)
                     }
                     .animation(isEnabled && isHovered ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .none, value: isHovered)
-                
-                // Label with robust width animation
+
+                // Label
                 if !isEnabled {
                     Text("AI Paused")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundColor(theme.iris)
+                        .foregroundColor(theme.love)
                         .padding(.trailing, 12)
                         .fixedSize(horizontal: true, vertical: false)
                         .transition(.asymmetric(
@@ -38,11 +38,11 @@ struct AIProcessingToggle: View {
             }
             .background(
                 Capsule()
-                    .fill(isEnabled ? theme.surface : theme.iris.opacity(0.08))
+                    .fill(isEnabled ? theme.surface : theme.love.opacity(0.08))
             )
             .overlay {
                 Capsule()
-                    .stroke(isEnabled ? Color.clear : theme.iris.opacity(0.15), lineWidth: 1)
+                    .stroke(isEnabled ? Color.clear : theme.love.opacity(0.15), lineWidth: 1)
             }
             .clipShape(Capsule())
             .contentShape(Capsule())
