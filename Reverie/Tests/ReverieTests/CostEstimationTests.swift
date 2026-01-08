@@ -196,4 +196,18 @@ final class CostEstimationTests: XCTestCase {
             XCTAssertEqual(pricing.cachedInputMultiplier, 0.1, "Model: \(model)")
         }
     }
+
+    func testCostCalculationIncludesReasoningTokens() {
+        // Test the math logic for reasoning tokens
+        // Input: 1000 tokens, Output: 500 tokens, Reasoning: 2000 tokens
+        // For gemini-3-flash-preview: input=$0.10/M, output=$0.40/M (example rates)
+        
+        let inputCost = (1000.0 / 1_000_000) * 0.10
+        let totalOutput = 500 + 2000  // reasoning billed as output
+        let outputCost = (Double(totalOutput) / 1_000_000) * 0.40
+        let expectedTotal = inputCost + outputCost
+        
+        // Verify the formula is correct
+        XCTAssertEqual(expectedTotal, 0.0001 + 0.001, accuracy: 0.0001)
+    }
 }

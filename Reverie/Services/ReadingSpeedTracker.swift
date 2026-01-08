@@ -70,8 +70,8 @@ final class ReadingSpeedTracker {
     private(set) var historicalWPM: [Double] = []
     private(set) var averageWPM: Double = 0
     private(set) var confidence: Double = 0  // 0-1, how confident we are in the reading speed
-    private(set) var isAutoScrollEnabled: Bool = false
-    private(set) var isPaused: Bool = false
+    private(set) var activePauseReasons: Set<PauseReason> = []
+    var isPaused: Bool { !activePauseReasons.isEmpty }
     private(set) var isLocked: Bool = false  // User locked their reading speed
 
     static let idleThresholdSeconds: TimeInterval = 300
@@ -183,15 +183,34 @@ final class ReadingSpeedTracker {
     // MARK: - Pause Management
 
     func startPause(reason: PauseReason) {
-        guard !isPaused else { return }
-        isPaused = true
-        pauseStartTime = Date()
+        let wasEmpty = activePauseReasons.isEmpty
+        activePauseReasons.insert(reason)
+        if wasEmpty {
+            pauseStartTime = Date()
+        }
     }
 
-    func endPause() {
-        guard isPaused, let startTime = pauseStartTime else { return }
-        isPaused = false
+    func endPause(reason: PauseReason) {
+        activePauseReasons.remove(reason)
+        
+        // Only record pause duration when ALL reasons cleared
+        guard activePauseReasons.isEmpty, let startTime = pauseStartTime else { return }
+        
+        let duration = Date().timeIntervalSince(startTime)
+        if var session = currentSession {
+            session.pauses.append(PauseEvent(
+                startTime: startTime,
+                duration: duration,
+                reason: reason  // Use the final reason that ended the pause
+            ))
+            currentSession = session
+        }
+        pauseStartTime = nil
+    }
 
+    func endAllPauses() {
+        guard !activePauseReasons.isEmpty, let startTime = pauseStartTime else { return }
+        
         let duration = Date().timeIntervalSince(startTime)
         if var session = currentSession {
             session.pauses.append(PauseEvent(
@@ -201,6 +220,7 @@ final class ReadingSpeedTracker {
             ))
             currentSession = session
         }
+        activePauseReasons.removeAll()
         pauseStartTime = nil
     }
 
@@ -217,10 +237,6 @@ final class ReadingSpeedTracker {
     }
 
     // MARK: - Auto-Scroll
-
-    func toggleAutoScroll() {
-        isAutoScrollEnabled.toggle()
-    }
 
     func toggleLock() {
         isLocked.toggle()

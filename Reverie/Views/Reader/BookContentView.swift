@@ -12,6 +12,13 @@ struct ImageMarkerInjection: Equatable {
     let sourceBlockId: Int
 }
 
+struct MarkerInfo: Equatable, Identifiable {
+    let id: String
+    let type: String
+    let y: Double
+    let blockId: Int
+}
+
 struct ScrollContext: Equatable {
     let annotationId: Int64?
     let imageId: Int64?
@@ -22,6 +29,7 @@ struct ScrollContext: Equatable {
     let scrollPercent: Double
     let scrollOffset: Double
     let viewportHeight: Double
+    let scrollHeight: Double
     let isProgrammatic: Bool
 }
 
@@ -34,8 +42,10 @@ struct BookContentView: NSViewRepresentable {
     let onAnnotationClick: (Annotation) -> Void
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
+    let onChapterNavigationRequest: ((String, String?) -> Void)?
     let onImageMarkerDblClick: (Int64) -> Void
     let onScrollPositionChange: (_ context: ScrollContext) -> Void
+    let onMarkersUpdated: ([MarkerInfo]) -> Void
     let onBottomTug: () -> Void
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
@@ -329,6 +339,22 @@ struct BookContentView: NSViewRepresentable {
                     parent.onWordClick(word, context, bId, .generateImage)
                 }
             case "bottomTug": parent.onBottomTug()
+            case "markersUpdated":
+                if let stationsData = body["stations"] as? [[String: Any]] {
+                    let markers = stationsData.compactMap { d -> MarkerInfo? in
+                        guard let id = d["id"] as? String,
+                              let type = d["type"] as? String,
+                              let y = d["y"] as? Double,
+                              let blockId = d["blockId"] as? Int else { return nil }
+                        return MarkerInfo(id: id, type: type, y: y, blockId: blockId)
+                    }
+                    parent.onMarkersUpdated(markers)
+                }
+            case "chapterNavigation":
+                if let path = body["path"] as? String {
+                    let anchor = body["anchor"] as? String
+                    parent.onChapterNavigationRequest?(path, anchor)
+                }
             case "scrollPosition":
                 let aId = (body["annotationId"] as? String).flatMap(Int64.init)
                 let iId = (body["imageId"] as? String).flatMap(Int64.init)
@@ -339,6 +365,7 @@ struct BookContentView: NSViewRepresentable {
                 let sY = (body["scrollY"] as? Double) ?? 0
                 let sP = (body["scrollPercent"] as? Double) ?? 0
                 let vH = (body["viewportHeight"] as? Double) ?? 0
+                let sH = (body["scrollHeight"] as? Double) ?? 0
                 let isP = (body["isProgrammatic"] as? Bool) ?? false
                 
                 let context = ScrollContext(
@@ -351,6 +378,7 @@ struct BookContentView: NSViewRepresentable {
                     scrollPercent: sP,
                     scrollOffset: sY,
                     viewportHeight: vH,
+                    scrollHeight: sH,
                     isProgrammatic: isP
                 )
                 parent.onScrollPositionChange(context)
@@ -365,8 +393,34 @@ struct BookContentView: NSViewRepresentable {
                 return
             }
 
-            // Allow file:// URLs (internal content, including chapter resources)
+            // Intercept internal EPUB links (they will be file:// URLs pointing to the publication directory)
             if url.isFileURL {
+                let publicationRoot = LibraryPaths.publicationDirectory(for: parent.chapter.bookId)
+                let rootPath = publicationRoot.path
+                let urlPath = url.path
+                let renderedPath = parent.renderedChapterURL().path
+
+                // If it's the RENDERED HTML file, allow it (same-document anchor)
+                if urlPath == renderedPath {
+                    decisionHandler(.allow)
+                    return
+                }
+
+                // If it's inside the publication directory AND it's a link activation, it's an internal chapter link
+                if urlPath.hasPrefix(rootPath) && navigationAction.navigationType == .linkActivated {
+                    var relativePath = String(urlPath.dropFirst(rootPath.count))
+                    if relativePath.hasPrefix("/") { relativePath.removeFirst() }
+                    
+                    // Decode URL-encoded path
+                    relativePath = relativePath.removingPercentEncoding ?? relativePath
+                    
+                    let anchor = url.fragment
+                    parent.onChapterNavigationRequest?(relativePath, anchor)
+                    decisionHandler(.cancel)
+                    return
+                }
+                
+                // Allow other file URLs (images, styles, or non-link navigations like initial load)
                 decisionHandler(.allow)
                 return
             }

@@ -50,8 +50,11 @@ final class LLMServiceTests: XCTestCase {
         let analysis = try await llmService.analyzeChapter(
             contentWithBlocks: "Some content",
             rollingSummary: nil,
+            bookTitle: nil,
+            author: nil,
             settings: settings
         )
+
 
         XCTAssertEqual(analysis.summary, "Test Summary")
     }
@@ -83,6 +86,8 @@ final class LLMServiceTests: XCTestCase {
         let stream = llmService.analyzeChapterStreaming(
             contentWithBlocks: "Some content",
             rollingSummary: nil,
+            bookTitle: nil,
+            author: nil,
             settings: settings
         )
 
@@ -154,6 +159,8 @@ final class LLMServiceTests: XCTestCase {
             _ = try await llmService.analyzeChapter(
                 contentWithBlocks: "Some content",
                 rollingSummary: nil,
+                bookTitle: nil,
+                author: nil,
                 settings: settings
             )
             XCTFail("Should have thrown an error")

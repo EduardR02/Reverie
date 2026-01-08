@@ -103,6 +103,8 @@ const programmatic = (() => {
         if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
         state.active = false;
+        // Note: sticky stays true until next scroll or explicit cancel
+        // This allows the focus to remain locked on the target after animation
         state.expectedY = state.targetY; 
         if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
@@ -253,6 +255,17 @@ function buildTerritoryMap() {
     focusState.boundaries = boundaries;
     focusState.mapBuilt = true;
     focusState.mapPending = false;
+
+    // Report markers to native
+    webkit.messageHandlers.readerBridge.postMessage({
+        type: 'markersUpdated',
+        stations: focusState.stations.map(s => ({
+            id: String(s.id),
+            type: s.type,
+            y: s.y,
+            blockId: s.blockId
+        }))
+    });
 }
 
 function scheduleMapRebuild() {
@@ -361,7 +374,7 @@ function updateFocus(forceReport = false) {
     const shouldForce = forceReport || hasChangedBlock || movedFar || shouldHeartbeat || isLocked;
 
     if (shouldReport) {
-        reportToNative(scrollY, scrollPercent, vh, isLocked, hasChangedFocus, shouldForce);
+        reportToNative(scrollY, scrollPercent, vh, sh, isLocked, hasChangedFocus, shouldForce);
     }
 
     // 4. Debounced Heartbeat
@@ -371,7 +384,8 @@ function updateFocus(forceReport = false) {
             const curY = window.scrollY;
             const curMax = Math.max(1, (focusState.scrollHeight || document.documentElement.scrollHeight) - (focusState.viewportHeight || window.innerHeight));
             if (Math.abs(curY - focusState.lastReportedScrollY) > 5) {
-                reportToNative(curY, curY / curMax, focusState.viewportHeight || window.innerHeight, programmatic.isSticky(), false, false);
+                const curSh = focusState.scrollHeight || document.documentElement.scrollHeight;
+                reportToNative(curY, curY / curMax, focusState.viewportHeight || window.innerHeight, curSh, programmatic.isSticky(), false, false);
             }
         }, 1000);
     }
@@ -380,7 +394,7 @@ function updateFocus(forceReport = false) {
 /**
  * Optimized bridge communicator with Semantic Diffing
  */
-function reportToNative(scrollY, scrollPercent, vh, isLocked, shouldPulse, forceReport) {
+function reportToNative(scrollY, scrollPercent, vh, sh, isLocked, shouldPulse, forceReport) {
     const s = focusState.stations[focusState.currentStationIndex];
     const aId = s?.type === 'annotation' ? s.id : null;
     const iId = s?.type === 'image' ? s.id : null;
@@ -417,7 +431,7 @@ function reportToNative(scrollY, scrollPercent, vh, isLocked, shouldPulse, force
     webkit.messageHandlers.readerBridge.postMessage({
         type: 'scrollPosition', annotationId: aId, imageId: iId, footnoteRefId: fId,
         blockId: bId, blockOffset: bOffset, primaryType: s?.type || null, scrollY, scrollPercent: roundedP,
-        viewportHeight: vh, isProgrammatic: isLocked
+        viewportHeight: vh, scrollHeight: sh, isProgrammatic: programmatic.isActive()
     });
 }
 
@@ -487,11 +501,16 @@ function scrollToQuote(qId) {
     }
 }
 
-function scrollToPercent(p) { 
-    window.scrollTo({ top: (document.documentElement.scrollHeight - window.innerHeight) * p, behavior: 'auto' }); 
+function scrollToPercent(p) {
+    const vh = window.innerHeight;
+    const sh = document.documentElement.scrollHeight;
+    const scrollMax = Math.max(1, sh - vh);
+    programmatic.start(null, scrollMax * p);
 }
 
-function scrollToOffset(o) { window.scrollTo({ top: o, behavior: 'auto' }); }
+function scrollToOffset(o) {
+    programmatic.start(null, o);
+}
 
 // --- Event Listeners ---
 

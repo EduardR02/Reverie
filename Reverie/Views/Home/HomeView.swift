@@ -173,7 +173,7 @@ struct HomeView: View {
     private var bookGrid: some View {
         GeometryReader { geometry in
             let availableWidth = geometry.size.width - 64 // Account for horizontal padding
-            let cardWidth: CGFloat = 170 // Average of min/max (160-180)
+            let cardWidth: CGFloat = 160 // Use minimum to ensure row fills
             let spacing: CGFloat = 24
             let expandedCount = max(1, Int((availableWidth + spacing) / (cardWidth + spacing)))
 
@@ -810,7 +810,7 @@ struct HomeView: View {
                         runningInsightCount -= 1
                         updateInsightPhase()
                     }
-                    try await processInsights(for: workItem, bookId: bookId)
+                    try await processInsights(for: workItem, bookId: bookId, bookTitle: book.title, author: book.author)
                 }
                 runningInsightTasks.append(task)
 
@@ -870,7 +870,9 @@ struct HomeView: View {
     @MainActor
     private func processInsights(
         for workItem: InsightWorkItem,
-        bookId: Int64
+        bookId: Int64,
+        bookTitle: String?,
+        author: String?
     ) async throws {
         guard let chapterId = workItem.chapter.id else { return }
 
@@ -881,6 +883,8 @@ struct HomeView: View {
         let stream = appState.llmService.analyzeChapterStreaming(
             contentWithBlocks: workItem.contentWithBlocks,
             rollingSummary: workItem.rollingSummary,
+            bookTitle: bookTitle,
+            author: author,
             settings: appState.settings
         )
 

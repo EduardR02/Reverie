@@ -230,10 +230,12 @@ final class AppState {
         saveStats()
     }
 
-    func updateProcessingCost(inputTokens: Int, outputTokens: Int, model: String) {
+    func updateProcessingCost(inputTokens: Int, outputTokens: Int, reasoningTokens: Int = 0, model: String) {
         guard let pricing = PricingCatalog.textPricing(for: model) else { return }
         let inputCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
-        let outputCost = (Double(outputTokens) / 1_000_000) * pricing.outputPerMToken
+        // Reasoning tokens are billed as output for Gemini
+        let totalOutput = outputTokens + reasoningTokens
+        let outputCost = (Double(totalOutput) / 1_000_000) * pricing.outputPerMToken
         processingCostEstimate += inputCost + outputCost
     }
 

@@ -2,7 +2,7 @@
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-gemini-auth@latest"],
   "agent": {
-    "Orchestrator": {
+    "Clopus the Orchestrator": {
       "description": "Strategic intelligence layer - plans, delegates, and ensures quality. Does not implement.",
       "mode": "primary",
       "model": "anthropic/claude-opus-4-5",
@@ -103,8 +103,7 @@
       },
       "tools": {
         "write": false,
-        "edit": false,
-        "bash": false
+        "edit": false
       },
       "prompt": "You are a codebase explorer. Your job is to answer questions about how the code works.\n\n## Output Format\n\nKeep responses focused and structured:\n1. **Answer**: Direct answer to the question\n2. **Location**: Relevant file(s) and line numbers\n3. **How it works**: Brief explanation of the mechanism\n4. **Related**: Other relevant code the caller might want to know about\n\n## Constraints\n\n- Read only. Do not suggest changes unless asked.\n- Be precise about locations. Include line numbers.\n- If you can't find something, say so rather than guessing.\n- Stay focused on the question asked. Don't over-explain."
     },

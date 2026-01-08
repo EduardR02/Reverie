@@ -75,6 +75,8 @@ final class AsyncConcurrencyTests: XCTestCase {
                 _ = try await llmService.analyzeChapter(
                     contentWithBlocks: "Test content",
                     rollingSummary: nil,
+                    bookTitle: nil,
+                    author: nil,
                     settings: settings
                 )
             } catch {
@@ -147,6 +149,8 @@ final class AsyncConcurrencyTests: XCTestCase {
             _ = try await llmService.analyzeChapter(
                 contentWithBlocks: "Test content",
                 rollingSummary: nil,
+                bookTitle: nil,
+                author: nil,
                 settings: settings
             )
         } catch {
@@ -188,6 +192,8 @@ final class AsyncConcurrencyTests: XCTestCase {
                 _ = try await llmService.analyzeChapter(
                     contentWithBlocks: "Content 1",
                     rollingSummary: nil,
+                    bookTitle: nil,
+                    author: nil,
                     settings: settings
                 )
                 XCTFail("First request should fail")
@@ -201,6 +207,8 @@ final class AsyncConcurrencyTests: XCTestCase {
                 _ = try await llmService.analyzeChapter(
                     contentWithBlocks: "Content 2",
                     rollingSummary: nil,
+                    bookTitle: nil,
+                    author: nil,
                     settings: settings
                 )
             } catch {
@@ -225,6 +233,8 @@ final class AsyncConcurrencyTests: XCTestCase {
         let stream = llmService.analyzeChapterStreaming(
             contentWithBlocks: "Test content",
             rollingSummary: nil,
+            bookTitle: nil,
+            author: nil,
             settings: settings
         )
 

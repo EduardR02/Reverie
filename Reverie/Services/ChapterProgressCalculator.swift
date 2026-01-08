@@ -13,7 +13,7 @@ struct BlockLocation: Equatable, Comparable {
 struct ChapterProgressCalculator {
     private let wordCounts: [Int]
     private let prefixWords: [Int]
-    private let totalWords: Int
+    public let totalWords: Int
 
     init(wordCounts: [Int], totalWords: Int) {
         self.wordCounts = wordCounts
@@ -40,5 +40,15 @@ struct ChapterProgressCalculator {
         let currentWords = Double(wordsBefore) + (Double(blockWords) * clampedOffset)
         let percent = currentWords / Double(totalWords)
         return min(max(percent, 0), 1)
+    }
+
+    func totalWords(upTo location: BlockLocation) -> Double {
+        guard !wordCounts.isEmpty else { return 0 }
+        let clampedBlockId = min(max(location.blockId, 1), wordCounts.count)
+        let blockIndex = clampedBlockId - 1
+        let blockWords = wordCounts[blockIndex]
+        let wordsBefore = prefixWords[blockIndex]
+        let clampedOffset = min(max(location.offset, 0), 1)
+        return Double(wordsBefore) + (Double(blockWords) * clampedOffset)
     }
 }

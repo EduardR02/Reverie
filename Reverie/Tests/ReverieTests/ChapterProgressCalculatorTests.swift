@@ -27,4 +27,24 @@ final class ChapterProgressCalculatorTests: XCTestCase {
         let percent = calculator.percent(for: BlockLocation(blockId: 1, offset: 0.5))
         XCTAssertEqual(percent, 0)
     }
+
+    func testTotalWordsUpToLocation() {
+        // Test at block boundaries and middle
+        let calc = ChapterProgressCalculator(wordCounts: [100, 200, 150], totalWords: 450)
+        
+        // Start of first block
+        XCTAssertEqual(calc.totalWords(upTo: BlockLocation(blockId: 1, offset: 0)), 0)
+        
+        // Middle of first block
+        XCTAssertEqual(calc.totalWords(upTo: BlockLocation(blockId: 1, offset: 0.5)), 50)
+        
+        // End of first block / start of second
+        XCTAssertEqual(calc.totalWords(upTo: BlockLocation(blockId: 2, offset: 0)), 100)
+        
+        // Middle of second block
+        XCTAssertEqual(calc.totalWords(upTo: BlockLocation(blockId: 2, offset: 0.5)), 200)
+        
+        // End of all blocks
+        XCTAssertEqual(calc.totalWords(upTo: BlockLocation(blockId: 3, offset: 1.0)), 450)
+    }
 }

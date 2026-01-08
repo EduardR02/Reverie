@@ -117,6 +117,8 @@ final class LLMService {
     func analyzeChapterStreaming(
         contentWithBlocks: String,
         rollingSummary: String?,
+        bookTitle: String?,
+        author: String?,
         settings: UserSettings
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         // Calculate word count for proportional guidance
@@ -125,6 +127,8 @@ final class LLMService {
         let prompt = PromptLibrary.analysisPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
+            bookTitle: bookTitle,
+            author: author,
             insightDensity: settings.insightDensity,
             imageDensity: settings.imagesEnabled ? settings.imageDensity : nil,
             wordCount: wordCount
@@ -189,11 +193,15 @@ final class LLMService {
     func analyzeChapter(
         contentWithBlocks: String,
         rollingSummary: String?,
+        bookTitle: String?,
+        author: String?,
         settings: UserSettings
     ) async throws -> ChapterAnalysis {
         let stream = analyzeChapterStreaming(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
+            bookTitle: bookTitle,
+            author: author,
             settings: settings
         )
         return try await collectChapterAnalysis(from: stream)
@@ -577,7 +585,8 @@ final class LLMService {
             )
             appState.updateProcessingCost(
                 inputTokens: usage.input,
-                outputTokens: usage.visibleOutput + (usage.reasoning ?? 0),  // Total billable output
+                outputTokens: usage.visibleOutput,
+                reasoningTokens: usage.reasoning ?? 0,
                 model: model
             )
         }

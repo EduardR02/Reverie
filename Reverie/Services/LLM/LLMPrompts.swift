@@ -25,6 +25,8 @@ enum PromptLibrary {
     static func analysisPrompt(
         contentWithBlocks: String,
         rollingSummary: String?,
+        bookTitle: String?,
+        author: String?,
         insightDensity: DensityLevel,
         imageDensity: DensityLevel?,
         wordCount: Int
@@ -49,8 +51,17 @@ Skip if nothing merits visualization.
             imageSection = ""
         }
 
+        var metadataLine = ""
+        if let bookTitle = bookTitle, !bookTitle.isEmpty {
+            if let author = author, !author.isEmpty {
+                metadataLine = "[Book context: \"\(bookTitle)\" by \(author). This is background only - do not force connections to the author or title. Focus on the actual content.]\n\n"
+            } else {
+                metadataLine = "[Book context: \"\(bookTitle)\"]\n\n"
+            }
+        }
+
         let prompt = """
-## The Chapter
+\(metadataLine)## The Chapter
 
 Context: \(rollingSummary ?? "This is the beginning of the book.")
 

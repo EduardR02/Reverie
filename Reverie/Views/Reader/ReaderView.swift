@@ -38,6 +38,7 @@ struct ReaderView: View {
     @State private var pendingMarkerInjections: [MarkerInjection] = []
     @State private var pendingImageMarkerInjections: [ImageMarkerInjection] = []
     @State private var scrollByAmount: Double?
+    @State private var pendingAnchor: String?
     @State private var lastScrollPercent: Double = 0
     @State private var lastScrollOffset: Double = 0
     @State private var didRestoreInitialPosition = false
@@ -80,6 +81,16 @@ struct ReaderView: View {
     @State private var classificationError: String?
     @State private var isProgrammaticScroll = false
 
+    // Auto-scroll
+    @State private var autoScrollTask: Task<Void, Never>?
+    @State private var autoScrollCountdownTask: Task<Void, Never>?
+    @State private var autoScrollProgress: Double = 0
+    @State private var isAutoScrollCountingDown: Bool = false
+    @State private var markerPositions: [MarkerInfo] = []
+    @State private var lastViewportHeight: Double = 0
+    @State private var lastScrollHeight: Double = 0
+    @State private var lastAutoScrollTargetY: Double?
+
     private enum BackAnchorState {
         case inactive
         case pending
@@ -90,6 +101,7 @@ struct ReaderView: View {
         mainContent
             .onDisappear {
                 stopReadingTicker()
+                stopAutoScrollLoop()
                 persistCurrentProgress()
                 if let result = appState.readingSpeedTracker.endSession() {
                     appState.readingStats.addReadingTime(result.seconds)
@@ -101,7 +113,7 @@ struct ReaderView: View {
                 if newTab == .chat {
                     appState.readingSpeedTracker.startPause(reason: .chatting)
                 } else if oldTab == .chat {
-                    appState.readingSpeedTracker.endPause()
+                    appState.readingSpeedTracker.endPause(reason: .chatting)
                 }
                 // Reset quiz auto-switch flag when manually leaving quiz - enables repeated tug gestures
                 if oldTab == .quiz && newTab != .quiz {
@@ -112,7 +124,7 @@ struct ReaderView: View {
                 if newImage != nil {
                     appState.readingSpeedTracker.startPause(reason: .viewingImage)
                 } else if oldImage != nil {
-                    appState.readingSpeedTracker.endPause()
+                    appState.readingSpeedTracker.endPause(reason: .viewingImage)
                 }
             }
     }
@@ -180,9 +192,11 @@ struct ReaderView: View {
         }
         .onAppear {
             startReadingTicker()
+            startAutoScrollLoop()
         }
         .onChange(of: appState.currentChapterIndex) { oldIndex, newIndex in
             persistCurrentProgress()
+            cancelAutoScrollCountdown()
             currentAnalysisTask = nil
             currentImageTask = nil
             Task { await loadChapter(at: newIndex) }
@@ -349,6 +363,7 @@ struct ReaderView: View {
                         onAnnotationClick: handleAnnotationClick,
                         onImageMarkerClick: handleImageMarkerClick,
                         onFootnoteClick: handleFootnoteClick,
+                        onChapterNavigationRequest: handleChapterNavigation,
                         onImageMarkerDblClick: { imageId in
                             if let image = images.first(where: { $0.id == imageId }) {
                                 withAnimation(.easeOut(duration: 0.2)) {
@@ -358,6 +373,19 @@ struct ReaderView: View {
                         },
                         onScrollPositionChange: { context in
                             isProgrammaticScroll = context.isProgrammatic
+
+                            if !context.isProgrammatic {
+                                // Manual scroll cancels auto-scroll countdown
+                                cancelAutoScrollCountdown()
+                            }
+
+                            // If we reached or passed our auto-scroll target (downward scroll), clear it
+                            if let target = lastAutoScrollTargetY {
+                                // Clear if within tolerance OR if we scrolled past the target
+                                if context.scrollOffset >= target - 10 {
+                                    lastAutoScrollTargetY = nil
+                                }
+                            }
 
                             if context.isProgrammatic {
                                 if let aid = context.annotationId { currentAnnotationId = aid }
@@ -374,6 +402,8 @@ struct ReaderView: View {
                             furthestProgressPercent = progress.furthest
                             lastScrollPercent = progress.current
                             lastScrollOffset = context.scrollOffset
+                            lastViewportHeight = context.viewportHeight
+                            lastScrollHeight = context.scrollHeight
 
                             appState.recordReadingProgress(
                                 chapter: chapter,
@@ -385,7 +415,7 @@ struct ReaderView: View {
                             // LIGHTWEIGHT: Update speed tracker (memory only)
                             appState.readingSpeedTracker.updateSession(scrollPercent: progress.current)
                             if !context.isProgrammatic && appState.readingSpeedTracker.isPaused {
-                                appState.readingSpeedTracker.endPause()
+                                appState.readingSpeedTracker.endAllPauses()
                             }
                             updateBackAnchor(scrollOffset: context.scrollOffset, viewportHeight: context.viewportHeight)
 
@@ -394,6 +424,9 @@ struct ReaderView: View {
                             }
 
                             handleAutoSwitch(context: context)
+                        },
+                        onMarkersUpdated: { markers in
+                            self.markerPositions = markers
                         },
                         onBottomTug: {
                             handleQuizAutoSwitchOnTug()
@@ -581,59 +614,81 @@ struct ReaderView: View {
     // MARK: - Navigation Footer
 
     private var navigationFooter: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button {
-                    appState.previousChapter()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                        Text("Previous")
-                    }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(appState.currentChapterIndex > 0 ? theme.text : theme.muted)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
+        HStack {
+            Button {
+                appState.previousChapter()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                    Text("Previous")
                 }
-                .buttonStyle(.plain)
-                .disabled(appState.currentChapterIndex <= 0)
-
-                Spacer()
-
-                Text("\(appState.currentChapterIndex + 1) / \(chapters.count)")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(theme.muted)
-
-                Spacer()
-
-                Button {
-                    appState.nextChapter()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Next")
-                        Image(systemName: "chevron.right")
-                    }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(
-                        appState.currentChapterIndex < chapters.count - 1 ? theme.text : theme.muted
-                    )
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(appState.currentChapterIndex >= chapters.count - 1)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(appState.currentChapterIndex > 0 ? theme.text : theme.muted)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
-            .frame(height: ReaderMetrics.footerHeight)
-            .background(theme.surface)
-            .overlay(alignment: .top) {
+            .buttonStyle(.plain)
+            .disabled(appState.currentChapterIndex <= 0)
+
+            Spacer()
+
+            Text("\(appState.currentChapterIndex + 1) / \(chapters.count)")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(theme.muted)
+
+            Spacer()
+
+            Button {
+                appState.nextChapter()
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Next")
+                    Image(systemName: "chevron.right")
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(
+                    appState.currentChapterIndex < chapters.count - 1 ? theme.text : theme.muted
+                )
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.currentChapterIndex >= chapters.count - 1)
+        }
+        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
+        .frame(height: ReaderMetrics.footerHeight)
+        .background(theme.surface)
+        .overlay(alignment: .top) {
+            ZStack(alignment: .top) {
+                // Base divider
                 Rectangle()
                     .fill(theme.overlay)
                     .frame(height: 1)
+                
+                // Active Auto-Scroll Indicator
+                if isAutoScrollCountingDown {
+                    GeometryReader { proxy in
+                        autoScrollIndicator(width: proxy.size.width)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            .offset(y: -0.5)
+                    }
+                    .frame(height: 6)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                    .animation(.linear(duration: 0.1), value: autoScrollProgress)
+                }
             }
         }
+    }
+
+    private func autoScrollIndicator(width: CGFloat) -> some View {
+        AutoScrollAnimationView(
+            width: width,
+            progress: autoScrollProgress,
+            theme: theme
+        )
     }
 
     // MARK: - Toolbar
@@ -775,6 +830,145 @@ struct ReaderView: View {
         currentChapter = chapters[index]
     }
 
+    private func cancelAutoScrollCountdown() {
+        isAutoScrollCountingDown = false
+        autoScrollCountdownTask?.cancel()
+        autoScrollCountdownTask = nil
+        autoScrollProgress = 0
+        lastAutoScrollTargetY = nil
+    }
+
+    private func stopAutoScrollLoop() {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
+        cancelAutoScrollCountdown()
+    }
+
+    private func startAutoScrollLoop() {
+        autoScrollTask?.cancel()
+        autoScrollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // Poll every 1s
+
+                guard appState.settings.smartAutoScrollEnabled,
+                      !appState.readingSpeedTracker.isPaused,
+                      appState.readingSpeedTracker.confidence >= 0.5,
+                      !isAutoScrollCountingDown,
+                      !isProgrammaticScroll,
+                      !isLoadingChapters,
+                      currentChapter != nil else {
+                    continue
+                }
+
+                // Don't auto-scroll if we just finished one and haven't moved
+                if let lastTarget = lastAutoScrollTargetY, abs(lastScrollOffset - lastTarget) < 10 {
+                    continue
+                }
+
+                runAutoScroll()
+            }
+        }
+    }
+
+    private func runAutoScroll() {
+        guard let chapter = currentChapter,
+              let calculator = progressCalculators[chapter.id!] else { return }
+        
+        // 1. Calculate Target
+        let currentY = lastScrollOffset
+        let vh = lastViewportHeight
+        guard vh > 0 else { return }
+        
+        var targetY = currentY + vh * 0.8
+        var targetMarker: MarkerInfo?
+        
+        // Check for markers in range (currentY + 10, targetY)
+        // We look for markers that would be "exposed" by this scroll
+        if let firstMarker = markerPositions.first(where: { $0.y > currentY + vh * 0.4 + 10 && $0.y <= targetY + vh * 0.4 }) {
+            // Scroll so this marker is at the eyeline (40% from top)
+            targetY = firstMarker.y - (vh * 0.4)
+            targetMarker = firstMarker
+        }
+        
+        // Ensure we don't scroll past the end
+        let maxScroll = max(0, lastScrollHeight - vh)
+        targetY = min(targetY, maxScroll)
+        
+        if targetY <= currentY + 10 { return } // Already there or too small jump
+
+        // 2. Calculate Words in Range
+        let startWords = calculator.totalWords(upTo: currentLocation ?? BlockLocation(blockId: 1, offset: 0))
+        
+        let endWords: Double
+        if let marker = targetMarker {
+            endWords = calculator.totalWords(upTo: BlockLocation(blockId: marker.blockId, offset: 0))
+        } else {
+            // Estimate based on scroll percent
+            let scrollRange = lastScrollHeight - vh
+            if scrollRange > 0 {
+                let newPercent = targetY / scrollRange
+                endWords = Double(calculator.totalWords) * newPercent
+            } else {
+                endWords = Double(calculator.totalWords)
+            }
+        }
+        
+        let wordsInRange = max(1, Int(endWords - Double(startWords)))
+        
+        // 3. Calculate Delay
+        var delay = appState.readingSpeedTracker.calculateScrollDelay(wordsInView: wordsInRange)
+        
+        // Image bonus
+        if targetMarker?.type == "image" {
+            delay += 8
+        }
+        
+        // Sanity check on delay
+        delay = min(max(delay, 3), 120) // 3s to 2min
+        
+        // 4. Start Countdown
+        startCountdown(delay: delay, targetY: targetY)
+    }
+
+    private func startCountdown(delay: Double, targetY: Double) {
+        isAutoScrollCountingDown = true
+        autoScrollProgress = 0
+        
+        let startTime = Date()
+        let totalDuration = delay
+        
+        autoScrollCountdownTask?.cancel()
+        autoScrollCountdownTask = Task { @MainActor in
+            // Progress indicator appears ~5s before or proportional
+            let indicatorThreshold = min(5.0, totalDuration * 0.5)
+            
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startTime)
+                if elapsed >= totalDuration {
+                    break
+                }
+                
+                // Show progress in the last 'indicatorThreshold' seconds
+                let timeRemaining = totalDuration - elapsed
+                if timeRemaining <= indicatorThreshold {
+                    autoScrollProgress = 1.0 - (timeRemaining / indicatorThreshold)
+                } else {
+                    autoScrollProgress = 0
+                }
+                
+                try? await Task.sleep(nanoseconds: 100_000_000) // 10fps update
+            }
+            
+            if !Task.isCancelled {
+                // Execute Scroll
+                scrollToOffset = targetY
+                lastAutoScrollTargetY = targetY
+                isAutoScrollCountingDown = false
+                autoScrollProgress = 0
+            }
+        }
+    }
+
     private func processCurrentChapterIfReady() {
         guard let chapter = currentChapter, let currentBook = appState.currentBook, shouldAutoProcess(chapter, in: currentBook) else { return }
         Task { await processChapter(chapter) }
@@ -862,31 +1056,40 @@ struct ReaderView: View {
         savedScrollOffset = nil
         backAnchorState = .inactive
         chapterWPM = nil
-        let shouldRestore = !didRestoreInitialPosition && index == currentBook.currentChapter
-        if shouldRestore {
-            if currentBook.currentScrollOffset > 0 {
-                scrollToOffset = currentBook.currentScrollOffset
-                scrollToPercent = nil
-            } else {
-                scrollToPercent = currentBook.currentScrollPercent
-                scrollToOffset = nil
-            }
-            lastScrollPercent = currentBook.currentScrollPercent
-            lastScrollOffset = currentBook.currentScrollOffset
-            didRestoreInitialPosition = true
-        } else {
-            scrollToPercent = 0
-            scrollToOffset = nil
+        
+        if let anchor = pendingAnchor {
+            scrollToQuote = anchor
+            pendingAnchor = nil
             lastScrollPercent = 0
             lastScrollOffset = 0
-            if didRestoreInitialPosition {
-                appState.recordReadingProgress(
-                    chapter: chapter,
-                    currentPercent: 0,
-                    furthestPercent: chapter.maxScrollReached,
-                    scrollOffset: 0
-                )
-            } else { didRestoreInitialPosition = true }
+            didRestoreInitialPosition = true
+        } else {
+            let shouldRestore = !didRestoreInitialPosition && index == currentBook.currentChapter
+            if shouldRestore {
+                if currentBook.currentScrollOffset > 0 {
+                    scrollToOffset = currentBook.currentScrollOffset
+                    scrollToPercent = nil
+                } else {
+                    scrollToPercent = currentBook.currentScrollPercent
+                    scrollToOffset = nil
+                }
+                lastScrollPercent = currentBook.currentScrollPercent
+                lastScrollOffset = currentBook.currentScrollOffset
+                didRestoreInitialPosition = true
+            } else {
+                scrollToPercent = 0
+                scrollToOffset = nil
+                lastScrollPercent = 0
+                lastScrollOffset = 0
+                if didRestoreInitialPosition {
+                    appState.recordReadingProgress(
+                        chapter: chapter,
+                        currentPercent: 0,
+                        furthestPercent: chapter.maxScrollReached,
+                        scrollOffset: 0
+                    )
+                } else { didRestoreInitialPosition = true }
+            }
         }
         currentProgressPercent = lastScrollPercent
         furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
@@ -1013,6 +1216,8 @@ struct ReaderView: View {
                 let stream = appState.llmService.analyzeChapterStreaming(
                     contentWithBlocks: contentWithBlocks,
                     rollingSummary: chapter.rollingSummary,
+                    bookTitle: appState.currentBook?.title,
+                    author: appState.currentBook?.author,
                     settings: appState.settings
                 )
                 
@@ -1290,6 +1495,19 @@ struct ReaderView: View {
         externalTabSelection = .insights
     }
 
+    private func handleChapterNavigation(_ path: String, _ anchor: String?) {
+        if let targetIndex = chapters.firstIndex(where: { $0.resourcePath == path }) {
+            if appState.currentChapterIndex == targetIndex {
+                if let anchor = anchor {
+                    scrollToQuote = anchor
+                }
+            } else {
+                pendingAnchor = anchor
+                appState.currentChapterIndex = targetIndex
+            }
+        }
+    }
+
     private func handleImageMarkerClick(_ imageId: Int64) {
         guard images.contains(where: { $0.id == imageId }) else { return }
         currentImageId = imageId
@@ -1412,3 +1630,94 @@ struct BackAnchorButtonStyle: ButtonStyle {
             }
     }
 }
+
+// MARK: - Auto Scroll Animation Component
+
+fileprivate struct AutoScrollAnimationView: View {
+    let width: CGFloat
+    let progress: Double
+    let theme: Theme
+    
+    @State private var phase: CGFloat = 0
+    
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // 1. The Comet Tail (Ethereal Trail)
+            // Fades out towards the left, follows the head
+            let tailLength: CGFloat = 150
+            let currentX = width * progress
+            let tailStart = max(0, currentX - tailLength)
+            let actualTailWidth = currentX - tailStart
+            
+            if actualTailWidth > 0 {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                theme.iris.opacity(0),
+                                theme.rose.opacity(0.5),
+                                theme.gold.opacity(0.8)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: actualTailWidth, height: 2)
+                    .offset(x: tailStart)
+                    .blur(radius: 2)
+            }
+            
+            // 2. The Solid Core Line (History)
+            // A subtle line that persists behind the comet
+            Rectangle()
+                .fill(theme.rose.opacity(0.3))
+                .frame(width: currentX, height: 1.5)
+            
+            // 3. The Head (Spark)
+            if progress > 0 {
+                ZStack {
+                    // Outer Bloom
+                    Circle()
+                        .fill(theme.rose)
+                        .frame(width: 16, height: 16)
+                        .blur(radius: 6)
+                        .opacity(0.8)
+                    
+                    // Rotating "Mana" Ring
+                    Circle()
+                        .strokeBorder(
+                            AngularGradient(
+                                colors: [theme.gold.opacity(0), theme.gold.opacity(0.8), theme.gold.opacity(0)],
+                                center: .center,
+                                startAngle: .degrees(0),
+                                endAngle: .degrees(360)
+                            ),
+                            lineWidth: 1.5
+                        )
+                        .frame(width: 10, height: 10)
+                        .rotationEffect(.degrees(phase * 360))
+                    
+                    // Core Star
+                    Circle()
+                        .fill(theme.surface)
+                        .frame(width: 4, height: 4)
+                        .overlay(
+                            Circle()
+                                .fill(theme.gold)
+                                .scaleEffect(0.8 + (0.2 * sin(phase * .pi * 4))) // Pulse
+                        )
+                        .shadow(color: theme.gold, radius: 2)
+                }
+                .offset(x: currentX - 8) // Centered on tip
+                .opacity(progress < 0.05 ? progress * 20 : 1) // Smooth entry
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .onAppear {
+            withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
+                phase = 1
+            }
+        }
+    }
+}
+
