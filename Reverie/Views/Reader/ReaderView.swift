@@ -84,7 +84,9 @@ struct ReaderView: View {
     // Auto-scroll
     @State private var autoScrollTask: Task<Void, Never>?
     @State private var autoScrollCountdownTask: Task<Void, Never>?
-    @State private var autoScrollProgress: Double = 0
+    @State private var autoScrollTargetDate: Date?
+    @State private var autoScrollDuration: TimeInterval = 0
+    @State private var showAutoScrollIndicator: Bool = false
     @State private var isAutoScrollCountingDown: Bool = false
     @State private var markerPositions: [MarkerInfo] = []
     @State private var lastViewportHeight: Double = 0
@@ -378,12 +380,22 @@ struct ReaderView: View {
                                 // Manual scroll cancels auto-scroll countdown
                                 cancelAutoScrollCountdown()
                             }
+                            
+                            // Always update viewport height from scroll events as the source of truth
+                            if context.viewportHeight > 0 {
+                                lastViewportHeight = context.viewportHeight
+                            }
 
                             // If we reached or passed our auto-scroll target (downward scroll), clear it
                             if let target = lastAutoScrollTargetY {
                                 // Clear if within tolerance OR if we scrolled past the target
                                 if context.scrollOffset >= target - 10 {
                                     lastAutoScrollTargetY = nil
+                                    // Properly end the auto-scroll visual state once physical movement is confirmed
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        showAutoScrollIndicator = false
+                                    }
+                                    autoScrollTargetDate = nil
                                 }
                             }
 
@@ -439,6 +451,18 @@ struct ReaderView: View {
                         pendingMarkerInjections: $pendingMarkerInjections,
                         pendingImageMarkerInjections: $pendingImageMarkerInjections,
                         scrollByAmount: $scrollByAmount
+                    )
+                    .overlay(
+                        GeometryReader { geo in
+                            Color.clear
+                                .onAppear {
+                                    if lastViewportHeight == 0 { lastViewportHeight = geo.size.height }
+                                }
+                                .onChange(of: geo.size.height) { _, newH in
+                                    // Fallback updates if the webview hasn't reported yet
+                                    if lastViewportHeight == 0 { lastViewportHeight = newH }
+                                }
+                        }
                     )
 
                     if showBackButton {
@@ -661,34 +685,32 @@ struct ReaderView: View {
         .frame(height: ReaderMetrics.footerHeight)
         .background(theme.surface)
         .overlay(alignment: .top) {
-            ZStack(alignment: .top) {
+            ZStack(alignment: .leading) {
                 // Base divider
                 Rectangle()
                     .fill(theme.overlay)
                     .frame(height: 1)
+                    .opacity(showAutoScrollIndicator ? 0 : 1)
                 
-                // Active Auto-Scroll Indicator
-                if isAutoScrollCountingDown {
-                    GeometryReader { proxy in
-                        autoScrollIndicator(width: proxy.size.width)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                            .offset(y: -0.5)
-                    }
-                    .frame(height: 6)
-                    .allowsHitTesting(false)
+                // Active "Fuse" Indicator
+                if showAutoScrollIndicator, let targetDate = autoScrollTargetDate {
+                    AutoScrollFuse(
+                        targetDate: targetDate,
+                        duration: autoScrollDuration,
+                        theme: theme,
+                        onComplete: {
+                            // Execute Scroll
+                            if let targetY = lastAutoScrollTargetY {
+                                scrollToOffset = targetY
+                                isAutoScrollCountingDown = false
+                            }
+                        }
+                    )
                     .transition(.opacity)
-                    .animation(.linear(duration: 0.1), value: autoScrollProgress)
                 }
             }
+            .animation(.easeInOut, value: showAutoScrollIndicator)
         }
-    }
-
-    private func autoScrollIndicator(width: CGFloat) -> some View {
-        AutoScrollAnimationView(
-            width: width,
-            progress: autoScrollProgress,
-            theme: theme
-        )
     }
 
     // MARK: - Toolbar
@@ -832,9 +854,10 @@ struct ReaderView: View {
 
     private func cancelAutoScrollCountdown() {
         isAutoScrollCountingDown = false
+        showAutoScrollIndicator = false
         autoScrollCountdownTask?.cancel()
         autoScrollCountdownTask = nil
-        autoScrollProgress = 0
+        autoScrollTargetDate = nil
         lastAutoScrollTargetY = nil
     }
 
@@ -850,9 +873,15 @@ struct ReaderView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // Poll every 1s
 
+                // Check auto-scroll conditions
+                // We allow auto-scroll if confidence is high OR if we are at the very start of the book (offset < 50)
+                // This enables auto-scroll to work on the first page before the user has generated scroll data.
+                let hasConfidence = appState.readingSpeedTracker.confidence >= 0.5
+                let isAtStart = lastScrollOffset < 50
+                
                 guard appState.settings.smartAutoScrollEnabled,
                       !appState.readingSpeedTracker.isPaused,
-                      appState.readingSpeedTracker.confidence >= 0.5,
+                      (hasConfidence || isAtStart),
                       !isAutoScrollCountingDown,
                       !isProgrammaticScroll,
                       !isLoadingChapters,
@@ -895,7 +924,7 @@ struct ReaderView: View {
         targetY = min(targetY, maxScroll)
         
         if targetY <= currentY + 10 { return } // Already there or too small jump
-
+        
         // 2. Calculate Words in Range
         let startWords = calculator.totalWords(upTo: currentLocation ?? BlockLocation(blockId: 1, offset: 0))
         
@@ -932,39 +961,27 @@ struct ReaderView: View {
 
     private func startCountdown(delay: Double, targetY: Double) {
         isAutoScrollCountingDown = true
-        autoScrollProgress = 0
+        lastAutoScrollTargetY = targetY
         
-        let startTime = Date()
-        let totalDuration = delay
+        // Animation is now 1.5x faster
+        autoScrollDuration = min(2.2, delay * 0.25)
+        
+        // VISUAL: The target date is the exact moment the scroll command is fired.
+        autoScrollTargetDate = Date().addingTimeInterval(delay)
         
         autoScrollCountdownTask?.cancel()
-        autoScrollCountdownTask = Task { @MainActor in
-            // Progress indicator appears ~5s before or proportional
-            let indicatorThreshold = min(5.0, totalDuration * 0.5)
-            
-            while !Task.isCancelled {
-                let elapsed = Date().timeIntervalSince(startTime)
-                if elapsed >= totalDuration {
-                    break
-                }
-                
-                // Show progress in the last 'indicatorThreshold' seconds
-                let timeRemaining = totalDuration - elapsed
-                if timeRemaining <= indicatorThreshold {
-                    autoScrollProgress = 1.0 - (timeRemaining / indicatorThreshold)
-                } else {
-                    autoScrollProgress = 0
-                }
-                
-                try? await Task.sleep(nanoseconds: 100_000_000) // 10fps update
+        autoScrollCountdownTask = Task(priority: .high) { @MainActor in
+            let waitToShow = max(0, delay - autoScrollDuration)
+            if waitToShow > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(waitToShow * 1_000_000_000))
             }
             
             if !Task.isCancelled {
-                // Execute Scroll
-                scrollToOffset = targetY
-                lastAutoScrollTargetY = targetY
-                isAutoScrollCountingDown = false
-                autoScrollProgress = 0
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    showAutoScrollIndicator = true
+                }
+                
+                // Duration sleep removed - logic is now in AutoScrollFuse onComplete
             }
         }
     }
@@ -1633,91 +1650,73 @@ struct BackAnchorButtonStyle: ButtonStyle {
 
 // MARK: - Auto Scroll Animation Component
 
-fileprivate struct AutoScrollAnimationView: View {
-    let width: CGFloat
-    let progress: Double
+fileprivate struct AutoScrollFuse: View {
+    let targetDate: Date
+    let duration: TimeInterval
     let theme: Theme
-    
-    @State private var phase: CGFloat = 0
-    
+    let onComplete: () -> Void
+
+    @State private var hasTriggered = false
+
     var body: some View {
-        ZStack(alignment: .leading) {
-            // 1. The Comet Tail (Ethereal Trail)
-            // Fades out towards the left, follows the head
-            let tailLength: CGFloat = 150
-            let currentX = width * progress
-            let tailStart = max(0, currentX - tailLength)
-            let actualTailWidth = currentX - tailStart
+        TimelineView(.animation) { timeline in
+            let now = timeline.date
+            let timeRemaining = targetDate.timeIntervalSince(now)
+            let progress = 1.0 - (timeRemaining / duration)
             
-            if actualTailWidth > 0 {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                theme.iris.opacity(0),
-                                theme.rose.opacity(0.5),
-                                theme.gold.opacity(0.8)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: actualTailWidth, height: 2)
-                    .offset(x: tailStart)
-                    .blur(radius: 2)
-            }
-            
-            // 2. The Solid Core Line (History)
-            // A subtle line that persists behind the comet
-            Rectangle()
-                .fill(theme.rose.opacity(0.3))
-                .frame(width: currentX, height: 1.5)
-            
-            // 3. The Head (Spark)
-            if progress > 0 {
-                ZStack {
-                    // Outer Bloom
-                    Circle()
-                        .fill(theme.rose)
-                        .frame(width: 16, height: 16)
-                        .blur(radius: 6)
-                        .opacity(0.8)
-                    
-                    // Rotating "Mana" Ring
-                    Circle()
-                        .strokeBorder(
-                            AngularGradient(
-                                colors: [theme.gold.opacity(0), theme.gold.opacity(0.8), theme.gold.opacity(0)],
-                                center: .center,
-                                startAngle: .degrees(0),
-                                endAngle: .degrees(360)
-                            ),
-                            lineWidth: 1.5
-                        )
-                        .frame(width: 10, height: 10)
-                        .rotationEffect(.degrees(phase * 360))
-                    
-                    // Core Star
-                    Circle()
-                        .fill(theme.surface)
-                        .frame(width: 4, height: 4)
-                        .overlay(
-                            Circle()
-                                .fill(theme.gold)
-                                .scaleEffect(0.8 + (0.2 * sin(phase * .pi * 4))) // Pulse
-                        )
-                        .shadow(color: theme.gold, radius: 2)
+            // Trigger completion on the exact frame the target is reached
+            let _ = {
+                if now >= targetDate && !hasTriggered {
+                    DispatchQueue.main.async {
+                        if !hasTriggered {
+                            hasTriggered = true
+                            onComplete()
+                        }
+                    }
                 }
-                .offset(x: currentX - 8) // Centered on tip
-                .opacity(progress < 0.05 ? progress * 20 : 1) // Smooth entry
+            }()
+
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let isOvertime = progress >= 1.0
+                
+                // Cap the visual fill at 100%, but let the spark handle the wait
+                let fillWidth = width * min(1.0, max(0, progress))
+                
+                ZStack(alignment: .leading) {
+                    // 1. The Fuse Line (Energy Beam)
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: theme.rose.opacity(0.0), location: 0),
+                                    .init(color: theme.rose.opacity(0.5), location: 0.7),
+                                    .init(color: theme.rose, location: 1.0)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: fillWidth)
+                        .shadow(color: theme.rose.opacity(0.5), radius: 3, x: 0, y: 0)
+                    
+                    // 2. The Spark (Burning Head)
+                    // If overtime (waiting for JS/MainActor latency), it stays at the end and glows
+                    let sparkSize: CGFloat = isOvertime ? 4 : 3
+                    let pulse = isOvertime ? (sin(now.timeIntervalSince(targetDate) * 15) * 0.5 + 0.5) : 0
+                    
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: sparkSize, height: sparkSize)
+                        .shadow(color: .white, radius: 2 + pulse) // Hot core
+                        .shadow(color: theme.rose, radius: 6 + (pulse * 4)) // Glow
+                        .offset(x: fillWidth - (sparkSize / 2)) // Center on tip
+                        .opacity(progress > 0.01 ? 1 : progress * 100) // Fade in start
+                }
             }
         }
-        .frame(width: width, alignment: .leading)
-        .onAppear {
-            withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
-                phase = 1
-            }
-        }
+        .frame(height: 2)
+        .allowsHitTesting(false)
     }
 }
 

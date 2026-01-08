@@ -314,6 +314,9 @@ struct BookContentView: NSViewRepresentable {
                 webView.evaluateJavaScript("scrollToPercent(\(p))")
                 pendingScrollPercent = nil 
             }
+            
+            // Trigger initial scroll report to ensure dimensions are known immediately
+            webView.evaluateJavaScript("window.dispatchEvent(new Event('scroll'));")
         }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }

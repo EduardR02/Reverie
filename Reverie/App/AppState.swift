@@ -575,7 +575,7 @@ struct UserSettings: Codable, Equatable {
     var autoSwitchToQuiz: Bool = true
     var autoSwitchContextTabs: Bool = true
     var autoSwitchFromChatOnScroll: Bool = true
-    var smartAutoScrollEnabled: Bool = true
+    var smartAutoScrollEnabled: Bool = false
     var autoScrollHighlightEnabled: Bool = true
     var activeContentBorderEnabled: Bool = false
     var showReadingSpeedFooter: Bool = true
