@@ -25,6 +25,7 @@ struct AIPanel: View {
     let onGenerateMoreInsights: () -> Void
     let onGenerateMoreQuestions: () -> Void
     let onForceProcess: () -> Void  // Force process garbage chapter
+    let onProcessManually: () -> Void // Process normal chapter manually
     let onRetryClassification: () -> Void  // Retry failed classification
     let onCancelAnalysis: () -> Void
     let onCancelImages: () -> Void
@@ -818,10 +819,10 @@ struct AIPanel: View {
                         .foregroundColor(theme.muted)
 
                     Circle()
-                        .fill(confidence >= 0.8 ? theme.foam : theme.gold)
+                        .fill(confidence >= 0.8 ? theme.foam : (confidence >= 0.5 ? theme.pine : theme.gold))
                         .frame(width: 5, height: 5)
 
-                    Text(confidence >= 0.8 ? "Calibrated" : "Calibrating...")
+                    Text(confidence >= 0.8 ? "Calibrated" : (confidence >= 0.5 ? "Learning" : "Calibrating..."))
                         .font(.system(size: 10))
                 }
                 .foregroundColor(theme.iris)
@@ -919,7 +920,7 @@ struct AIPanel: View {
             }
 
             Button {
-                onForceProcess()
+                onProcessManually()
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles")
@@ -1176,8 +1177,8 @@ struct AIPanel: View {
 
             Button {
                 if chapter != nil {
-                    // Triggers processChapter in ReaderView via onForceProcess
-                    onForceProcess()
+                    // Triggers processChapter in ReaderView via onProcessManually
+                    onProcessManually()
                 }
             } label: {
                 HStack(spacing: 6) {

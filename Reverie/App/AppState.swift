@@ -230,9 +230,15 @@ final class AppState {
         saveStats()
     }
 
-    func updateProcessingCost(inputTokens: Int, outputTokens: Int, reasoningTokens: Int = 0, model: String) {
+    func updateProcessingCost(inputTokens: Int, outputTokens: Int, reasoningTokens: Int = 0, cachedTokens: Int = 0, model: String) {
         guard let pricing = PricingCatalog.textPricing(for: model) else { return }
-        let inputCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
+        
+        let uncachedTokens = max(0, inputTokens - cachedTokens)
+        let uncachedCost = (Double(uncachedTokens) / 1_000_000) * pricing.inputPerMToken
+        let cachedCost = (Double(cachedTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cachedInputMultiplier)
+        
+        let inputCost = uncachedCost + cachedCost
+        
         // Reasoning tokens are billed as output for Gemini
         let totalOutput = outputTokens + reasoningTokens
         let outputCost = (Double(totalOutput) / 1_000_000) * pricing.outputPerMToken

@@ -142,7 +142,7 @@ final class ReadingSpeedTracker {
         let minutes = Int(totalSeconds / 60.0)
         let words = session.wordsRead
 
-        if wpm > 50 && wpm < 1000 {  // Sanity check
+        if !isLocked && wpm > 50 && wpm < 1000 {  // Sanity check
             historicalWPM.append(wpm)
             // Keep last 20 readings
             if historicalWPM.count > 20 {
@@ -232,8 +232,10 @@ final class ReadingSpeedTracker {
         currentSession = session
 
         // Apply adjustment to average
-        averageWPM *= type.factor
-        saveData()
+        if !isLocked {
+            averageWPM *= type.factor
+            saveData()
+        }
     }
 
     // MARK: - Auto-Scroll

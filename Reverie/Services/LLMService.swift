@@ -587,6 +587,7 @@ final class LLMService {
                 inputTokens: usage.input,
                 outputTokens: usage.visibleOutput,
                 reasoningTokens: usage.reasoning ?? 0,
+                cachedTokens: usage.cached ?? 0,
                 model: model
             )
         }

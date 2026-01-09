@@ -271,6 +271,9 @@ struct ReaderView: View {
             onForceProcess: {
                 forceProcessGarbageChapter()
             },
+            onProcessManually: {
+                processChapterManually()
+            },
             onRetryClassification: {
                 retryClassification()
             },
@@ -1061,7 +1064,9 @@ struct ReaderView: View {
             appState.readingStats.addReadingTime(result.seconds)
         }
         let chapter = chapters[index]
+        let previousChapterId = currentChapter?.id
         currentChapter = chapter
+        markerPositions = []
         hasAutoSwitchedToQuiz = false
         externalTabSelection = .insights
         currentAnnotationId = nil
@@ -1079,6 +1084,9 @@ struct ReaderView: View {
             pendingAnchor = nil
             lastScrollPercent = 0
             lastScrollOffset = 0
+            didRestoreInitialPosition = true
+        } else if chapter.id == previousChapterId {
+            // Reloading the same chapter - preserve current scroll position
             didRestoreInitialPosition = true
         } else {
             let shouldRestore = !didRestoreInitialPosition && index == currentBook.currentChapter
@@ -1112,9 +1120,11 @@ struct ReaderView: View {
         furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
         let wordCount = chapter.wordCount > 0 ? chapter.wordCount : estimateWordCount(from: chapter.contentHTML)
         // Don't track reading speed until classification confirms it's content (not front/back matter)
-        // This prevents contaminating WPM history if classification hasn't run yet
+        // Fallback: If AI auto-processing is disabled, track regardless of garbage status
         let isClassifiedContent = currentBook.classificationStatus == .completed && !chapter.isGarbage
-        if wordCount > 0, let chapterId = chapter.id, isClassifiedContent {
+        let isAIDisabled = !appState.settings.autoAIProcessingEnabled
+        
+        if wordCount > 0, let chapterId = chapter.id, (isClassifiedContent || isAIDisabled) {
             appState.readingSpeedTracker.startSession(
                 chapterId: chapterId,
                 wordCount: wordCount,
@@ -1141,6 +1151,11 @@ struct ReaderView: View {
             currentChapter = chapter
             if let index = chapters.firstIndex(where: { $0.id == chapter.id }) { chapters[index] = chapter }
         } catch { return }
+        Task { await processChapter(chapter) }
+    }
+
+    func processChapterManually() {
+        guard let chapter = currentChapter else { return }
         Task { await processChapter(chapter) }
     }
 
