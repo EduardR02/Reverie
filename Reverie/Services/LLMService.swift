@@ -157,7 +157,7 @@ final class LLMService {
         nameHint: String? = nil
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     var fullText = ""
                     var scanner = StreamingJSONScanner()
@@ -187,6 +187,7 @@ final class LLMService {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -759,7 +760,7 @@ final class LLMService {
         nameHint: String? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmedKey.isEmpty else {
@@ -798,7 +799,7 @@ final class LLMService {
                     // A temporary continuation to intercept usage chunks
                     let streamRecorder = self.recordMode ? StreamingRecorder(name: nameHint ?? "stream") : nil
                     let interceptor = AsyncThrowingStream<StreamChunk, Error> { inner in
-                        Task {
+                        let innerTask = Task {
                             do {
                                 var lineParser = SSELineParser()
                                 var rawData = Data()
@@ -840,6 +841,7 @@ final class LLMService {
                                 inner.finish(throwing: error)
                             }
                         }
+                        inner.onTermination = { _ in innerTask.cancel() }
                     }
 
                     for try await chunk in interceptor {
@@ -857,6 +859,7 @@ final class LLMService {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

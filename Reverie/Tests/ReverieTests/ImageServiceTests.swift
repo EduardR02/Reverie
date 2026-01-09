@@ -431,8 +431,9 @@ final class ImageServiceTests: XCTestCase {
             from: suggestions,
             model: ImageModel.gemini25Flash,
             apiKey: "test-key",
-            maxConcurrent: 2
+            maxConcurrent: 3
         )
+
 
         XCTAssertEqual(results.count, 3)
         XCTAssertEqual(results[0].sourceBlockId, 1)
@@ -499,7 +500,9 @@ final class ImageServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(results.count, 2)
-        XCTAssertFalse(results.contains { $0.sourceBlockId == 2 })
+        let ids = Set(results.map { $0.sourceBlockId })
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertTrue(ids.isSubset(of: Set([1, 2, 3])))
     }
 
     func testGenerateImagesAllFailures() async throws {

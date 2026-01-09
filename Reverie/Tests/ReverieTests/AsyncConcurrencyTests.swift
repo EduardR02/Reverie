@@ -101,6 +101,8 @@ final class AsyncConcurrencyTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 5.0)
         llmTask.cancel()
         imageTask.cancel()
+        _ = await llmTask.result
+        _ = await imageTask.result
     }
 
     func testNoDataCorruptionWithParallelWrites() async throws {
@@ -220,6 +222,8 @@ final class AsyncConcurrencyTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 5.0)
         task1.cancel()
         task2.cancel()
+        _ = await task1.result
+        _ = await task2.result
     }
 
     func testStreamingErrorPropagates() async throws {
@@ -254,6 +258,7 @@ final class AsyncConcurrencyTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 2.0)
         XCTAssertNotNil(receivedError)
         task.cancel()
+        _ = await task.result
     }
 
     func testConcurrentImageGenerationNoRaceConditions() async throws {
