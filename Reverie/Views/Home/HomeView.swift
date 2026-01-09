@@ -651,6 +651,8 @@ struct HomeView: View {
     }
 
     private func processFullBook(_ book: Book) async {
+        let isSimulation = false // Set to true to test UI without using tokens
+        
         appState.isProcessingBook = true
         appState.processingBookId = book.id
         appState.processingProgress = 0
@@ -765,6 +767,12 @@ struct HomeView: View {
                 let summary: String
                 if reuseSummary {
                     summary = existingSummary ?? ""
+                } else if isSimulation {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000) // Simulate 1s latency
+                    summary = "This is a simulated summary for chapter \(chapter.index + 1). Simulation mode is active."
+                    liveInputTokens += 1000
+                    liveOutputTokens += 500
+                    appState.processingCostEstimate += 0.02
                 } else {
                     let (generatedSummary, usage) = try await appState.llmService.generateSummary(
                         contentWithBlocks: contentWithBlocks,
@@ -783,7 +791,9 @@ struct HomeView: View {
                 updatedChapter.rollingSummary = chapterRollingSummary
                 updatedChapter.contentText = contentWithBlocks
                 updatedChapter.blockCount = blocks.count
-                try appState.database.saveChapter(&updatedChapter)
+                if !isSimulation {
+                    try appState.database.saveChapter(&updatedChapter)
+                }
 
                 liveSummaryCount += 1
                 rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
@@ -810,7 +820,39 @@ struct HomeView: View {
                         runningInsightCount -= 1
                         updateInsightPhase()
                     }
-                    try await processInsights(for: workItem, bookId: bookId, bookTitle: book.title, author: book.author)
+                    guard let chapterId = workItem.chapter.id else { return }
+                    
+                    let analysis = try await processInsights(
+                        for: workItem,
+                        bookId: bookId,
+                        bookTitle: book.title,
+                        author: book.author,
+                        isSimulation: isSimulation
+                    )
+
+                    if !isSimulation, let analysis {
+                        try appState.database.saveAnalysis(analysis, chapterId: chapterId, blockCount: workItem.blocks.count)
+                        
+                        await generateSuggestedImages(
+                            analysis.imageSuggestions,
+                            blockCount: workItem.blocks.count,
+                            bookId: bookId,
+                            chapterId: chapterId
+                        )
+
+                        var updatedChapter = workItem.chapter
+                        updatedChapter.processed = true
+                        if updatedChapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                            updatedChapter.summary = analysis.summary
+                        }
+                        updatedChapter.contentText = workItem.contentWithBlocks
+                        updatedChapter.blockCount = workItem.blocks.count
+                        try appState.database.saveChapter(&updatedChapter)
+                    }
+                    
+                    appState.processingCompletedChapters += 1
+                    appState.processingProgress = Double(appState.processingCompletedChapters)
+                        / Double(max(1, appState.processingTotalChapters))
                 }
                 runningInsightTasks.append(task)
 
@@ -840,7 +882,7 @@ struct HomeView: View {
             }
 
             // Mark book as fully processed if all eligible chapters were done
-            if appState.processingCompletedChapters == chaptersToProcess.count {
+            if !isSimulation && appState.processingCompletedChapters == chaptersToProcess.count {
                 // Fetch fresh copy to avoid overwriting background classification status
                 if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
                     updatedBook.processedFully = true
@@ -872,97 +914,79 @@ struct HomeView: View {
         for workItem: InsightWorkItem,
         bookId: Int64,
         bookTitle: String?,
-        author: String?
-    ) async throws {
-        guard let chapterId = workItem.chapter.id else { return }
-
-        // Reset per-chapter live counters (accumulate across chapters for total count)
-        // Note: We don't reset here anymore - we want cumulative counts
-
-        // Use streaming API for live telemetry
-        let stream = appState.llmService.analyzeChapterStreaming(
-            contentWithBlocks: workItem.contentWithBlocks,
-            rollingSummary: workItem.rollingSummary,
-            bookTitle: bookTitle,
-            author: author,
-            settings: appState.settings
-        )
-
+        author: String?,
+        isSimulation: Bool
+    ) async throws -> LLMService.ChapterAnalysis? {
         var analysis: LLMService.ChapterAnalysis?
 
-        for try await event in stream {
-            if Task.isCancelled { throw CancellationError() }
+        if isSimulation {
+            // Simulate a stream of events
+            for i in 1...5 {
+                try? await Task.sleep(nanoseconds: UInt64.random(in: 100_000_000...500_000_000))
+                if Task.isCancelled { throw CancellationError() }
+                
+                if i % 2 == 0 {
+                    liveInsightCount += 1
+                } else if i == 5 {
+                    liveQuizCount += 1
+                }
+                
+                liveInputTokens += Int.random(in: 1000...3000)
+                liveOutputTokens += Int.random(in: 500...1500)
+                appState.processingCostEstimate += Double.random(in: 0.01...0.05)
+            }
+            
+            analysis = LLMService.ChapterAnalysis(
+                annotations: [
+                    LLMService.AnnotationData(
+                        type: "science",
+                        title: "Simulated Science Insight",
+                        content: "This is a simulated insight content for chapter \(workItem.chapter.index + 1).",
+                        sourceBlockId: 1
+                    )
+                ],
+                quizQuestions: [
+                    LLMService.QuizData(
+                        question: "Simulated question for chapter \(workItem.chapter.index + 1)?",
+                        answer: "Simulated answer.",
+                        sourceBlockId: 1
+                    )
+                ],
+                imageSuggestions: [],
+                summary: "Simulated summary for chapter \(workItem.chapter.index + 1)."
+            )
+        } else {
+            // Use streaming API for live telemetry
+            let stream = appState.llmService.analyzeChapterStreaming(
+                contentWithBlocks: workItem.contentWithBlocks,
+                rollingSummary: workItem.rollingSummary,
+                bookTitle: bookTitle,
+                author: author,
+                settings: appState.settings
+            )
 
-            switch event {
-            case .thinking:
-                break  // Not displaying thinking in takeover view
-            case .insightFound:
-                liveInsightCount += 1
-            case .quizQuestionFound:
-                liveQuizCount += 1
-            case .usage(let usage):
-                liveInputTokens += usage.input
-                liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
-            case .completed(let result):
-                analysis = result
+            for try await event in stream {
+                if Task.isCancelled { throw CancellationError() }
+
+                switch event {
+                case .thinking:
+                    break  // Not displaying thinking in takeover view
+                case .insightFound:
+                    liveInsightCount += 1
+                case .quizQuestionFound:
+                    liveQuizCount += 1
+                case .usage(let usage):
+                    liveInputTokens += usage.input
+                    liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
+                case .completed(let result):
+                    analysis = result
+                }
             }
         }
 
-        guard let analysis else {
-            throw CancellationError()
-        }
-
         if Task.isCancelled { throw CancellationError() }
 
-        for data in analysis.annotations {
-            let type = AnnotationType(rawValue: data.type) ?? .science
-            let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= workItem.blocks.count
-                ? data.sourceBlockId : 1
-            var annotation = Annotation(
-                chapterId: chapterId,
-                type: type,
-                title: data.title,
-                content: data.content,
-                sourceBlockId: validBlockId
-            )
-            try appState.database.saveAnnotation(&annotation)
-        }
-
-        for data in analysis.quizQuestions {
-            let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= workItem.blocks.count
-                ? data.sourceBlockId : 1
-            var quiz = Quiz(
-                chapterId: chapterId,
-                question: data.question,
-                answer: data.answer,
-                sourceBlockId: validBlockId
-            )
-            try appState.database.saveQuiz(&quiz)
-        }
-
-        if Task.isCancelled { throw CancellationError() }
-
-        await generateSuggestedImages(
-            analysis.imageSuggestions,
-            blockCount: workItem.blocks.count,
-            bookId: bookId,
-            chapterId: chapterId
-        )
-
-        if Task.isCancelled { throw CancellationError() }
-
-        var updatedChapter = workItem.chapter
-        updatedChapter.processed = true
-        if updatedChapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
-            updatedChapter.summary = analysis.summary
-        }
-        updatedChapter.contentText = workItem.contentWithBlocks
-        updatedChapter.blockCount = workItem.blocks.count
-        try appState.database.saveChapter(&updatedChapter)
-
-        appState.processingCompletedChapters += 1
-        appState.processingProgress = Double(appState.processingCompletedChapters)
-            / Double(max(1, appState.processingTotalChapters))
+        return analysis
     }
 
     private func generateSuggestedImages(

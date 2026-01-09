@@ -69,6 +69,7 @@ final class ReadingSpeedTracker {
     private(set) var currentSession: ReadingSession?
     private(set) var historicalWPM: [Double] = []
     private(set) var averageWPM: Double = 0
+    private(set) var manualAutoScrollWPM: Double = 250
     private(set) var confidence: Double = 0  // 0-1, how confident we are in the reading speed
     private(set) var activePauseReasons: Set<PauseReason> = []
     var isPaused: Bool { !activePauseReasons.isEmpty }
@@ -84,6 +85,7 @@ final class ReadingSpeedTracker {
 
     private let wpmHistoryKey = "readingSpeedHistory"
     private let averageWPMKey = "averageReadingWPM"
+    private let manualAutoScrollWPMKey = "manualAutoScrollWPM"
     private let confidenceKey = "readingSpeedConfidence"
     private let isLockedKey = "readingSpeedLocked"
 
@@ -142,7 +144,7 @@ final class ReadingSpeedTracker {
         let minutes = Int(totalSeconds / 60.0)
         let words = session.wordsRead
 
-        if !isLocked && wpm > 50 && wpm < 1000 {  // Sanity check
+        if !isLocked && wpm > 50 && wpm < 1500 {  // Sanity check
             historicalWPM.append(wpm)
             // Keep last 20 readings
             if historicalWPM.count > 20 {
@@ -240,6 +242,20 @@ final class ReadingSpeedTracker {
 
     // MARK: - Auto-Scroll
 
+    var effectiveAutoScrollWPM: Double {
+        manualAutoScrollWPM
+    }
+
+    func incrementManualSpeed() {
+        manualAutoScrollWPM += 10
+        saveData()
+    }
+
+    func decrementManualSpeed() {
+        manualAutoScrollWPM = max(50, manualAutoScrollWPM - 10)
+        saveData()
+    }
+
     func toggleLock() {
         isLocked.toggle()
         UserDefaults.standard.set(isLocked, forKey: isLockedKey)
@@ -247,9 +263,10 @@ final class ReadingSpeedTracker {
 
     /// Returns the delay in seconds before next scroll
     func calculateScrollDelay(wordsInView: Int) -> Double {
-        guard averageWPM > 0 else { return 30 }  // Default 30 seconds
+        let wpm = effectiveAutoScrollWPM
+        guard wpm > 0 else { return 30 }  // Default 30 seconds
 
-        let minutesToRead = Double(wordsInView) / averageWPM
+        let minutesToRead = Double(wordsInView) / wpm
         let secondsToRead = minutesToRead * 60
 
         // Account for uncertainty - scroll slightly early
@@ -327,6 +344,11 @@ final class ReadingSpeedTracker {
         averageWPM = UserDefaults.standard.double(forKey: averageWPMKey)
         confidence = UserDefaults.standard.double(forKey: confidenceKey)
         isLocked = UserDefaults.standard.bool(forKey: isLockedKey)
+        
+        manualAutoScrollWPM = UserDefaults.standard.double(forKey: manualAutoScrollWPMKey)
+        if manualAutoScrollWPM == 0 {
+            manualAutoScrollWPM = averageWPM > 0 ? averageWPM : 250
+        }
     }
 
     private func saveData() {
@@ -334,6 +356,7 @@ final class ReadingSpeedTracker {
             UserDefaults.standard.set(data, forKey: wpmHistoryKey)
         }
         UserDefaults.standard.set(averageWPM, forKey: averageWPMKey)
+        UserDefaults.standard.set(manualAutoScrollWPM, forKey: manualAutoScrollWPMKey)
         UserDefaults.standard.set(confidence, forKey: confidenceKey)
     }
 }

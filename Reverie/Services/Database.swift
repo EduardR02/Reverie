@@ -278,10 +278,40 @@ final class DatabaseService {
     }
 
     // MARK: - Quiz Operations
-
+    
     func saveQuiz(_ quiz: inout Quiz) throws {
         try dbQueue.write { db in
             try quiz.save(db)
+        }
+    }
+    
+    func saveAnalysis(_ analysis: LLMService.ChapterAnalysis, chapterId: Int64, blockCount: Int) throws {
+        try dbQueue.write { db in
+            for data in analysis.annotations {
+                let type = AnnotationType(rawValue: data.type) ?? .science
+                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount
+                    ? data.sourceBlockId : 1
+                var annotation = Annotation(
+                    chapterId: chapterId,
+                    type: type,
+                    title: data.title,
+                    content: data.content,
+                    sourceBlockId: validBlockId
+                )
+                try annotation.save(db)
+            }
+
+            for data in analysis.quizQuestions {
+                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount
+                    ? data.sourceBlockId : 1
+                var quiz = Quiz(
+                    chapterId: chapterId,
+                    question: data.question,
+                    answer: data.answer,
+                    sourceBlockId: validBlockId
+                )
+                try quiz.save(db)
+            }
         }
     }
 

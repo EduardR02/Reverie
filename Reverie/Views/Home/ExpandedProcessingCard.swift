@@ -18,15 +18,15 @@ struct ExpandedProcessingCard: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 20) {
             // Large cover on the left
             coverView
-                .frame(width: 140, height: 210)
+                .frame(width: 160, height: 240)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
 
             // Content on the right
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 // Title and author
                 VStack(alignment: .leading, spacing: 4) {
                     Text(book.title)
@@ -66,63 +66,72 @@ struct ExpandedProcessingCard: View {
                 }
 
                 // Telemetry grid
-                HStack(spacing: 0) {
-                    telemetryItem(
-                        icon: "doc.text.fill",
-                        value: "\(summariesCompleted)/\(totalChapters)",
-                        label: "Summaries",
-                        color: theme.gold
-                    )
+                VStack(spacing: 16) {
+                    HStack(spacing: 0) {
+                        telemetryItem(
+                            icon: "doc.text.fill",
+                            value: "\(summariesCompleted)/\(totalChapters)",
+                            label: "Chapters",
+                            color: theme.gold
+                        )
 
-                    telemetryItem(
-                        icon: "lightbulb.fill",
-                        value: "\(liveInsightCount)",
-                        label: "Insights",
-                        color: theme.rose
-                    )
+                        telemetryItem(
+                            icon: "lightbulb.fill",
+                            value: "\(liveInsightCount)",
+                            label: "Insights",
+                            color: theme.rose
+                        )
 
-                    telemetryItem(
-                        icon: "checkmark.circle.fill",
-                        value: "\(liveQuizCount)",
-                        label: "Questions",
-                        color: theme.foam
-                    )
-
-                    costTelemetryItem
-
-                    tokenTelemetryItem
-
-                    telemetryItem(
-                        icon: "clock.fill",
-                        value: estimatedTimeRemaining,
-                        label: "ETA",
-                        color: theme.iris
-                    )
-                }
-
-                // Cancel button
-                Button {
-                    onCancel()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Cancel")
-                            .font(.system(size: 12, weight: .semibold))
+                        telemetryItem(
+                            icon: "questionmark.circle.fill",
+                            value: "\(liveQuizCount)",
+                            label: "Questions",
+                            color: theme.foam
+                        )
                     }
-                    .foregroundColor(theme.love)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(theme.love.opacity(0.1))
-                    .clipShape(Capsule())
+
+                    HStack(spacing: 0) {
+                        telemetryItem(
+                            icon: "dollarsign.circle.fill",
+                            value: String(format: "$%.2f", processingCost),
+                            label: "Cost",
+                            color: theme.rose
+                        )
+
+                        tokenTelemetryItem()
+
+                        telemetryItem(
+                            icon: "clock.fill",
+                            value: estimatedTimeRemaining,
+                            label: "Remaining",
+                            color: theme.iris
+                        )
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
-        .padding(20)
-        .frame(maxWidth: 600)
+        .padding(16)
+        .frame(maxWidth: 700)
         .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                onCancel()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark")
+                    Text("Cancel")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(theme.subtle)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(theme.overlay.opacity(0.3))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(12)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(theme.rose.opacity(0.2), lineWidth: 1)
@@ -135,102 +144,96 @@ struct ExpandedProcessingCard: View {
     @ViewBuilder
     private var phaseDisplay: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if !summaryPhase.isEmpty {
-                HStack(spacing: 4) {
-                    Text("Summary:")
-                        .foregroundColor(theme.gold)
-                    Text(summaryPhase)
-                        .foregroundColor(theme.subtle)
-                }
-                .font(.system(size: 11))
-                .lineLimit(1)
-            }
-
-            if !insightPhase.isEmpty {
-                HStack(spacing: 4) {
-                    Text("Insights:")
-                        .foregroundColor(theme.rose)
-                    Text(insightPhase)
-                        .foregroundColor(theme.subtle)
-                }
-                .font(.system(size: 11))
-                .lineLimit(1)
-            }
-
-            // Fallback if both are empty
-            if summaryPhase.isEmpty && insightPhase.isEmpty {
-                Text("Preparing...")
-                    .font(.system(size: 11))
+            // Summary Slot
+            HStack(spacing: 4) {
+                Text("Summary:")
+                    .foregroundColor(theme.gold)
+                    .fontWeight(.semibold)
+                Text(summaryPhase.isEmpty ? "Pending..." : summaryPhase)
                     .foregroundColor(theme.subtle)
+                    .opacity(summaryPhase.isEmpty ? 0.4 : 1.0)
             }
-        }
-    }
+            .font(.system(size: 11))
+            .lineLimit(1)
 
-    // MARK: - Cost Telemetry
-
-    private var costTelemetryItem: some View {
-        VStack(spacing: 4) {
-            Image(systemName: "dollarsign.circle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(theme.rose)
-
-            Text(String(format: "$%.2f", processingCost))
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundColor(theme.text)
-                .contentTransition(.numericText())
-                .animation(.spring(response: 0.3), value: processingCost)
-
-            Text("Spent")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundColor(theme.muted)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    // MARK: - Token Telemetry
-
-    private var tokenTelemetryItem: some View {
-        VStack(spacing: 4) {
-            Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 12))
-                .foregroundColor(theme.pine)
-
-            HStack(spacing: 2) {
-                Text(formatTokens(liveInputTokens))
-                Text("/")
-                    .foregroundColor(theme.muted)
-                Text(formatTokens(liveOutputTokens))
+            // Insight Slot
+            HStack(spacing: 4) {
+                Text("Insights:")
+                    .foregroundColor(theme.rose)
+                    .fontWeight(.semibold)
+                Text(insightPhase.isEmpty ? "Pending..." : insightPhase)
+                    .foregroundColor(theme.subtle)
+                    .opacity(insightPhase.isEmpty ? 0.4 : 1.0)
             }
-            .font(.system(size: 14, weight: .bold, design: .monospaced))
-            .foregroundColor(theme.text)
-            .contentTransition(.numericText())
-            .animation(.spring(response: 0.3), value: liveInputTokens)
-            .animation(.spring(response: 0.3), value: liveOutputTokens)
-
-            Text("In / Out")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundColor(theme.muted)
+            .font(.system(size: 11))
+            .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
+        .frame(height: 32, alignment: .leading)
     }
 
     // MARK: - Telemetry Item
 
     private func telemetryItem(icon: String, value: String, label: String, color: Color) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 12))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundColor(color)
+                .frame(height: 12, alignment: .center)
 
             Text(value)
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundColor(theme.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 28, alignment: .center) // Fixed height for 2 lines equivalent
                 .contentTransition(.numericText())
                 .animation(.spring(response: 0.3), value: value)
 
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .bold))
                 .foregroundColor(theme.muted)
+                .tracking(0.5)
+                .frame(height: 10, alignment: .center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func tokenTelemetryItem() -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(theme.pine)
+                .frame(height: 12, alignment: .center)
+
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("IN")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(theme.muted)
+                        .frame(width: 28, alignment: .trailing)
+                    Text(formatTokens(liveInputTokens))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(theme.text)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 4) {
+                    Text("OUT")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(theme.muted)
+                        .frame(width: 28, alignment: .trailing)
+                    Text(formatTokens(liveOutputTokens))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(theme.text)
+                        .lineLimit(1)
+                }
+            }
+            .frame(height: 28, alignment: .center)
+
+            Text("TOKENS")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(theme.muted)
+                .tracking(0.5)
+                .frame(height: 10, alignment: .center)
         }
         .frame(maxWidth: .infinity)
     }

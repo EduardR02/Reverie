@@ -805,73 +805,141 @@ struct AIPanel: View {
     }
 
     private var readingSpeedFooter: some View {
-        HStack(spacing: 10) {
-            if appState.readingSpeedTracker.averageWPM > 0 {
-                let confidence = appState.readingSpeedTracker.confidence
-                HStack(spacing: 6) {
-                    Image(systemName: "speedometer")
-                        .font(.system(size: 10))
-
-                    Text("\(appState.readingSpeedTracker.formattedAverageWPM) WPM")
-                        .font(.system(size: 11, weight: .medium))
-
-                    Text("•")
-                        .foregroundColor(theme.muted)
-
-                    Circle()
-                        .fill(confidence >= 0.8 ? theme.foam : (confidence >= 0.5 ? theme.pine : theme.gold))
-                        .frame(width: 5, height: 5)
-
-                    Text(confidence >= 0.8 ? "Calibrated" : (confidence >= 0.5 ? "Learning" : "Calibrating..."))
-                        .font(.system(size: 10))
-                }
-                .foregroundColor(theme.iris)
-            } else {
-                // Placeholder when no data yet
-                HStack(spacing: 6) {
-                    Image(systemName: "speedometer")
-                        .font(.system(size: 10))
-                    Text("Learning your pace...")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("•")
-                        .foregroundColor(theme.muted)
-                    Text("Finish a chapter to calibrate")
-                        .font(.system(size: 10))
-                }
-                .foregroundColor(theme.muted)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            }
-
-            Spacer()
-
-            // Lock/pause toggle (only show when we have data)
-            if appState.readingSpeedTracker.averageWPM > 0 {
+        let isAutoScrollActive = appState.settings.smartAutoScrollEnabled
+        let isLocked = appState.readingSpeedTracker.isLocked
+        let tracker = appState.readingSpeedTracker
+        
+        return HStack(spacing: 0) {
+            // 1. Left: Reading Speed Tracker (Actual WPM + Lock)
+            HStack(spacing: 12) {
+                // Lock Button
                 Button {
-                    appState.readingSpeedTracker.toggleLock()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: appState.readingSpeedTracker.isLocked ? "lock.fill" : "lock.open")
-                            .font(.system(size: 10))
-                        Text(appState.readingSpeedTracker.isLocked ? "Locked" : "Tracking")
-                            .font(.system(size: 10, weight: .medium))
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        tracker.toggleLock()
                     }
-                    .foregroundColor(appState.readingSpeedTracker.isLocked ? theme.rose : theme.muted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(appState.readingSpeedTracker.isLocked ? theme.rose.opacity(0.15) : theme.overlay)
-                    .clipShape(Capsule())
+                } label: {
+                    Image(systemName: isLocked ? "lock.fill" : "lock.open.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(isLocked ? theme.gold : theme.subtle)
+                        .frame(width: 28, height: 28)
+                        .background(isLocked ? theme.gold.opacity(0.1) : theme.overlay.opacity(0.3))
+                        .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help(appState.readingSpeedTracker.isLocked ? "Reading speed is locked" : "Click to lock reading speed")
+                .help(isLocked ? "Unlock reading speed tracking" : "Lock reading speed tracking")
+
+                // Dashboard Element
+                HStack(spacing: 8) {
+                    Text("\(Int(tracker.averageWPM))")
+                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundColor(theme.text)
+                        .contentTransition(.numericText())
+                    
+                    Text(isLocked ? "LOCKED" : "AVG WPM")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(theme.muted)
+                        .tracking(0.5)
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .background(theme.overlay.opacity(0.3))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+            .padding(.leading, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            // 2. Right: Auto-Scroll Controls
+            HStack(spacing: 16) {
+                if isAutoScrollActive {
+                    // Active State: Unified Capsule
+                    HStack(spacing: 0) {
+                        Button {
+                            tracker.decrementManualSpeed()
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Text("\(Int(tracker.manualAutoScrollWPM))")
+                            .font(.system(size: 15, weight: .bold, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundColor(theme.text)
+                            .frame(minWidth: 40)
+                            .multilineTextAlignment(.center)
+                            .contentTransition(.numericText(value: tracker.manualAutoScrollWPM))
+                        
+                        Button {
+                            tracker.incrementManualSpeed()
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Divider()
+                            .frame(height: 16)
+                            .background(theme.subtle)
+                            .padding(.horizontal, 4)
+                        
+                        Button {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                                appState.settings.smartAutoScrollEnabled = false
+                                appState.settings.save()
+                            }
+                        } label: {
+                            Image(systemName: "pause.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .foregroundColor(theme.text)
+                    .background(theme.overlay)
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    // Base State: Play Button
+                    Button {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            appState.settings.smartAutoScrollEnabled = true
+                            appState.settings.save()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 12, weight: .bold))
+                            Text("Auto-Scroll")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundColor(theme.muted)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(height: 32)
+                        .background(theme.overlay.opacity(0.3))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(theme.overlay.opacity(0.5), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.trailing, 20)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
         .frame(height: ReaderMetrics.footerHeight)
-        .background(theme.surface)
+        .background(theme.surface.opacity(0.95))
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(theme.overlay)
+                .fill(theme.highlightLow)
                 .frame(height: 1)
         }
     }
