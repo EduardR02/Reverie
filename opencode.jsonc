@@ -60,9 +60,9 @@
       "prompt": "You are a verifier. Check code quality and correctness without modifying anything.\n\nReport:\n- Issues found (with file:line locations)\n- Severity (blocker, warning, nitpick)\n- Whether the code achieves its stated purpose\n\nBe direct. If it's bad, say so. If it's good, say that too - don't invent problems."
     },
     "tortoise-verifier": {
-      "description": "Final verification with GPT-5.2. SLOW (10-20 min). Wins the race, eventually.",
+      "description": "Final verification with gpt-5.2-codex. SLOW (10-20 min). Wins the race, eventually.",
       "mode": "subagent",
-      "model": "github-copilot/gpt-5.2",
+      "model": "openai/gpt-5.2-codex",
       "reasoningEffort": "high",
       "temperature": 0.1,
       "tools": {
@@ -72,9 +72,9 @@
       "prompt": "You are the final verification layer. Examine code with exhaustive thoroughness.\n\nReport:\n- **Verdict**: PASS or FAIL (one word)\n- **Critical issues**: Bugs, logic errors, security flaws (with file:line)\n- **Warnings**: Potential problems, edge cases, unclear behavior\n- **What you verified**: Key paths you traced, invariants you checked\n\nBe ruthlessly thorough. Miss nothing. If it passes your review, it should be correct."
     },
     "tortoise-coder": {
-      "description": "Implementation specialist with GPT-5.2. SLOW (10-20 min). For difficult tasks where faster agents have failed.",
+      "description": "Implementation specialist with gpt-5.2-codex. SLOW (10-20 min). For difficult tasks where faster agents have failed.",
       "mode": "subagent",
-      "model": "github-copilot/gpt-5.2",
+      "model": "openai/gpt-5.2-codex",
       "reasoningEffort": "high",
       "temperature": 0.1,
       "prompt": "You are an executor for difficult implementation tasks. Think deeply before acting.\n\nAfter completing work, report:\n- Files changed and what was done\n- Whether tests pass (run them)\n- Any issues or edge cases you considered\n\nTake your time. Get it right."
