@@ -54,7 +54,7 @@ final class ReaderSession {
     var chapterWPM: Double?
     private var readingTickTask: Task<Void, Never>?
     private var autoScrollTickTask: Task<Void, Never>?
-    private var currentAnalysisTask: Task<Void, Never>?
+    private var analysisTasks: [Int64: Task<Void, Never>] = [:]
     var showChapterList = false
     var expandedImage: GeneratedImage?
     var loadError: String?
@@ -85,7 +85,8 @@ final class ReaderSession {
     func cleanup() {
         readingTickTask?.cancel()
         autoScrollTickTask?.cancel()
-        currentAnalysisTask?.cancel()
+        for task in analysisTasks.values { task.cancel() }
+        analysisTasks.removeAll()
         autoScroll.stop()
         persistCurrentProgress()
         if let result = appState?.readingSpeedTracker.endSession() {
@@ -403,43 +404,56 @@ final class ReaderSession {
     }
 
     func processCurrentChapter() {
-        guard let chapter = currentChapter, let analyzer = analyzer, analyzer.shouldAutoProcess(chapter, in: chapters), let book = appState?.currentBook else { return }
+        guard let chapter = currentChapter, let chapterId = chapter.id, let analyzer = analyzer, analyzer.shouldAutoProcess(chapter, in: chapters), let book = appState?.currentBook else { return }
         
-        currentAnalysisTask?.cancel()
-        currentAnalysisTask = Task {
+        if analysisTasks[chapterId] != nil { return }
+        
+        let task = Task {
+            defer { analysisTasks.removeValue(forKey: chapterId) }
             do {
                 for try await event in analyzer.analyzeChapter(chapter, book: book) {
-                    if Task.isCancelled || currentChapter?.id != chapter.id { break }
+                    if Task.isCancelled { break }
+                    let isCurrent = self.currentChapter?.id == chapterId
+                    
                     switch event {
                     case .annotation(let ann):
-                        annotations.append(ann)
-                        pendingMarkerInjections.append(MarkerInjection(annotationId: ann.id!, sourceBlockId: ann.sourceBlockId))
-                    case .quiz(let q): quizzes.append(q)
+                        if isCurrent {
+                            annotations.append(ann)
+                            pendingMarkerInjections.append(MarkerInjection(annotationId: ann.id!, sourceBlockId: ann.sourceBlockId))
+                        }
+                    case .quiz(let q):
+                        if isCurrent { quizzes.append(q) }
                     case .imageSuggestions(let suggestions):
-                        guard let appState = appState, appState.settings.imagesEnabled else { continue }
+                        guard let appState = self.appState, appState.settings.imagesEnabled else { continue }
                         Task {
                             guard let analyzer = self.analyzer else { return }
                             for try await img in analyzer.generateImages(suggestions: suggestions, book: book, chapter: chapter) {
-                                if Task.isCancelled || currentChapter?.id != chapter.id { break }
-                                images.append(img)
-                                pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
-                                appState.readingStats.recordImage()
+                                if Task.isCancelled { break }
+                                if self.currentChapter?.id == chapterId {
+                                    images.append(img)
+                                    pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
+                                    appState.readingStats.recordImage()
+                                }
                             }
                         }
                     case .complete(let summary):
                         if let summary = summary {
-                            currentChapter?.summary = summary
-                            if let idx = chapters.firstIndex(where: { $0.id == chapter.id }) { chapters[idx].summary = summary }
+                            if isCurrent { self.currentChapter?.summary = summary }
+                            if let idx = self.chapters.firstIndex(where: { $0.id == chapterId }) { self.chapters[idx].summary = summary }
                         }
                     case .thinking: break
                     }
                 }
             } catch { }
         }
+        analysisTasks[chapterId] = task
     }
 
     func cancelAnalysis() {
-        currentAnalysisTask?.cancel()
+        if let chapterId = currentChapter?.id {
+            analysisTasks[chapterId]?.cancel()
+            analysisTasks.removeValue(forKey: chapterId)
+        }
         analyzer?.cancel()
     }
 

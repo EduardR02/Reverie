@@ -203,7 +203,9 @@ private struct ReaderChapterListPopover: View {
                                 Text(chapter.title).font(.system(size: 13))
                                     .foregroundColor(chapter.id == session.currentChapter?.id ? theme.rose : theme.text)
                                 Spacer()
-                                if chapter.processed {
+                                if let id = chapter.id, let state = session.analyzer?.processingStates[id], (state.isProcessingInsights || state.isProcessingImages) {
+                                    ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                                } else if chapter.processed {
                                     Image(systemName: "checkmark.circle.fill").font(.system(size: 12)).foregroundColor(theme.foam)
                                 }
                             }
