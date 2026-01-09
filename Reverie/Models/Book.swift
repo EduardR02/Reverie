@@ -8,10 +8,14 @@ enum ClassificationStatus: String, Codable {
     case failed       // Failed, will retry on next open
 }
 
+enum ImportStatus: String, Codable {
+    case metadataOnly
+    case complete
+    case failed
+}
+
 struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, Equatable {
     var id: Int64?
-    // ... rest of properties ...
-    // (I will keep properties as they are but ensure Equatable is there)
     var title: String
     var author: String
     var coverPath: String?
@@ -21,6 +25,7 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, E
     var currentScrollPercent: Double = 0
     var currentScrollOffset: Double = 0
     var chapterCount: Int = 0
+    var importStatus: ImportStatus = .complete
     var processedFully: Bool = false
     var createdAt: Date = Date()
     var lastReadAt: Date?
@@ -58,8 +63,9 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, E
 extension Book {
     enum Columns: String, ColumnExpression {
         case id, title, author, coverPath, epubPath, progressPercent, currentChapter, 
-             currentScrollPercent, currentScrollOffset, chapterCount, processedFully, 
-             createdAt, lastReadAt, classificationStatus, classificationError, isFinished
+             currentScrollPercent, currentScrollOffset, chapterCount, importStatus,
+             processedFully, createdAt, lastReadAt, classificationStatus, 
+             classificationError, isFinished
     }
 
     /// Whether classification needs to run (pending, failed, or interrupted)

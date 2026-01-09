@@ -65,7 +65,7 @@ struct ReaderView: View {
     @State private var expandedImage: GeneratedImage?  // Full-screen image overlay
 
     // Progress tracking
-    @State private var progressCalculators: [Int64: ChapterProgressCalculator] = [:]
+    @State private var calculatorCache = ProgressCalculatorCache()
     @State private var currentLocation: BlockLocation?
     @State private var furthestLocation: BlockLocation?
     @State private var currentProgressPercent: Double = 0
@@ -347,11 +347,11 @@ struct ReaderView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.base)
-            } else if isLoadingChapters {
+            } else if isLoadingChapters || appState.currentBook?.importStatus == .metadataOnly {
                 VStack(spacing: 12) {
                     ProgressView()
                         .scaleEffect(1.2)
-                    Text("Loading chapters...")
+                    Text(appState.currentBook?.importStatus == .metadataOnly ? "Importing book content..." : "Loading chapters...")
                         .font(.system(size: 14))
                         .foregroundColor(theme.muted)
                 }
@@ -739,8 +739,20 @@ struct ReaderView: View {
             isLoadingChapters = false
             return
         }
+
+        // Wait for background import to finalize metadata if needed
+        var book = currentBook
+        while book.importStatus == .metadataOnly {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if let bookId = book.id, let fresh = try? appState.database.fetchBook(id: bookId) {
+                book = fresh
+                appState.currentBook = fresh
+            }
+        }
+
         do {
-            if let bookId = currentBook.id, let fresh = try? appState.database.fetchAllBooks().first(where: { $0.id == bookId }) {
+            if let bookId = book.id, let fresh = try? appState.database.fetchBook(id: bookId) {
                 appState.currentBook = fresh
             }
             chapters = try appState.database.fetchChapters(for: appState.currentBook!)
@@ -904,7 +916,8 @@ struct ReaderView: View {
 
     private func runAutoScroll() {
         guard let chapter = currentChapter,
-              let calculator = progressCalculators[chapter.id!] else { return }
+              let chapterId = chapter.id,
+              let calculator = calculatorCache.get(for: chapterId) else { return }
         
         // 1. Calculate Target
         let currentY = lastScrollOffset
@@ -1010,7 +1023,7 @@ struct ReaderView: View {
                 furthestLocation = location
             }
 
-            if let chapterId = chapter.id, let calculator = progressCalculators[chapterId] {
+            if let chapterId = chapter.id, let calculator = calculatorCache.get(for: chapterId) {
                 current = calculator.percent(for: location)
                 if let furthestLoc = furthestLocation {
                     furthest = calculator.percent(for: furthestLoc)
@@ -1024,7 +1037,7 @@ struct ReaderView: View {
     }
 
     private func ensureProgressCalculator(for chapter: Chapter) {
-        guard let chapterId = chapter.id, progressCalculators[chapterId] == nil else { return }
+        guard let chapterId = chapter.id, calculatorCache.get(for: chapterId) == nil else { return }
         let html = chapter.contentHTML
         let chapterWordCount = chapter.wordCount
         Task.detached(priority: .utility) {
@@ -1037,7 +1050,8 @@ struct ReaderView: View {
             let totalWords = max(chapterWordCount, computedTotal)
             let calculator = ChapterProgressCalculator(wordCounts: wordCounts, totalWords: totalWords)
             await MainActor.run {
-                progressCalculators[chapterId] = calculator
+                calculatorCache.insert(calculator, for: chapterId, protecting: currentChapter?.id)
+
                 guard currentChapter?.id == chapterId else { return }
                 if let loc = currentLocation {
                     currentProgressPercent = calculator.percent(for: loc)
@@ -1234,8 +1248,7 @@ struct ReaderView: View {
     }
 
     private func processChapter(_ chapter: Chapter) async {
-        guard let bookId = appState.currentBook?.id else { return }
-        let chapterId = chapter.id!
+        guard let bookId = appState.currentBook?.id, let chapterId = chapter.id else { return }
         
         if processingStates[chapterId]?.isProcessingInsights == true { return }
         beginInsightProcessing(for: chapterId)
@@ -1258,7 +1271,6 @@ struct ReaderView: View {
                     return
                 }
                 
-                let stillOnSameChapter = currentChapter?.id == chapterId
                 var injections: [MarkerInjection] = []
                 
                 for data in analysis.annotations {
@@ -1267,15 +1279,21 @@ struct ReaderView: View {
                     var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: validBlockId)
                     try appState.database.saveAnnotation(&annotation)
                     
-                    if stillOnSameChapter {
-                        await MainActor.run {
+                    await MainActor.run {
+                        if currentChapter?.id == chapterId {
                             annotations.append(annotation)
+                            if let id = annotation.id {
+                                injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId))
+                            }
                         }
-                        if let id = annotation.id { injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId)) }
                     }
                 }
                 
-                if stillOnSameChapter && !injections.isEmpty { await MainActor.run { pendingMarkerInjections = injections } }
+                await MainActor.run {
+                    if currentChapter?.id == chapterId && !injections.isEmpty {
+                        pendingMarkerInjections = injections
+                    }
+                }
                 
                 await MainActor.run { endInsightProcessing(for: chapterId) }
                 
@@ -1283,8 +1301,8 @@ struct ReaderView: View {
                     let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blocks.count ? data.sourceBlockId : 1
                     var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: validBlockId)
                     try appState.database.saveQuiz(&quiz)
-                    if stillOnSameChapter {
-                        await MainActor.run {
+                    await MainActor.run {
+                        if currentChapter?.id == chapterId {
                             quizzes.append(quiz)
                         }
                     }
@@ -1296,8 +1314,7 @@ struct ReaderView: View {
                             analysis.imageSuggestions,
                             blockCount: blocks.count,
                             bookId: bookId,
-                            chapterId: chapterId,
-                            stillOnSameChapter: stillOnSameChapter
+                            chapterId: chapterId
                         )
                     }
                     await MainActor.run {
@@ -1326,7 +1343,7 @@ struct ReaderView: View {
                     updatedChapter.blockCount = blocks.count
                     try? appState.database.saveChapter(&updatedChapter)
                     
-                    if stillOnSameChapter { currentChapter = updatedChapter }
+                    if currentChapter?.id == chapterId { currentChapter = updatedChapter }
                     if let idx = chapters.firstIndex(where: { $0.id == chapterId }) { chapters[idx] = updatedChapter }
                 }
             } catch {
@@ -1341,7 +1358,7 @@ struct ReaderView: View {
         }
     }
 
-    private func generateSuggestedImages(_ suggestions: [LLMService.ImageSuggestion], blockCount: Int, bookId: Int64, chapterId: Int64, stillOnSameChapter: Bool) async {
+    private func generateSuggestedImages(_ suggestions: [LLMService.ImageSuggestion], blockCount: Int, bookId: Int64, chapterId: Int64) async {
         guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
         let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { return }
@@ -1349,7 +1366,7 @@ struct ReaderView: View {
         let inputs = imageInputs(from: suggestions, blockCount: blockCount, rewrite: appState.settings.rewriteImageExcerpts)
         let results = await appState.imageService.generateImages(from: inputs, model: appState.settings.imageModel, apiKey: trimmedKey, maxConcurrent: 5)
         if Task.isCancelled { return }
-        await storeGeneratedImages(results, bookId: bookId, chapterId: chapterId, stillOnSameChapter: stillOnSameChapter)
+        await storeGeneratedImages(results, bookId: bookId, chapterId: chapterId)
     }
 
     private func imageInputs(from suggestions: [LLMService.ImageSuggestion], blockCount: Int, rewrite: Bool) -> [ImageService.ImageSuggestionInput] {
@@ -1363,8 +1380,7 @@ struct ReaderView: View {
 
     @MainActor
     private func startGenerateMoreInsights() {
-        guard let chapter = currentChapter, hasLLMKey else { return }
-        let chapterId = chapter.id!
+        guard let chapter = currentChapter, let chapterId = chapter.id, hasLLMKey else { return }
         guard processingStates[chapterId]?.isProcessingInsights != true else { return }
 
         beginInsightProcessing(for: chapterId)
@@ -1375,8 +1391,7 @@ struct ReaderView: View {
 
     @MainActor
     private func startGenerateMoreQuestions() {
-        guard let chapter = currentChapter, hasLLMKey else { return }
-        let chapterId = chapter.id!
+        guard let chapter = currentChapter, let chapterId = chapter.id, hasLLMKey else { return }
         guard processingStates[chapterId]?.isProcessingInsights != true else { return }
 
         beginInsightProcessing(for: chapterId)
@@ -1385,23 +1400,28 @@ struct ReaderView: View {
         }
     }
 
-    private func storeGeneratedImages(_ results: [ImageService.GeneratedImageResult], bookId: Int64, chapterId: Int64, stillOnSameChapter: Bool) async {
+    private func storeGeneratedImages(_ results: [ImageService.GeneratedImageResult], bookId: Int64, chapterId: Int64) async {
         for result in results {
             do {
                 let imagePath = try appState.imageService.saveImage(result.imageData, for: bookId, chapterId: chapterId)
                 var image = GeneratedImage(chapterId: chapterId, prompt: result.excerpt, imagePath: imagePath, sourceBlockId: result.sourceBlockId)
                 try appState.database.saveImage(&image)
                 appState.readingStats.recordImage()
-                if stillOnSameChapter {
-                    images.append(image)
-                    if let id = image.id { pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId)) }
+                
+                await MainActor.run {
+                    if currentChapter?.id == chapterId {
+                        images.append(image)
+                        if let id = image.id {
+                            pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId))
+                        }
+                    }
                 }
             } catch { continue }
         }
     }
 
     private func generateMoreInsights(for chapter: Chapter) async {
-        let chapterId = chapter.id!
+        guard let chapterId = chapter.id else { return }
         defer {
             Task { @MainActor in
                 endInsightProcessing(for: chapterId)
@@ -1417,19 +1437,29 @@ struct ReaderView: View {
                 settings: appState.settings
             )
             guard let analysis = try await collectAnalysis(from: stream, chapterId: chapterId) else { return }
-            let stillOnSameChapter = currentChapter?.id == chapterId
+            
             var injections: [MarkerInjection] = []
             for data in analysis.annotations {
                 let type = AnnotationType(rawValue: data.type) ?? .science
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount ? data.sourceBlockId : 1
                 var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: validBlockId)
                 try appState.database.saveAnnotation(&annotation)
-                if stillOnSameChapter {
-                    annotations.append(annotation)
-                    if let id = annotation.id { injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId)) }
+                
+                await MainActor.run {
+                    if currentChapter?.id == chapterId {
+                        annotations.append(annotation)
+                        if let id = annotation.id {
+                            injections.append(MarkerInjection(annotationId: id, sourceBlockId: validBlockId))
+                        }
+                    }
                 }
             }
-            if stillOnSameChapter { await MainActor.run { pendingMarkerInjections = injections } }
+            
+            await MainActor.run {
+                if currentChapter?.id == chapterId && !injections.isEmpty {
+                    pendingMarkerInjections = injections
+                }
+            }
         } catch {
             await MainActor.run {
                 processingStates[chapterId]?.analysisError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -1438,7 +1468,7 @@ struct ReaderView: View {
     }
 
     private func generateMoreQuestions(for chapter: Chapter) async {
-        let chapterId = chapter.id!
+        guard let chapterId = chapter.id else { return }
         defer {
             Task { @MainActor in
                 endInsightProcessing(for: chapterId)
@@ -1454,12 +1484,17 @@ struct ReaderView: View {
                 settings: appState.settings
             )
             guard let analysis = try await collectAnalysis(from: stream, chapterId: chapterId) else { return }
-            let stillOnSameChapter = currentChapter?.id == chapterId
+            
             for data in analysis.quizQuestions {
                 let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount ? data.sourceBlockId : 1
                 var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: validBlockId)
                 try appState.database.saveQuiz(&quiz)
-                if stillOnSameChapter { quizzes.append(quiz) }
+                
+                await MainActor.run {
+                    if currentChapter?.id == chapterId {
+                        quizzes.append(quiz)
+                    }
+                }
             }
         } catch {
             await MainActor.run {
@@ -1505,18 +1540,25 @@ struct ReaderView: View {
         case .explain:
             pendingChatPrompt = appState.llmService.explainWordChatPrompt(word: word, context: context)
         case .generateImage:
-            guard let chapter = currentChapter, appState.settings.imagesEnabled else { return }
+            guard let chapter = currentChapter, let chapterId = chapter.id, appState.settings.imagesEnabled else { return }
             Task {
                 do {
                     let excerpt = word
                     let prompt = appState.llmService.imagePromptFromExcerpt(excerpt, rewrite: appState.settings.rewriteImageExcerpts)
                     let imageData = try await appState.imageService.generateImage(prompt: prompt, model: appState.settings.imageModel, apiKey: appState.settings.googleAPIKey)
                     guard let bookId = appState.currentBook?.id else { return }
-                    let imagePath = try appState.imageService.saveImage(imageData, for: bookId, chapterId: chapter.id!)
-                    var image = GeneratedImage(chapterId: chapter.id!, prompt: excerpt, imagePath: imagePath, sourceBlockId: blockId > 0 ? blockId : 1)
+                    let imagePath = try appState.imageService.saveImage(imageData, for: bookId, chapterId: chapterId)
+                    var image = GeneratedImage(chapterId: chapterId, prompt: excerpt, imagePath: imagePath, sourceBlockId: blockId > 0 ? blockId : 1)
                     try appState.database.saveImage(&image)
-                    images.append(image)
-                    if let id = image.id { pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId)) }
+                    
+                    await MainActor.run {
+                        if currentChapter?.id == chapterId {
+                            images.append(image)
+                            if let id = image.id {
+                                pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: id, sourceBlockId: image.sourceBlockId))
+                            }
+                        }
+                    }
                 } catch { }
             }
         }

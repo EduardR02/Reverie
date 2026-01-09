@@ -1,5 +1,8 @@
 import SwiftUI
 import GRDB
+#if os(macOS)
+import AppKit
+#endif
 
 // MARK: - Navigation
 
@@ -26,6 +29,8 @@ final class AppState {
         let type: AnnotationType?
     }
     var chatContextReference: ChatReference?
+
+    var libraryNeedsRefresh = false
 
     // UI State
     var showImportSheet = false
@@ -55,7 +60,8 @@ final class AppState {
     var processingCostEstimate: Double = 0
 
     // Services
-    let database: DatabaseService
+    nonisolated let database: DatabaseService
+    var databaseError: Error?
     let llmService: LLMService
     let imageService: ImageService
     let readingSpeedTracker: ReadingSpeedTracker
@@ -67,6 +73,14 @@ final class AppState {
     var readingStats: ReadingStats
     
     // Throttled Progress Save
+    private struct PendingProgress {
+        let bookId: Int64
+        let chapter: Chapter
+        let currentPercent: Double
+        let furthestPercent: Double
+        let scrollOffset: Double
+    }
+    private var pendingProgress: PendingProgress?
     private var pendingProgressSaveTask: Task<Void, Never>?
     private var maxScrollCache: [Int64: Double] = [:]
     private var bookProgressCache: [Int64: BookProgressCache] = [:]
@@ -104,11 +118,24 @@ final class AppState {
         if let ratio = UserDefaults.standard.object(forKey: "splitRatio") as? CGFloat {
             self.splitRatio = ratio
         }
+
+        #if os(macOS)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flushPendingProgress()
+            }
+        }
+        #endif
     }
 
     // MARK: - Navigation
 
     func openBook(_ book: Book) {
+        flushPendingProgress()
         currentBook = book
         let maxIndex = max(0, book.chapterCount - 1)
         currentChapterIndex = min(max(book.currentChapter, 0), maxIndex)
@@ -116,6 +143,7 @@ final class AppState {
     }
 
     func closeBook() {
+        flushPendingProgress()
         currentBook = nil
         currentScreen = .home
     }
@@ -267,6 +295,77 @@ final class AppState {
         }
     }
 
+    func flushPendingProgress() {
+        guard let pending = pendingProgress,
+              let chapterId = pending.chapter.id else { return }
+        
+        let bookId = pending.bookId
+        self.pendingProgress = nil
+        self.pendingProgressSaveTask?.cancel()
+        self.pendingProgressSaveTask = nil
+
+        var book: Book?
+        let isCurrentBook = currentBook?.id == bookId
+        if isCurrentBook {
+            book = currentBook
+        } else {
+            book = try? database.fetchBook(id: bookId)
+        }
+        
+        guard var updatedBook = book else { return }
+
+        let chapterCount = max(1, updatedBook.chapterCount)
+        let chapterIndex = min(max(pending.chapter.index, 0), chapterCount - 1)
+
+        let currentPercent = min(max(pending.currentPercent, 0), 1)
+        let furthestPercent = min(max(pending.furthestPercent, 0), 1)
+        let effectiveFurthest = max(furthestPercent, currentPercent)
+        let previousMax = min(max(maxScrollCache[chapterId] ?? pending.chapter.maxScrollReached, 0), 1)
+        
+        if effectiveFurthest > previousMax {
+            let cachedWordCount = bookProgressCache[bookId]?.chapterWordCounts[chapterId]
+            let wordCount = cachedWordCount ?? pending.chapter.wordCount
+            let previousWords = Int((Double(wordCount) * previousMax).rounded())
+            let currentWords = Int((Double(wordCount) * effectiveFurthest).rounded())
+            let wordDelta = currentWords - previousWords
+            if wordDelta > 0 {
+                self.addWords(wordDelta)
+                if var cache = bookProgressCache[bookId], cache.totalWords > 0 {
+                    cache.wordsRead = min(cache.totalWords, cache.wordsRead + wordDelta)
+                    bookProgressCache[bookId] = cache
+                }
+            }
+
+            var updatedChapter = pending.chapter
+            updatedChapter.maxScrollReached = effectiveFurthest
+            try? database.saveChapter(&updatedChapter)
+            maxScrollCache[chapterId] = effectiveFurthest
+        }
+
+        let overallProgress: Double
+        if let cache = bookProgressCache[bookId], cache.totalWords > 0 {
+            overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
+        } else {
+            let chapterProgress = Double(chapterIndex) + effectiveFurthest
+            overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
+        }
+
+        updatedBook.currentChapter = chapterIndex
+        updatedBook.currentScrollPercent = currentPercent
+        updatedBook.currentScrollOffset = pending.scrollOffset
+        updatedBook.progressPercent = overallProgress
+        updatedBook.lastReadAt = Date()
+
+        do {
+            try database.saveBook(&updatedBook)
+            if isCurrentBook {
+                self.currentBook = updatedBook
+            }
+        } catch {
+            print("Failed to save book progress: \(error)")
+        }
+    }
+
     // MARK: - Progress Tracking (Throttled)
 
     func updateBookProgressCache(book: Book, chapters: [Chapter]) {
@@ -304,68 +403,12 @@ final class AppState {
     }
 
     func updateChapterProgress(chapter: Chapter, scrollPercent: Double, scrollOffset: Double) {
-        guard let book = currentBook else { return }
-        let bookId = book.id
-        
-        pendingProgressSaveTask?.cancel()
-        pendingProgressSaveTask = Task { @MainActor in
-            // Debounce for 1 second to avoid DB thrashing
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            let chapterCount = max(1, book.chapterCount)
-            let chapterIndex = min(max(chapter.index, 0), chapterCount - 1)
-            
-            // 1. Calculate words read delta
-            let clampedPercent = max(0, min(scrollPercent, 1))
-            let previousMax = min(max(chapter.id.flatMap { maxScrollCache[$0] } ?? chapter.maxScrollReached, 0), 1)
-            if clampedPercent > previousMax {
-                let chapterId = chapter.id
-                let cachedWordCount: Int? = {
-                    guard let bookId, let chapterId else { return nil }
-                    return bookProgressCache[bookId]?.chapterWordCounts[chapterId]
-                }()
-                let wordCount = cachedWordCount ?? chapter.wordCount
-                let previousWords = Int((Double(wordCount) * previousMax).rounded())
-                let currentWords = Int((Double(wordCount) * clampedPercent).rounded())
-                let wordDelta = currentWords - previousWords
-                if wordDelta > 0 {
-                    self.addWords(wordDelta)
-                    if let bookId, var cache = bookProgressCache[bookId], cache.totalWords > 0 {
-                        cache.wordsRead = min(cache.totalWords, cache.wordsRead + wordDelta)
-                        bookProgressCache[bookId] = cache
-                    }
-                }
-                
-                var updatedChapter = chapter
-                updatedChapter.maxScrollReached = clampedPercent
-                try? database.saveChapter(&updatedChapter)
-                if let chapterId = chapter.id {
-                    maxScrollCache[chapterId] = clampedPercent
-                }
-            }
-            
-            // 2. Save book progress
-            let overallProgress: Double
-            if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
-                overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
-            } else {
-                let chapterProgress = Double(chapterIndex) + clampedPercent
-                overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
-            }
-
-            var updatedBook = book
-            updatedBook.currentChapter = chapterIndex
-            updatedBook.currentScrollPercent = clampedPercent
-            updatedBook.currentScrollOffset = scrollOffset
-            updatedBook.progressPercent = overallProgress
-            updatedBook.lastReadAt = Date()
-
-            do {
-                try database.saveBook(&updatedBook)
-                self.currentBook = updatedBook
-            } catch {
-                print("Failed to save book progress: \(error)")
-            }
-        }
+        recordReadingProgress(
+            chapter: chapter,
+            currentPercent: scrollPercent,
+            furthestPercent: scrollPercent,
+            scrollOffset: scrollOffset
+        )
     }
 
     func recordReadingProgress(
@@ -374,60 +417,21 @@ final class AppState {
         furthestPercent: Double,
         scrollOffset: Double
     ) {
-        guard let book = currentBook, let chapterId = chapter.id else { return }
-        let bookId = book.id
+        guard let bookId = currentBook?.id, chapter.id != nil else { return }
 
-        let clampedCurrent = max(0, min(currentPercent, 1))
-        let clampedFurthest = max(0, min(furthestPercent, 1))
-        let effectiveFurthest = max(clampedFurthest, clampedCurrent)
+        pendingProgress = PendingProgress(
+            bookId: bookId,
+            chapter: chapter,
+            currentPercent: currentPercent,
+            furthestPercent: furthestPercent,
+            scrollOffset: scrollOffset
+        )
 
         pendingProgressSaveTask?.cancel()
         pendingProgressSaveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            let chapterCount = max(1, book.chapterCount)
-            let chapterIndex = min(max(chapter.index, 0), chapterCount - 1)
-
-            let previousMax = min(max(maxScrollCache[chapterId] ?? chapter.maxScrollReached, 0), 1)
-            if effectiveFurthest > previousMax {
-                let cachedWordCount = bookId.flatMap { bookProgressCache[$0]?.chapterWordCounts[chapterId] }
-                let wordCount = cachedWordCount ?? chapter.wordCount
-                let previousWords = Int((Double(wordCount) * previousMax).rounded())
-                let currentWords = Int((Double(wordCount) * effectiveFurthest).rounded())
-                let wordDelta = currentWords - previousWords
-                if wordDelta > 0 {
-                    self.addWords(wordDelta)
-                    if let bookId, var cache = bookProgressCache[bookId], cache.totalWords > 0 {
-                        cache.wordsRead = min(cache.totalWords, cache.wordsRead + wordDelta)
-                        bookProgressCache[bookId] = cache
-                    }
-                }
-
-                var updatedChapter = chapter
-                updatedChapter.maxScrollReached = effectiveFurthest
-                try? database.saveChapter(&updatedChapter)
-                maxScrollCache[chapterId] = effectiveFurthest
-            }
-
-            let overallProgress: Double
-            if let bookId, let cache = bookProgressCache[bookId], cache.totalWords > 0 {
-                overallProgress = min(max(Double(cache.wordsRead) / Double(cache.totalWords), 0), 1)
-            } else {
-                let chapterProgress = Double(chapterIndex) + effectiveFurthest
-                overallProgress = min(max(chapterProgress / Double(chapterCount), 0), 1)
-            }
-
-            var updatedBook = book
-            updatedBook.currentChapter = chapterIndex
-            updatedBook.currentScrollPercent = clampedCurrent
-            updatedBook.currentScrollOffset = scrollOffset
-            updatedBook.progressPercent = overallProgress
-            updatedBook.lastReadAt = Date()
-
-            do {
-                try database.saveBook(&updatedBook)
-                self.currentBook = updatedBook
-            } catch {
-                print("Failed to save book progress: \(error)")
+            if !Task.isCancelled {
+                flushPendingProgress()
             }
         }
     }
@@ -436,6 +440,81 @@ final class AppState {
 
     func saveSplitRatio() {
         UserDefaults.standard.set(splitRatio, forKey: "splitRatio")
+    }
+
+    // MARK: - Import
+
+    nonisolated func finalizeChapterImport(book: Book, metadata: EPUBParser.ParsedMetadata, opfPath: String) async {
+        let parser = EPUBParser()
+        guard let bookId = book.id else { return }
+        
+        let rootURL = LibraryPaths.publicationDirectory(for: bookId)
+        let opfURL = rootURL.appendingPathComponent(opfPath)
+        let opfDir = opfURL.deletingLastPathComponent()
+
+        do {
+            var importItems: [(chapter: Chapter, footnotes: [Footnote])] = []
+
+            for skeleton in metadata.chapters {
+                do {
+                    let parsed = try parser.parseChapter(skeleton, opfDir: opfDir, rootURL: rootURL)
+
+                    let chapter = Chapter(
+                        bookId: bookId,
+                        index: parsed.index,
+                        title: parsed.title,
+                        contentHTML: parsed.htmlContent,
+                        resourcePath: parsed.resourcePath,
+                        wordCount: parsed.wordCount
+                    )
+
+                    let footnotes = parsed.footnotes.map { parsedFootnote in
+                        Footnote(
+                            chapterId: 0,
+                            marker: parsedFootnote.marker,
+                            content: parsedFootnote.content,
+                            refId: parsedFootnote.refId,
+                            sourceBlockId: parsedFootnote.sourceBlockId
+                        )
+                    }
+
+                    importItems.append((chapter, footnotes))
+                } catch {
+                    print("Skipping malformed chapter: \(skeleton.title) - \(error)")
+                }
+            }
+
+            if importItems.isEmpty {
+                throw EPUBParser.ParseError.invalidStructure
+            }
+
+            try database.importChapters(importItems)
+
+            // Update book status
+            if var updatedBook = try database.fetchBook(id: bookId) {
+                updatedBook.importStatus = .complete
+                try database.saveBook(&updatedBook)
+                
+                let finalUpdatedBook = updatedBook
+                await MainActor.run {
+                    if self.currentBook?.id == bookId {
+                        self.currentBook = finalUpdatedBook
+                    }
+                    
+                    self.libraryNeedsRefresh = true
+                }
+            }
+        } catch {
+            print("Failed to finalize chapter import: \(error)")
+            if var failedBook = try? database.fetchBook(id: bookId) {
+                failedBook.importStatus = .failed
+                try? database.saveBook(&failedBook)
+                
+                await MainActor.run {
+                    self.libraryNeedsRefresh = true
+                }
+            }
+        }
     }
 }
 
@@ -625,82 +704,42 @@ enum LLMProvider: String, Codable, CaseIterable {
         models.first { $0.id == id }?.name ?? id
     }
 
-        var models: [LLMModel] {
-
-            switch self {
-
-            case .google:
-
-                return [
-
-                    LLMModel(id: "gemini-3-flash-preview", name: "Gemini 3 Flash"),
-
-                    LLMModel(id: "gemini-3-pro-preview", name: "Gemini 3 Pro")
-
-                ]
-
-            case .openai:
-
-                return [
-
-                    LLMModel(id: "gpt-5.2", name: "GPT 5.2")
-
-                ]
-
-            case .anthropic:
-
-                return [
-
-                    LLMModel(id: "claude-haiku-4-5", name: "Claude 4.5 Haiku"),
-
-                    LLMModel(id: "claude-sonnet-4-5", name: "Claude 4.5 Sonnet"),
-
-                    LLMModel(id: "claude-opus-4-5", name: "Claude 4.5 Opus")
-
-                ]
-
-            }
-
+    var models: [LLMModel] {
+        switch self {
+        case .google:
+            return [
+                LLMModel(id: "gemini-3-flash-preview", name: "Gemini 3 Flash"),
+                LLMModel(id: "gemini-3-pro-preview", name: "Gemini 3 Pro")
+            ]
+        case .openai:
+            return [
+                LLMModel(id: "gpt-5.2", name: "GPT 5.2")
+            ]
+        case .anthropic:
+            return [
+                LLMModel(id: "claude-haiku-4-5", name: "Claude 4.5 Haiku"),
+                LLMModel(id: "claude-sonnet-4-5", name: "Claude 4.5 Sonnet"),
+                LLMModel(id: "claude-opus-4-5", name: "Claude 4.5 Opus")
+            ]
         }
+    }
+}
 
+enum ImageModel: String, Codable, CaseIterable {
+    case gemini3Pro = "Gemini 3 Pro"
+    case gemini25Flash = "Gemini 2.5 Flash"
+
+    var apiModel: String {
+        switch self {
+        case .gemini3Pro: return "gemini-3-pro-image-preview"
+        case .gemini25Flash: return "gemini-2.5-flash-image"
+        }
     }
 
-    
-
-    enum ImageModel: String, Codable, CaseIterable {
-
-        case gemini3Pro = "Gemini 3 Pro"
-
-        case gemini25Flash = "Gemini 2.5 Flash"
-
-    
-
-        var apiModel: String {
-
-            switch self {
-
-            case .gemini3Pro: return "gemini-3-pro-image-preview"
-
-            case .gemini25Flash: return "gemini-2.5-flash-image"
-
-            }
-
+    var description: String {
+        switch self {
+        case .gemini3Pro: return "Best quality, slower"
+        case .gemini25Flash: return "Fast, good quality"
         }
-
-    
-
-        var description: String {
-
-            switch self {
-
-            case .gemini3Pro: return "Best quality, slower"
-
-            case .gemini25Flash: return "Fast, good quality"
-
-            }
-
-        }
-
     }
-
-    
+}

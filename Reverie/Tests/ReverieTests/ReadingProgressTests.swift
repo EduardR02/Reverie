@@ -11,7 +11,7 @@ final class ReadingProgressTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         let queue = try! DatabaseQueue()
-        db = DatabaseService(dbQueue: queue)
+        db = try! DatabaseService(dbQueue: queue)
         appState = AppState(database: db)
     }
 

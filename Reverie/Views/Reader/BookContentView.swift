@@ -79,7 +79,7 @@ struct BookContentView: NSViewRepresentable {
             context.coordinator.currentInlineAIImages = inlineSetting
             context.coordinator.isContentLoaded = false
             let html = buildHTML()
-            loadHTML(html, on: webView)
+            loadHTML(html, on: webView, coordinator: context.coordinator)
         }
 
         if let id = scrollToAnnotationId {
@@ -276,20 +276,34 @@ struct BookContentView: NSViewRepresentable {
     }
     private func readerRootDirectoryURL() -> URL { LibraryPaths.readerRoot }
 
-    private func loadHTML(_ html: String, on webView: WKWebView) {
+    private func loadHTML(_ html: String, on webView: WKWebView, coordinator: Coordinator) {
         let fileURL = renderedChapterURL()
         let readerRootURL = readerRootDirectoryURL()
-        do {
-            try html.write(to: fileURL, atomically: true, encoding: .utf8)
-            webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
-        } catch {
-            webView.loadHTMLString(html, baseURL: readerRootURL)
+        
+        coordinator.loadTask?.cancel()
+        coordinator.loadTask = Task { @MainActor in
+            let success = await Task.detached(priority: .userInitiated) {
+                do {
+                    try LibraryPaths.ensureDirectory(fileURL.deletingLastPathComponent())
+                    try html.write(to: fileURL, atomically: true, encoding: .utf8)
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+
+            if Task.isCancelled { return }
+            
+            if success {
+                webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
+            } else {
+                webView.loadHTMLString(html, baseURL: readerRootURL)
+            }
         }
     }
 
     private func renderedChapterURL() -> URL {
         let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId).appendingPathComponent("_reader", isDirectory: true)
-        try? LibraryPaths.ensureDirectory(renderDir)
         let idComponent = chapter.id.map(String.init) ?? "index-\(chapter.index)"
         return renderDir.appendingPathComponent("chapter-\(idComponent).html")
     }
@@ -303,6 +317,8 @@ struct BookContentView: NSViewRepresentable {
         var pendingScrollOffset: Double?
         var lastScrollPercent: Double?
         var lastScrollOffset: Double?
+        var loadTask: Task<Void, Never>?
+
         init(parent: BookContentView) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -399,9 +415,20 @@ struct BookContentView: NSViewRepresentable {
             // Intercept internal EPUB links (they will be file:// URLs pointing to the publication directory)
             if url.isFileURL {
                 let publicationRoot = LibraryPaths.publicationDirectory(for: parent.chapter.bookId)
-                let rootPath = publicationRoot.path
-                let urlPath = url.path
-                let renderedPath = parent.renderedChapterURL().path
+                let standardizedURL = url.standardizedFileURL.resolvingSymlinksInPath()
+                let standardizedRoot = publicationRoot.standardizedFileURL.resolvingSymlinksInPath()
+                let standardizedRendered = parent.renderedChapterURL().standardizedFileURL.resolvingSymlinksInPath()
+
+                let urlPath = standardizedURL.path
+                let rootPath = standardizedRoot.path
+                let renderedPath = standardizedRendered.path
+
+                // Security check: ensure the URL is within the publication directory
+                let rootPathWithSlash = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+                guard urlPath.hasPrefix(rootPathWithSlash) || urlPath == rootPath else {
+                    decisionHandler(.cancel)
+                    return
+                }
 
                 // If it's the RENDERED HTML file, allow it (same-document anchor)
                 if urlPath == renderedPath {
@@ -409,14 +436,20 @@ struct BookContentView: NSViewRepresentable {
                     return
                 }
 
-                // If it's inside the publication directory AND it's a link activation, it's an internal chapter link
-                if urlPath.hasPrefix(rootPath) && navigationAction.navigationType == .linkActivated {
+                // If it's a link activation, it's an internal chapter link
+                if navigationAction.navigationType == .linkActivated {
                     var relativePath = String(urlPath.dropFirst(rootPath.count))
                     if relativePath.hasPrefix("/") { relativePath.removeFirst() }
                     
                     // Decode URL-encoded path
                     relativePath = relativePath.removingPercentEncoding ?? relativePath
                     
+                    // Security check: ensure no path traversal components remain
+                    if relativePath.components(separatedBy: "/").contains("..") {
+                        decisionHandler(.cancel)
+                        return
+                    }
+
                     let anchor = url.fragment
                     parent.onChapterNavigationRequest?(relativePath, anchor)
                     decisionHandler(.cancel)

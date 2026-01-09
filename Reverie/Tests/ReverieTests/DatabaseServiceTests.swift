@@ -9,7 +9,7 @@ final class DatabaseServiceTests: XCTestCase {
         super.setUp()
         // Use in-memory database for fast, clean tests
         let queue = try! DatabaseQueue()
-        db = DatabaseService(dbQueue: queue)
+        db = try! DatabaseService(dbQueue: queue)
     }
 
     func testBookCascadeDelete() throws {

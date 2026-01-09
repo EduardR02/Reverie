@@ -176,36 +176,47 @@ struct BookCard: View {
 
                 // Progress row
                 HStack(spacing: 8) {
-                    // Thin progress bar
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(theme.overlay)
-
-                            Capsule()
-                                .fill(accentColor.opacity(0.8))
-                                .frame(width: geo.size.width * (book.isFinished ? 1.0 : book.progressPercent))
-                                .animation(.easeOut(duration: 0.6), value: book.progressPercent)
-                                .animation(.easeOut(duration: 0.6), value: book.isFinished)
+                    if book.importStatus == .metadataOnly {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .scaleEffect(0.4)
+                                .frame(width: 10, height: 10)
+                            Text("Importing...")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(theme.rose)
                         }
+                    } else {
+                        // Thin progress bar
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(theme.overlay)
+
+                                Capsule()
+                                    .fill(accentColor.opacity(0.8))
+                                    .frame(width: geo.size.width * (book.isFinished ? 1.0 : book.progressPercent))
+                                    .animation(.easeOut(duration: 0.6), value: book.progressPercent)
+                                    .animation(.easeOut(duration: 0.6), value: book.isFinished)
+                            }
+                        }
+                        .frame(height: 3)
+
+                        // Status indicators
+                        HStack(spacing: 4) {
+                            if book.processedFully {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(theme.subtle)
+                            }
+
+                            if book.isFinished {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(theme.foam)
+                            }
+                        }
+                        .frame(width: 24, alignment: .trailing)
                     }
-                    .frame(height: 3)
-
-                    // Status indicators
-                    HStack(spacing: 4) {
-                        if book.processedFully {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(theme.subtle)
-                        }
-
-                        if book.isFinished {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(theme.foam)
-                        }
-                    }
-                    .frame(width: 24, alignment: .trailing)
                 }
             }
             .padding(.horizontal, 12)
@@ -286,24 +297,35 @@ struct BookCard: View {
 
     private var progressBar: some View {
         HStack(spacing: 8) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(theme.overlay)
-
-                    Capsule()
-                        .fill(accentColor)
-                        .frame(width: geo.size.width * (book.isFinished ? 1.0 : book.progressPercent))
-                        .animation(.easeOut(duration: 0.6), value: book.progressPercent)
-                        .animation(.easeOut(duration: 0.6), value: book.isFinished)
+            if book.importStatus == .metadataOnly {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                        .frame(width: 12, height: 12)
+                    Text("Importing...")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(theme.rose)
                 }
-            }
-            .frame(height: 4)
+            } else {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(theme.overlay)
 
-            Text(book.isFinished ? "100%" : book.displayProgress)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundColor(theme.subtle)
-                .frame(width: 32, alignment: .trailing)
+                        Capsule()
+                            .fill(accentColor)
+                            .frame(width: geo.size.width * (book.isFinished ? 1.0 : book.progressPercent))
+                            .animation(.easeOut(duration: 0.6), value: book.progressPercent)
+                            .animation(.easeOut(duration: 0.6), value: book.isFinished)
+                    }
+                }
+                .frame(height: 4)
+
+                Text(book.isFinished ? "100%" : book.displayProgress)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(theme.subtle)
+                    .frame(width: 32, alignment: .trailing)
+            }
         }
     }
 }

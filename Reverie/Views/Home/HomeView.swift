@@ -27,6 +27,10 @@ struct HomeView: View {
     @State private var importError: String?
     @State private var showImportError = false
 
+    // Delete confirmation
+    @State private var bookToDelete: Book?
+    @State private var showDeleteConfirmation = false
+
     // Expanded cards grid (first row)
     private let expandedColumns = [
         GridItem(.adaptive(minimum: 160, maximum: 180), spacing: 24, alignment: .top)
@@ -89,10 +93,28 @@ struct HomeView: View {
         .task {
             await loadBooks()
         }
+        .onChange(of: appState.libraryNeedsRefresh) { _, newValue in
+            if newValue {
+                Task {
+                    await loadBooks()
+                    appState.libraryNeedsRefresh = false
+                }
+            }
+        }
         .alert("Import Error", isPresented: $showImportError) {
             Button("OK") { }
         } message: {
             Text(importError ?? "Unknown error")
+        }
+        .alert("Delete Book", isPresented: $showDeleteConfirmation, presenting: bookToDelete) { book in
+            Button("Delete", role: .destructive) {
+                deleteBook(book)
+            }
+            Button("Cancel", role: .cancel) {
+                bookToDelete = nil
+            }
+        } message: { book in
+            Text("Are you sure you want to delete '\(book.title)'? This will remove all associated data, including insights and images, and cannot be undone.")
         }
     }
 
@@ -230,7 +252,8 @@ struct HomeView: View {
         } onProcess: {
             handleProcessRequest(book)
         } onDelete: {
-            deleteBook(book)
+            bookToDelete = book
+            showDeleteConfirmation = true
         } onToggleFinished: {
             appState.toggleBookFinished(book)
             Task { await loadBooks() }
@@ -472,19 +495,16 @@ struct HomeView: View {
             }
 
             let parser = EPUBParser()
-            let parsed = try await parser.parse(epubURL: url, destinationURL: tempExtractDir)
-
-            guard !parsed.chapters.isEmpty else {
-                throw ImportError.noChaptersFound
-            }
+            let (metadata, opfPath) = try await parser.parseMetadata(epubURL: url, destinationURL: tempExtractDir)
 
             // 1. Save initial book record to get ID
             var book = Book(
-                title: parsed.title,
-                author: parsed.author,
+                title: metadata.title,
+                author: metadata.author,
                 coverPath: nil,
                 epubPath: "", // Will update after moving
-                chapterCount: parsed.chapters.count
+                chapterCount: metadata.chapters.count,
+                importStatus: .metadataOnly
             )
             try appState.database.saveBook(&book)
 
@@ -514,7 +534,7 @@ struct HomeView: View {
             didMoveExtract = true
 
             // 5. Save cover using ID
-            if let cover = parsed.cover {
+            if let cover = metadata.cover {
                 let fileExtension = coverFileExtension(for: cover)
                 let coverURL = LibraryPaths.coverURL(for: bookId, fileExtension: fileExtension)
                 try cover.data.write(to: coverURL)
@@ -522,37 +542,14 @@ struct HomeView: View {
                 try appState.database.saveBook(&book)
             }
 
-            // Save chapters and footnotes
-            for parsedChapter in parsed.chapters {
-                var chapter = Chapter(
-                    bookId: bookId,
-                    index: parsedChapter.index,
-                    title: parsedChapter.title,
-                    contentHTML: parsedChapter.htmlContent,
-                    resourcePath: parsedChapter.resourcePath,
-                    wordCount: parsedChapter.wordCount
-                )
-                try appState.database.saveChapter(&chapter)
-
-                // Save footnotes for this chapter
-                if let chapterId = chapter.id {
-                    let footnotes = parsedChapter.footnotes.map { parsed in
-                        Footnote(
-                            chapterId: chapterId,
-                            marker: parsed.marker,
-                            content: parsed.content,
-                            refId: parsed.refId,
-                            sourceBlockId: parsed.sourceBlockId
-                        )
-                    }
-                    if !footnotes.isEmpty {
-                        try appState.database.saveFootnotes(footnotes)
-                    }
-                }
-            }
-
-            // Reload
+            // Reload UI immediately so card appears
             await loadBooks()
+            
+            // 6. Background chapter processing
+            let finalBook = book
+            Task.detached(priority: .userInitiated) {
+                await appState.finalizeChapterImport(book: finalBook, metadata: metadata, opfPath: opfPath)
+            }
 
         } catch let error as ImportError {
             importError = error.message

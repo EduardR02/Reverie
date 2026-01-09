@@ -13,6 +13,7 @@
 		BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */; };
+		BBF6ECBD2F118B9F00258A92 /* ProgressCalculatorCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */; };
 		F001 /* ReverieApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReverieApp.swift */; };
 		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002 /* AppState.swift */; };
 		F003 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = S003 /* Book.swift */; };
@@ -57,6 +58,7 @@
 		BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterProgressCalculator.swift; path = Reverie/Services/ChapterProgressCalculator.swift; sourceTree = "<group>"; };
+		BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProgressCalculatorCache.swift; path = Reverie/Services/ProgressCalculatorCache.swift; sourceTree = "<group>"; };
 		PROD /* Reverie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reverie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		S001 /* ReverieApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReverieApp.swift; sourceTree = "<group>"; };
 		S002 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				PRODUCTS /* Products */,
 				BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */,
 				BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */,
+				BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -359,6 +362,7 @@
 				BB06EE412F0EF7C400E925E2 /* AIProcessingToggle.swift in Sources */,
 				F015 /* ReaderView.swift in Sources */,
 				F016 /* BookContentView.swift in Sources */,
+				BBF6ECBD2F118B9F00258A92 /* ProgressCalculatorCache.swift in Sources */,
 				F017 /* AIPanel.swift in Sources */,
 				F018 /* SettingsView.swift in Sources */,
 				F019 /* Theme.swift in Sources */,

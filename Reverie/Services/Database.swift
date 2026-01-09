@@ -1,29 +1,43 @@
 import Foundation
 import GRDB
 
-final class DatabaseService {
+enum DatabaseError: Error {
+    case connectionFailed(String)
+    case migrationFailed(String)
+    case statsNotFound
+}
+
+final class DatabaseService: @unchecked Sendable {
     // The default instance for the app
-    @MainActor static let shared = DatabaseService()
+    @MainActor static let shared = try! DatabaseService()
 
     private let dbQueue: DatabaseQueue
 
     /// Standard initializer for persistent storage
-    init() {
+    init() throws {
         let fileManager = FileManager.default
         let readerDir = LibraryPaths.readerRoot
 
-        try? fileManager.createDirectory(at: readerDir, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: readerDir, withIntermediateDirectories: true)
+        } catch {
+            throw DatabaseError.connectionFailed("Could not create database directory: \(error.localizedDescription)")
+        }
 
         let databaseURL = LibraryPaths.databaseURL
-        self.dbQueue = try! DatabaseQueue(path: databaseURL.path)
+        do {
+            self.dbQueue = try DatabaseQueue(path: databaseURL.path)
+        } catch {
+            throw DatabaseError.connectionFailed("Could not open database: \(error.localizedDescription)")
+        }
 
-        try! setupDatabase()
+        try setupDatabase()
     }
     
     /// Initializer for testing (e.g., in-memory)
-    init(dbQueue: DatabaseQueue) {
+    init(dbQueue: DatabaseQueue) throws {
         self.dbQueue = dbQueue
-        try! setupDatabase()
+        try setupDatabase()
     }
 
     private func setupDatabase() throws {
@@ -47,6 +61,7 @@ final class DatabaseService {
                 t.column("currentScrollPercent", .double).notNull().defaults(to: 0)
                 t.column("currentScrollOffset", .double).notNull().defaults(to: 0)
                 t.column("chapterCount", .integer).notNull().defaults(to: 0)
+                t.column("importStatus", .text).notNull().defaults(to: "complete")
                 t.column("processedFully", .boolean).notNull().defaults(to: false)
                 t.column("createdAt", .datetime).notNull()
                 t.column("lastReadAt", .datetime)
@@ -137,16 +152,29 @@ final class DatabaseService {
             
             // Seed the single stats row
             try db.execute(sql: "INSERT INTO lifetime_stats (id) VALUES (1)")
+
+            // --- Indexes ---
+            try db.create(index: "idx_chapters_bookId", on: "chapters", columns: ["bookId"])
+            try db.create(index: "idx_annotations_chapterId", on: "annotations", columns: ["chapterId"])
+            try db.create(index: "idx_quizzes_chapterId", on: "quizzes", columns: ["chapterId"])
+            try db.create(index: "idx_generated_images_chapterId", on: "generated_images", columns: ["chapterId"])
+            try db.create(index: "idx_footnotes_chapterId", on: "footnotes", columns: ["chapterId"])
         }
 
-        try migrator.migrate(dbQueue)
+        do {
+            try migrator.migrate(dbQueue)
+        } catch {
+            throw DatabaseError.migrationFailed(error.localizedDescription)
+        }
     }
 
     // MARK: - Lifetime Stats Operations
 
     func fetchLifetimeStats() throws -> ReadingStats {
         try dbQueue.read { db in
-            let row = try Row.fetchOne(db, sql: "SELECT * FROM lifetime_stats WHERE id = 1")!
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM lifetime_stats WHERE id = 1") else {
+                return ReadingStats()
+            }
             var stats = ReadingStats()
             stats.totalSeconds = row["totalSeconds"]
             stats.totalWords = row["totalWords"]
@@ -189,8 +217,9 @@ final class DatabaseService {
                 ]
             )
             
-            // Save daily logs
-            for (dateKey, seconds) in stats.dailyLog {
+            // Save daily logs - only update the current day to avoid O(N) upserts
+            let dateKey = ReadingStats.dateKey(for: Date())
+            if let seconds = stats.dailyLog[dateKey] {
                 try db.execute(
                     sql: "INSERT INTO daily_reading (dateKey, seconds) VALUES (?, ?) ON CONFLICT(dateKey) DO UPDATE SET seconds = excluded.seconds",
                     arguments: [dateKey, seconds]
@@ -204,6 +233,12 @@ final class DatabaseService {
     func fetchAllBooks() throws -> [Book] {
         try dbQueue.read { db in
             try Book.order(Book.Columns.lastReadAt.desc).fetchAll(db)
+        }
+    }
+
+    func fetchBook(id: Int64) throws -> Book? {
+        try dbQueue.read { db in
+            try Book.fetchOne(db, key: id)
         }
     }
 
@@ -230,6 +265,20 @@ final class DatabaseService {
     func saveChapter(_ chapter: inout Chapter) throws {
         try dbQueue.write { db in
             try chapter.save(db)
+        }
+    }
+
+    func importChapters(_ items: [(chapter: Chapter, footnotes: [Footnote])]) throws {
+        try dbQueue.write { db in
+            for var item in items {
+                try item.chapter.save(db)
+                if let chapterId = item.chapter.id {
+                    for var footnote in item.footnotes {
+                        footnote.chapterId = chapterId
+                        try footnote.save(db)
+                    }
+                }
+            }
         }
     }
 

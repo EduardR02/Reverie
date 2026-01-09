@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 
 /// EPUB Parser - Extracts and parses EPUB files
 /// EPUB is a ZIP containing XHTML, CSS, images, and metadata
@@ -9,6 +11,20 @@ final class EPUBParser {
         let author: String
         let cover: Cover?
         let chapters: [ParsedChapter]
+    }
+
+    struct ParsedMetadata {
+        let title: String
+        let author: String
+        let cover: Cover?
+        let chapters: [ChapterSkeleton]
+    }
+
+    struct ChapterSkeleton {
+        let index: Int
+        let title: String
+        let href: String
+        let mediaType: String?
     }
 
     struct Cover {
@@ -59,12 +75,13 @@ final class EPUBParser {
         let ncxHref: String?
         let guideCoverHref: String?
         let manifest: [String: ManifestItem]
+        let manifestOrder: [String]
         let spine: [SpineItem]
     }
 
     // MARK: - Public API
 
-    func parse(epubURL: URL, destinationURL: URL) async throws -> ParsedBook {
+    func parseMetadata(epubURL: URL, destinationURL: URL) async throws -> (metadata: ParsedMetadata, opfPath: String) {
         try extractEPUB(epubURL, to: destinationURL)
 
         let opfPath = try findOPFPath(in: destinationURL)
@@ -74,17 +91,86 @@ final class EPUBParser {
         let package = try parseOPF(at: opfURL)
         let tocTitles = parseTOCTitles(package: package, opfDir: opfDir)
         let cover = extractCover(package: package, opfDir: opfDir)
-        let chapters = try extractChapters(
-            package: package,
-            opfDir: opfDir,
-            rootURL: destinationURL,
-            tocTitles: tocTitles
-        )
 
-        return ParsedBook(
+        var chapters: [ChapterSkeleton] = []
+        for (index, spineItem) in package.spine.enumerated() {
+            guard spineItem.linear else { continue }
+            guard let item = package.manifest[spineItem.idref] else {
+                print("Warning: Spine item \(spineItem.idref) not found in manifest")
+                continue
+            }
+            guard isHTMLMediaType(item.mediaType) else { continue }
+
+            let key = stripFragment(from: item.href)
+            let title = tocTitles[key] ?? "Chapter \(index + 1)"
+
+            chapters.append(ChapterSkeleton(
+                index: index,
+                title: title,
+                href: item.href,
+                mediaType: item.mediaType
+            ))
+        }
+
+        let metadata = ParsedMetadata(
             title: package.title ?? "Untitled",
             author: package.author ?? "Unknown",
             cover: cover,
+            chapters: chapters
+        )
+
+        return (metadata, opfPath)
+    }
+
+    func parseChapter(
+        _ skeleton: ChapterSkeleton,
+        opfDir: URL,
+        rootURL: URL
+    ) throws -> ParsedChapter {
+        let chapterURL = opfDir.appendingPathComponent(skeleton.href)
+        guard let data = try? Data(contentsOf: chapterURL),
+              let document = parseXMLDocument(data: data) else {
+            throw ParseError.invalidStructure
+        }
+
+        let bodyHTML = extractBodyInnerXML(from: document) ?? ""
+        let footnotes = extractFootnotes(from: bodyHTML)
+
+        var title = skeleton.title
+        // If we only have a default "Chapter N" title, try to get a better one from HTML
+        if title == "Chapter \(skeleton.index + 1)", let htmlTitle = extractChapterTitle(document) {
+            title = htmlTitle
+        }
+
+        let resourcePath = relativePath(from: rootURL, to: chapterURL) ?? skeleton.href
+        let wordCount = wordCountFrom(document: document)
+
+        return ParsedChapter(
+            title: title,
+            htmlContent: bodyHTML,
+            index: skeleton.index,
+            footnotes: footnotes,
+            resourcePath: resourcePath,
+            wordCount: wordCount
+        )
+    }
+
+    func parse(epubURL: URL, destinationURL: URL) async throws -> ParsedBook {
+        let (metadata, opfPath) = try await parseMetadata(epubURL: epubURL, destinationURL: destinationURL)
+        let opfURL = destinationURL.appendingPathComponent(opfPath)
+        let opfDir = opfURL.deletingLastPathComponent()
+
+        var chapters: [ParsedChapter] = []
+        for skeleton in metadata.chapters {
+            if let parsed = try? parseChapter(skeleton, opfDir: opfDir, rootURL: destinationURL) {
+                chapters.append(parsed)
+            }
+        }
+
+        return ParsedBook(
+            title: metadata.title,
+            author: metadata.author,
+            cover: metadata.cover,
             chapters: chapters
         )
     }
@@ -146,7 +232,7 @@ final class EPUBParser {
         let coverId = extractCoverId(from: metadataNode ?? document)
 
         let manifestNode = nodes(named: "manifest", in: document).first
-        let manifestItems = parseManifest(in: manifestNode ?? document)
+        let (manifestItems, manifestOrder) = parseManifest(in: manifestNode ?? document)
 
         let spineNode = nodes(named: "spine", in: document).first
         let spineItems = parseSpine(in: spineNode ?? document)
@@ -164,12 +250,14 @@ final class EPUBParser {
             ncxHref: ncxHref,
             guideCoverHref: guideCoverHref,
             manifest: manifestItems,
+            manifestOrder: manifestOrder,
             spine: spineItems
         )
     }
 
-    private func parseManifest(in node: XMLNode) -> [String: ManifestItem] {
+    private func parseManifest(in node: XMLNode) -> (items: [String: ManifestItem], order: [String]) {
         var manifest: [String: ManifestItem] = [:]
+        var order: [String] = []
         let items = nodes(named: "item", in: node)
         for item in items {
             guard let id = item.attribute(forName: "id")?.stringValue,
@@ -180,8 +268,9 @@ final class EPUBParser {
             let mediaType = item.attribute(forName: "media-type")?.stringValue
             let properties = item.attribute(forName: "properties")?.stringValue
             manifest[id] = ManifestItem(id: id, href: href, mediaType: mediaType, properties: properties)
+            order.append(id)
         }
-        return manifest
+        return (manifest, order)
     }
 
     private func parseSpine(in node: XMLNode) -> [SpineItem] {
@@ -319,48 +408,74 @@ final class EPUBParser {
     // MARK: - Cover Extraction
 
     private func extractCover(package: PackageData, opfDir: URL) -> Cover? {
-        var candidates: [(href: String, mediaType: String?)] = []
-
-        if let coverId = package.coverId, let item = package.manifest[coverId] {
-            candidates.append((href: item.href, mediaType: item.mediaType))
+        // 1. Metadata coverId (highest priority)
+        if let coverId = package.coverId, let item = package.manifest[coverId],
+           let cover = resolveCover(href: item.href, mediaType: item.mediaType, baseDir: opfDir) {
+            return cover
         }
 
-        if let item = package.manifest.values.first(where: { ($0.properties ?? "").lowercased().contains("cover-image") }) {
-            candidates.append((href: item.href, mediaType: item.mediaType))
+        // 2. Manifest properties "cover-image" (EPUB 3 standard)
+        let coverPropertyItems = package.manifestOrder.compactMap { id -> ManifestItem? in
+            let item = package.manifest[id]
+            return (item?.properties ?? "").lowercased().contains("cover-image") ? item : nil
         }
-
-        if let guideHref = package.guideCoverHref {
-            candidates.append((href: guideHref, mediaType: nil))
-        }
-
-        if let item = package.manifest.values.first(where: { $0.id.lowercased() == "cover" || $0.id.lowercased() == "cover-image" }) {
-            candidates.append((href: item.href, mediaType: item.mediaType))
-        }
-
-        if let item = package.manifest.values.first(where: { ($0.mediaType ?? "").lowercased().hasPrefix("image/") && $0.href.lowercased().contains("cover") }) {
-            candidates.append((href: item.href, mediaType: item.mediaType))
-        }
-
-        // Fallback: look for first image in common cover locations
-        let commonCoverPaths = ["cover.jpg", "cover.jpeg", "cover.png", "images/cover.jpg", "Images/cover.jpg", "OEBPS/cover.jpg"]
-        for path in commonCoverPaths {
-            if let item = package.manifest.values.first(where: { $0.href.lowercased() == path.lowercased() }) {
-                candidates.append((href: item.href, mediaType: item.mediaType))
-            }
-        }
-
-        // Last resort: first image file in manifest (some EPUBs just use the first image)
-        if candidates.isEmpty, let item = package.manifest.values.first(where: { ($0.mediaType ?? "").lowercased().hasPrefix("image/") }) {
-            candidates.append((href: item.href, mediaType: item.mediaType))
-        }
-
-        for candidate in candidates {
-            if let cover = resolveCover(href: candidate.href, mediaType: candidate.mediaType, baseDir: opfDir) {
+        for item in coverPropertyItems {
+            if let cover = resolveCover(href: item.href, mediaType: item.mediaType, baseDir: opfDir) {
                 return cover
             }
         }
 
-        return nil
+        // 3. Guide cover (EPUB 2 standard)
+        if let guideHref = package.guideCoverHref,
+           let cover = resolveCover(href: guideHref, mediaType: nil, baseDir: opfDir) {
+            return cover
+        }
+
+        // 4. First spine item analysis (often a cover page)
+        if let firstSpineId = package.spine.first?.idref,
+           let item = package.manifest[firstSpineId],
+           isHTMLMediaType(item.mediaType) {
+            let pageURL = opfDir.appendingPathComponent(item.href)
+            if let bestHref = findBestImageInPage(at: pageURL) {
+                let pageDir = pageURL.deletingLastPathComponent()
+                if let cover = resolveCover(href: bestHref, mediaType: nil, baseDir: pageDir) {
+                    return cover
+                }
+            }
+        }
+
+        // 5. Manifest search: look for "cover" in ID or filename
+        let manifestCoverItems = package.manifestOrder.compactMap { id -> ManifestItem? in
+            let item = package.manifest[id]!
+            let lowerId = item.id.lowercased()
+            let lowerHref = item.href.lowercased()
+            let isImage = isImageMediaType(item.mediaType) || 
+                         lowerHref.hasSuffix(".jpg") || lowerHref.hasSuffix(".jpeg") || 
+                         lowerHref.hasSuffix(".png") || lowerHref.hasSuffix(".webp")
+            
+            if isImage && (lowerId.contains("cover") || lowerHref.contains("cover")) {
+                return item
+            }
+            return nil
+        }
+        for item in manifestCoverItems {
+            if let cover = resolveCover(href: item.href, mediaType: item.mediaType, baseDir: opfDir) {
+                return cover
+            }
+        }
+
+        // 6. Heuristic fallback: evaluate all images in manifest
+        let allImageItems = package.manifestOrder.compactMap { id -> ManifestItem? in
+            let item = package.manifest[id]!
+            return isImageMediaType(item.mediaType) ? item : nil
+        }
+        
+        let candidates = allImageItems.compactMap { item -> (Cover, Double)? in
+            guard let cover = resolveCover(href: item.href, mediaType: item.mediaType, baseDir: opfDir) else { return nil }
+            return (cover, scoreImage(data: cover.data, href: item.href))
+        }
+        
+        return candidates.sorted { $0.1 > $1.1 }.first?.0
     }
 
     private func resolveCover(href: String, mediaType: String?, baseDir: URL, depth: Int = 0) -> Cover? {
@@ -374,99 +489,93 @@ final class EPUBParser {
             return Cover(data: data, mediaType: resolvedType)
         }
 
-        guard let document = parseXMLDocument(data: data) else { return nil }
-        if let imageHref = firstImageHref(in: document) {
+        // If it's likely an HTML/XML file, try to find an image inside it
+        if let bestImageHref = findBestImageInPage(at: resourceURL) {
             let nextBase = resourceURL.deletingLastPathComponent()
-            return resolveCover(href: imageHref, mediaType: nil, baseDir: nextBase, depth: depth + 1)
+            return resolveCover(href: bestImageHref, mediaType: nil, baseDir: nextBase, depth: depth + 1)
         }
 
         return nil
     }
 
-    private func firstImageHref(in document: XMLDocument) -> String? {
+    private func findBestImageInPage(at url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let document = parseXMLDocument(data: data) else { return nil }
+        
         let imgNodes = nodes(named: "img", in: document)
-        if let img = imgNodes.first, let src = img.attribute(forName: "src")?.stringValue {
-            return src
+        let svgImageNodes = nodes(named: "image", in: document)
+        
+        var candidates: [(href: String, score: Double)] = []
+        let pageDir = url.deletingLastPathComponent()
+        
+        func process(href: String, id: String?, className: String?) {
+            let resourceURL = resolveRelativeURL(href, relativeTo: pageDir)
+            guard let imageData = try? Data(contentsOf: resourceURL) else { return }
+            
+            var score = scoreImage(data: imageData, href: href)
+            
+            // Bonus for cover-related attributes
+            let lowerId = id?.lowercased() ?? ""
+            let lowerClass = className?.lowercased() ?? ""
+            if lowerId.contains("cover") || lowerClass.contains("cover") {
+                score *= 1.5
+            }
+            
+            candidates.append((href, score))
         }
-
-        let imageNodes = nodes(named: "image", in: document)
-        for image in imageNodes {
-            if let href = image.attribute(forName: "xlink:href")?.stringValue ?? image.attribute(forName: "href")?.stringValue {
-                return href
+        
+        for img in imgNodes {
+            if let src = img.attribute(forName: "src")?.stringValue {
+                process(href: src, id: img.attribute(forName: "id")?.stringValue, className: img.attribute(forName: "class")?.stringValue)
             }
         }
-
-        return nil
-    }
-
-    // MARK: - Extract Chapters
-
-    private func extractChapters(
-        package: PackageData,
-        opfDir: URL,
-        rootURL: URL,
-        tocTitles: [String: String]
-    ) throws -> [ParsedChapter] {
-        var chapters: [ParsedChapter] = []
-
-        for (index, spineItem) in package.spine.enumerated() {
-            guard spineItem.linear, let item = package.manifest[spineItem.idref] else { continue }
-            guard isHTMLMediaType(item.mediaType) else { continue }
-
-            let chapterURL = opfDir.appendingPathComponent(item.href)
-            guard let data = try? Data(contentsOf: chapterURL),
-                  let document = parseXMLDocument(data: data) else {
-                continue
+        
+        for img in svgImageNodes {
+            // SVG image tags use xlink:href (deprecated) or href (SVG 2).
+            // We check for both, and also check localName for robustness against namespace prefix variations.
+            let href = img.attribute(forName: "xlink:href")?.stringValue
+                ?? img.attribute(forName: "href")?.stringValue
+                ?? img.attributes?.first(where: { $0.localName == "href" })?.stringValue
+            
+            if let href = href {
+                process(href: href, id: img.attribute(forName: "id")?.stringValue, className: img.attribute(forName: "class")?.stringValue)
             }
-
-            let bodyHTML = extractBodyInnerXML(from: document) ?? ""
-            let footnotes = extractFootnotes(from: bodyHTML)
-
-            let chapterTitle = titleForChapter(
-                href: item.href,
-                tocTitles: tocTitles,
-                document: document,
-                index: index
-            )
-
-            let resourcePath = relativePath(from: rootURL, to: chapterURL) ?? item.href
-            let wordCount = wordCountFrom(document: document)
-
-            chapters.append(ParsedChapter(
-                title: chapterTitle,
-                htmlContent: bodyHTML,
-                index: index,
-                footnotes: footnotes,
-                resourcePath: resourcePath,
-                wordCount: wordCount
-            ))
         }
-
-        return chapters
+        
+        return candidates.sorted { $0.score > $1.score }.first?.href
     }
 
-    private func titleForChapter(
-        href: String,
-        tocTitles: [String: String],
-        document: XMLDocument,
-        index: Int
-    ) -> String {
-        let key = stripFragment(from: href)
-        if let tocTitle = tocTitles[key], !tocTitle.isEmpty {
-            return tocTitle
+    private func scoreImage(data: Data, href: String) -> Double {
+        let size = Double(data.count)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Double,
+              let h = props[kCGImagePropertyPixelHeight] as? Double,
+              w > 0, h > 0 else {
+            return size // Fallback to size
         }
-        if let htmlTitle = extractChapterTitle(document) {
-            return htmlTitle
+        
+        let aspectRatio = w / h
+        // Covers are typically 2:3 (0.66) or 3:4 (0.75)
+        let targetRatio = 0.67
+        let ratioPenalty = abs(aspectRatio - targetRatio)
+        
+        var score = size
+        
+        // Heavily penalize extreme aspect ratios (banners or very thin images)
+        if aspectRatio > 2.0 || aspectRatio < 0.3 {
+            score *= 0.1
+        } else {
+            // Favor ratios closer to 2:3
+            score *= (1.0 - (ratioPenalty * 0.5))
         }
-        return "Chapter \(index + 1)"
-    }
-
-    private func wordCountFrom(document: XMLDocument) -> Int {
-        guard let body = nodes(named: "body", in: document).first,
-              let text = body.stringValue else {
-            return 0
+        
+        // Bonus for "cover" in filename
+        if href.lowercased().contains("cover") {
+            score *= 1.2
         }
-        return text.split(whereSeparator: { $0.isWhitespace }).count
+        
+        return score
     }
 
     // MARK: - XML Helpers
@@ -717,5 +826,13 @@ final class EPUBParser {
         }
 
         return result
+    }
+
+    private func wordCountFrom(document: XMLDocument) -> Int {
+        guard let body = nodes(named: "body", in: document).first,
+              let text = body.stringValue else {
+            return 0
+        }
+        return text.split(whereSeparator: { $0.isWhitespace }).count
     }
 }
