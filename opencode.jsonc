@@ -59,6 +59,18 @@
       },
       "prompt": "You are a verifier. Check code quality and correctness without modifying anything.\n\nReport:\n- Issues found (with file:line locations)\n- Severity (blocker, warning, nitpick)\n- Whether the code achieves its stated purpose\n\nBe direct. If it's bad, say so. If it's good, say that too - don't invent problems."
     },
+    "tortoise": {
+      "description": "Final verification with GPT-5.2. SLOW (10-20 min). Wins the race, eventually.",
+      "mode": "subagent",
+      "model": "github-copilot/gpt-5.2",
+      "reasoningEffort": "high",
+      "temperature": 0.1,
+      "tools": {
+        "write": false,
+        "edit": false
+      },
+      "prompt": "You are the final verification layer. Examine code with exhaustive thoroughness.\n\nReport:\n- **Verdict**: PASS or FAIL (one word)\n- **Critical issues**: Bugs, logic errors, security flaws (with file:line)\n- **Warnings**: Potential problems, edge cases, unclear behavior\n- **What you verified**: Key paths you traced, invariants you checked\n\nBe ruthlessly thorough. Miss nothing. If it passes your review, it should be correct."
+    },
     "ui wizard": {
       "description": "UI/UX specialist for native macOS SwiftUI development",
       "mode": "subagent",
