@@ -12,6 +12,9 @@
 		BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */; };
 		BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
+		BB5E00002F11C1FB00A7A2E6 /* ReaderSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */; };
+		BB5EFFFC2F11C05900A7A2E6 /* AutoScrollEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */; };
+		BB5EFFFE2F11C1E900A7A2E6 /* ChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */; };
 		BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */; };
 		BBF6ECBD2F118B9F00258A92 /* ProgressCalculatorCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */; };
 		F001 /* ReverieApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReverieApp.swift */; };
@@ -57,6 +60,9 @@
 		BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExpandedProcessingCard.swift; path = Reverie/Views/Home/ExpandedProcessingCard.swift; sourceTree = "<group>"; };
 		BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
+		BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutoScrollEngine.swift; path = Reverie/ViewModels/Reader/AutoScrollEngine.swift; sourceTree = "<group>"; };
+		BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterAnalyzer.swift; path = Reverie/ViewModels/Reader/ChapterAnalyzer.swift; sourceTree = "<group>"; };
+		BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSession.swift; path = Reverie/ViewModels/Reader/ReaderSession.swift; sourceTree = "<group>"; };
 		BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterProgressCalculator.swift; path = Reverie/Services/ChapterProgressCalculator.swift; sourceTree = "<group>"; };
 		BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProgressCalculatorCache.swift; path = Reverie/Services/ProgressCalculatorCache.swift; sourceTree = "<group>"; };
 		PROD /* Reverie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reverie.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -164,6 +170,9 @@
 		ROOT = {
 			isa = PBXGroup;
 			children = (
+				BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */,
+				BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */,
+				BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */,
 				BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */,
 				READER /* Reverie */,
 				PRODUCTS /* Products */,
@@ -338,6 +347,7 @@
 				BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */,
 				F001 /* ReverieApp.swift in Sources */,
 				F002 /* AppState.swift in Sources */,
+				BB5EFFFE2F11C1E900A7A2E6 /* ChapterAnalyzer.swift in Sources */,
 				F035 /* ReadingStats.swift in Sources */,
 				F003 /* Book.swift in Sources */,
 				BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */,
@@ -347,6 +357,7 @@
 				F007 /* GeneratedImage.swift in Sources */,
 				F008 /* Database.swift in Sources */,
 				F009 /* EPUBParser.swift in Sources */,
+				BB5EFFFC2F11C05900A7A2E6 /* AutoScrollEngine.swift in Sources */,
 				BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */,
 				F010 /* LLMService.swift in Sources */,
 				F027 /* LLMStream.swift in Sources */,
@@ -369,6 +380,7 @@
 				F020 /* RosePine.swift in Sources */,
 				F022 /* Footnote.swift in Sources */,
 				F023 /* ReadingSpeedTracker.swift in Sources */,
+				BB5E00002F11C1FB00A7A2E6 /* ReaderSession.swift in Sources */,
 				F024 /* StatsView.swift in Sources */,
 				F034 /* SelectableText.swift in Sources */,
 				F025 /* ReaderMetrics.swift in Sources */,
