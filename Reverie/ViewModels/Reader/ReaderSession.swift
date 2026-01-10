@@ -136,6 +136,7 @@ final class ReaderSession {
             await loadChapter(at: appState.currentChapterIndex)
             
             let classificationTask = Task {
+                guard appState.settings.autoAIProcessingEnabled else { return }
                 guard book.needsClassification else { return }
                 let bookId = book.id
                 do {
@@ -600,8 +601,15 @@ final class ReaderSession {
         let task = Task {
             do {
                 _ = try await analyzer?.classifyChapters(chapters, for: book)
-                // Only update if still on the same book
                 guard appState.currentBook?.id == bookId else { return }
+                
+                // Update status FIRST so processCurrentChapter sees isClassified = true
+                if var updatedBook = appState.currentBook {
+                    updatedBook.classificationStatus = .completed
+                    try? appState.database.saveBook(&updatedBook)
+                    appState.currentBook = updatedBook
+                }
+                
                 if let fresh = try? appState.database.fetchChapters(for: book) {
                     self.chapters = fresh
                     if let current = self.currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
@@ -614,15 +622,9 @@ final class ReaderSession {
                         self.currentChapter = fresh[idx]
                         await self.loadChapter(at: appState.currentChapterIndex)
                     }
-                    if var updatedBook = appState.currentBook {
-                        updatedBook.classificationStatus = .completed
-                        try? appState.database.saveBook(&updatedBook)
-                        appState.currentBook = updatedBook
-                    }
                 }
             } catch {
                 print("ReaderSession: Classification retry failed: \(error)")
-                // Classification failed - don't mark as completed
             }
         }
         backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
