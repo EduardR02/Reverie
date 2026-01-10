@@ -119,7 +119,7 @@ final class AutoScrollEngine {
         let maxScroll = max(0, scrollHeight - viewportHeight)
         targetY = min(targetY, maxScroll)
         
-        if targetY <= currentOffset + 2 { return nil }
+        if targetY <= currentOffset + 10 { return nil }
         
         let scrollRange = scrollHeight - viewportHeight
         let startWords = scrollRange > 0 ? Double(calculator.totalWords) * (currentOffset / scrollRange) : 0
