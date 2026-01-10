@@ -38,7 +38,6 @@ struct AIPanel: View {
 
     // Reading speed tracking
     let scrollPercent: Double
-    let chapterWPM: Double?  // WPM for current chapter session
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
 
     @State private var highlightedFootnoteId: String?
@@ -771,7 +770,6 @@ struct AIPanel: View {
 
     private var chapterCompletePrompt: some View {
         ReadingSpeedPrompt(
-            chapterWPM: chapterWPM,
             liveWPM: appState.readingSpeedTracker.currentSession?.wpm,
             liveSeconds: appState.readingSpeedTracker.currentSession?.timeSpentSeconds,
             averageWPM: appState.readingSpeedTracker.averageWPM,
@@ -789,7 +787,6 @@ struct AIPanel: View {
     /// Compact reading speed prompt for quiz tab
     private var compactSpeedPrompt: some View {
         CompactReadingSpeedPrompt(
-            chapterWPM: chapterWPM,
             liveWPM: appState.readingSpeedTracker.currentSession?.wpm,
             liveSeconds: appState.readingSpeedTracker.currentSession?.timeSpentSeconds,
             averageWPM: appState.readingSpeedTracker.averageWPM,
@@ -2154,7 +2151,6 @@ struct FootnoteCard: View {
 // MARK: - Reading Speed Prompt
 
 struct ReadingSpeedPrompt: View {
-    let chapterWPM: Double?
     let liveWPM: Double?
     let liveSeconds: Double?
     let averageWPM: Double
@@ -2319,13 +2315,10 @@ struct ReadingSpeedPrompt: View {
     private var minimumLiveSeconds: Double { 15 }
 
     private var isLiveEstimateTooEarly: Bool {
-        (chapterWPM ?? 0) <= 0 && (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
+        (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
     }
 
     private var resolvedWPM: Int? {
-        if let wpm = chapterWPM, wpm > 0 {
-            return Int(wpm.rounded())
-        }
         if let wpm = liveWPM, wpm > 0, (liveSeconds ?? 0) >= minimumLiveSeconds {
             return Int(wpm.rounded())
         }
@@ -2333,7 +2326,7 @@ struct ReadingSpeedPrompt: View {
     }
 
     private var showsLiveEstimate: Bool {
-        (chapterWPM ?? 0) <= 0 && (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
+        (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
     }
 
 }
@@ -2341,7 +2334,6 @@ struct ReadingSpeedPrompt: View {
 // MARK: - Compact Reading Speed Prompt
 
 struct CompactReadingSpeedPrompt: View {
-    let chapterWPM: Double?
     let liveWPM: Double?
     let liveSeconds: Double?
     let averageWPM: Double
@@ -2500,13 +2492,10 @@ struct CompactReadingSpeedPrompt: View {
     private var minimumLiveSeconds: Double { 15 }
 
     private var isLiveEstimateTooEarly: Bool {
-        (chapterWPM ?? 0) <= 0 && (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
+        (liveSeconds ?? 0) > 0 && (liveSeconds ?? 0) < minimumLiveSeconds
     }
 
     private var resolvedWPM: Int? {
-        if let wpm = chapterWPM, wpm > 0 {
-            return Int(wpm.rounded())
-        }
         if let wpm = liveWPM, wpm > 0, (liveSeconds ?? 0) >= minimumLiveSeconds {
             return Int(wpm.rounded())
         }
@@ -2514,7 +2503,7 @@ struct CompactReadingSpeedPrompt: View {
     }
 
     private var showsLiveEstimate: Bool {
-        (chapterWPM ?? 0) <= 0 && (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
+        (liveWPM ?? 0) > 0 && (liveSeconds ?? 0) >= minimumLiveSeconds
     }
 
     private func wpmLabel(_ wpm: Int, isLive: Bool) -> String {

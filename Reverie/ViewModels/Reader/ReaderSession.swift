@@ -51,10 +51,10 @@ final class ReaderSession {
     var currentProgressPercent: Double = 0
     var furthestProgressPercent: Double = 0
     
-    var chapterWPM: Double?
     private var readingTickTask: Task<Void, Never>?
     private var autoScrollTickTask: Task<Void, Never>?
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
+    private var backgroundTasks: [Task<Void, Never>] = []
     var showChapterList = false
     var expandedImage: GeneratedImage?
     var loadError: String?
@@ -87,6 +87,8 @@ final class ReaderSession {
         autoScrollTickTask?.cancel()
         for task in analysisTasks.values { task.cancel() }
         analysisTasks.removeAll()
+        for task in backgroundTasks { task.cancel() }
+        backgroundTasks.removeAll()
         autoScroll.stop()
         persistCurrentProgress()
         if let result = appState?.readingSpeedTracker.endSession() {
@@ -126,16 +128,29 @@ final class ReaderSession {
             isLoadingChapters = false
             await loadChapter(at: appState.currentChapterIndex)
             
-            Task {
-                _ = try? await analyzer?.classifyChapters(chapters, for: book)
-                if let fresh = try? appState.database.fetchChapters(for: book) {
-                    self.chapters = fresh
-                    if let current = currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
-                        self.currentChapter = fresh[idx]
+            let classificationTask = Task {
+                let bookId = book.id
+                do {
+                    _ = try await analyzer?.classifyChapters(chapters, for: book)
+                    // Only update if still on the same book
+                    guard appState.currentBook?.id == bookId else { return }
+                    if let fresh = try? appState.database.fetchChapters(for: book) {
+                        self.chapters = fresh
+                        if let current = currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                            self.currentChapter = fresh[idx]
+                        }
+                        if var updatedBook = appState.currentBook {
+                            updatedBook.classificationStatus = .completed
+                            try? appState.database.saveBook(&updatedBook)
+                            appState.currentBook = updatedBook
+                        }
                     }
-                    await loadChapter(at: appState.currentChapterIndex)
+                } catch {
+                    // Classification failed - don't update status, leave as pending/failed
                 }
             }
+            backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+            backgroundTasks.append(classificationTask)
         } catch {
             loadError = error.localizedDescription
             isLoadingChapters = false
@@ -145,7 +160,6 @@ final class ReaderSession {
     func loadChapter(at index: Int) async {
         guard let appState = appState, let book = appState.currentBook, index >= 0, index < chapters.count else { return }
         if let result = appState.readingSpeedTracker.endSession() {
-            chapterWPM = result.wpm
             appState.readingStats.addReadingTime(result.seconds)
         }
         
@@ -153,6 +167,8 @@ final class ReaderSession {
         let sameChapter = currentChapter?.id == chapter.id
         currentChapter = chapter
         autoScroll.updateMarkers([])
+        pendingMarkerInjections.removeAll()
+        pendingImageMarkerInjections.removeAll()
         hasAutoSwitchedToQuiz = false
         externalTabSelection = .insights
         currentAnnotationId = nil
@@ -161,7 +177,6 @@ final class ReaderSession {
         showBackButton = false
         savedScrollOffset = nil
         backAnchorState = .inactive
-        chapterWPM = nil
         
         if let anchor = pendingAnchor {
             scrollToQuote = anchor
@@ -425,17 +440,21 @@ final class ReaderSession {
                         if isCurrent { quizzes.append(q) }
                     case .imageSuggestions(let suggestions):
                         guard let appState = self.appState, appState.settings.imagesEnabled else { continue }
-                        Task {
+                        let imgTask = Task {
                             guard let analyzer = self.analyzer else { return }
-                            for try await img in analyzer.generateImages(suggestions: suggestions, book: book, chapter: chapter) {
-                                if Task.isCancelled { break }
-                                if self.currentChapter?.id == chapterId {
-                                    images.append(img)
-                                    pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
-                                    appState.readingStats.recordImage()
+                            do {
+                                for try await img in analyzer.generateImages(suggestions: suggestions, book: book, chapter: chapter) {
+                                    if Task.isCancelled { break }
+                                    if self.currentChapter?.id == chapterId {
+                                        images.append(img)
+                                        pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
+                                        appState.readingStats.recordImage()
+                                    }
                                 }
-                            }
+                            } catch { }
                         }
+                        self.backgroundTasks = self.backgroundTasks.filter { !$0.isCancelled }
+                        self.backgroundTasks.append(imgTask)
                     case .complete(let summary):
                         if let summary = summary {
                             if isCurrent { self.currentChapter?.summary = summary }
@@ -444,11 +463,15 @@ final class ReaderSession {
                     case .thinking: break
                     }
                 }
-            } catch { }
+            } catch {
+                // UI uses analyzer.processingStates[id]?.error instead of a local property
+            }
         }
         analysisTasks[chapterId] = task
     }
 
+    // Image generation uses non-streamed requests that can't actually be cancelled
+    // (the API call still completes and bills, we just ignore the result).
     func cancelAnalysis() {
         if let chapterId = currentChapter?.id {
             analysisTasks[chapterId]?.cancel()
@@ -461,16 +484,20 @@ final class ReaderSession {
         guard let appState = appState, let book = appState.currentBook else { return }
         if case .explain = action { pendingChatPrompt = appState.llmService.explainWordChatPrompt(word: word, context: context) } 
         else if case .generateImage = action, let chapter = currentChapter, appState.settings.imagesEnabled {
-            Task {
+            let task = Task {
                 guard let analyzer = self.analyzer else { return }
-                for try await img in analyzer.generateImages(suggestions: [.init(excerpt: context, sourceBlockId: blockId)], book: book, chapter: chapter) {
-                    if currentChapter?.id == chapter.id {
-                        images.append(img)
-                        pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
-                        appState.readingStats.recordImage()
+                do {
+                    for try await img in analyzer.generateImages(suggestions: [.init(excerpt: context, sourceBlockId: blockId)], book: book, chapter: chapter) {
+                        if currentChapter?.id == chapter.id {
+                            images.append(img)
+                            pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
+                            appState.readingStats.recordImage()
+                        }
                     }
-                }
+                } catch { }
             }
+            backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+            backgroundTasks.append(task)
         }
     }
 
@@ -495,19 +522,23 @@ final class ReaderSession {
 
     func generateMoreInsights() {
         guard let chapter = currentChapter else { return }
-        Task {
+        let task = Task {
             guard let analyzer = self.analyzer, let new = try? await analyzer.generateMoreInsights(for: chapter) else { return }
             annotations.append(contentsOf: new)
             pendingMarkerInjections.append(contentsOf: new.compactMap { ann in ann.id.map { MarkerInjection(annotationId: $0, sourceBlockId: ann.sourceBlockId) } })
         }
+        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+        backgroundTasks.append(task)
     }
 
     func generateMoreQuestions() {
         guard let chapter = currentChapter else { return }
-        Task {
+        let task = Task {
             guard let analyzer = self.analyzer, let new = try? await analyzer.generateMoreQuestions(for: chapter) else { return }
             quizzes.append(contentsOf: new)
         }
+        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+        backgroundTasks.append(task)
     }
 
     func forceProcessGarbageChapter() {
@@ -521,9 +552,28 @@ final class ReaderSession {
 
     func retryClassification() {
         guard let appState = appState, let book = appState.currentBook else { return }
-        Task {
-            _ = try? await analyzer?.classifyChapters(chapters, for: book)
-            await loadChapters()
+        let bookId = book.id
+        let task = Task {
+            do {
+                _ = try await analyzer?.classifyChapters(chapters, for: book)
+                // Only update if still on the same book
+                guard appState.currentBook?.id == bookId else { return }
+                if let fresh = try? appState.database.fetchChapters(for: book) {
+                    self.chapters = fresh
+                    if let current = currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                        self.currentChapter = fresh[idx]
+                    }
+                    if var updatedBook = appState.currentBook {
+                        updatedBook.classificationStatus = .completed
+                        try? appState.database.saveBook(&updatedBook)
+                        appState.currentBook = updatedBook
+                    }
+                }
+            } catch {
+                // Classification failed - don't mark as completed
+            }
         }
+        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+        backgroundTasks.append(task)
     }
 }

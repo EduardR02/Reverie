@@ -145,7 +145,6 @@ private struct ReaderAIPanel: View {
             pendingChatPrompt: Bindable(session).pendingChatPrompt,
             isChatInputFocused: Bindable(session).isChatInputFocused,
             scrollPercent: session.lastScrollPercent,
-            chapterWPM: session.chapterWPM,
             onApplyAdjustment: { appState.readingSpeedTracker.applyAdjustment($0) },
             expandedImage: Bindable(session).expandedImage
         )
