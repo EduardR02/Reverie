@@ -15,6 +15,8 @@ struct ReaderView: View {
                     .frame(minWidth: 280, idealWidth: proxy.size.width * (1 - appState.splitRatio))
             }
         }
+        .focusable()
+        .focusEffectDisabled()
         .background(theme.base)
         .overlay {
             if let image = session.expandedImage {
@@ -34,7 +36,10 @@ struct ReaderView: View {
         .onDisappear { session.cleanup() }
         .onKeyPress(.space) { session.handleSpaceBar() }
         .onKeyPress { session.handleKeyPress($0) }
-        .onChange(of: appState.currentChapterIndex) { _, idx in Task { await session.loadChapter(at: idx) } }
+        .onChange(of: appState.currentChapterIndex) { _, idx in 
+            session.persistCurrentProgress()
+            Task { await session.loadChapter(at: idx) } 
+        }
         .onChange(of: session.aiPanelSelectedTab) { old, new in session.handleTabChange(from: old, to: new) }
         .onChange(of: session.expandedImage) { old, new in session.handleExpandedImageChange(from: old, to: new) }
     }
@@ -134,10 +139,9 @@ private struct ReaderAIPanel: View {
             onGenerateMoreInsights: { session.generateMoreInsights() },
             onGenerateMoreQuestions: { session.generateMoreQuestions() },
             onForceProcess: { session.forceProcessGarbageChapter() },
-            onProcessManually: { session.processCurrentChapter() },
+            onProcessManually: { session.processCurrentChapter(force: true) },
             onRetryClassification: { session.retryClassification() },
             onCancelAnalysis: { session.cancelAnalysis() },
-            onCancelImages: { session.cancelAnalysis() },
             autoScrollHighlightEnabled: appState.settings.autoScrollHighlightEnabled,
             isProgrammaticScroll: session.isProgrammaticScroll,
             externalTabSelection: Bindable(session).externalTabSelection,

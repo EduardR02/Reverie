@@ -53,6 +53,7 @@ final class ReaderSession {
     
     private var readingTickTask: Task<Void, Never>?
     private var autoScrollTickTask: Task<Void, Never>?
+    private var chapterLoadTask: Task<Void, Never>?
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
     private var backgroundTasks: [Task<Void, Never>] = []
     var showChapterList = false
@@ -75,7 +76,7 @@ final class ReaderSession {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let chapterId = currentChapter?.id, let calculator = calculatorCache.get(for: chapterId) else { continue }
-                if let amount = autoScroll.calculateScrollAmount(currentOffset: lastScrollOffset, calculator: calculator) {
+                if let amount = autoScroll.calculateScrollAmount(currentOffset: lastScrollOffset, currentLocation: currentLocation, calculator: calculator) {
                     self.scrollByAmount = amount
                 }
             }
@@ -94,7 +95,7 @@ final class ReaderSession {
         if let result = appState?.readingSpeedTracker.endSession() {
             appState?.readingStats.addReadingTime(result.seconds)
         }
-        analyzer?.cancel()
+        analyzer?.cancelAll()
     }
 
     func loadChapters() async {
@@ -104,8 +105,14 @@ final class ReaderSession {
         didRestoreInitialPosition = false
 
         var book = currentBook
+        let start = Date()
         while book.importStatus == .metadataOnly {
             if Task.isCancelled { return }
+            if Date().timeIntervalSince(start) > 30 {
+                loadError = "Import timed out."
+                isLoadingChapters = false
+                return
+            }
             try? await Task.sleep(nanoseconds: 500_000_000)
             if let fresh = try? appState.database.fetchBook(id: book.id!) {
                 book = fresh
@@ -129,20 +136,31 @@ final class ReaderSession {
             await loadChapter(at: appState.currentChapterIndex)
             
             let classificationTask = Task {
+                guard book.needsClassification else { return }
                 let bookId = book.id
                 do {
                     _ = try await analyzer?.classifyChapters(chapters, for: book)
-                    // Only update if still on the same book
                     guard appState.currentBook?.id == bookId else { return }
+                    
+                    // Update status FIRST so processCurrentChapter sees isClassified = true
+                    if var updatedBook = appState.currentBook {
+                        updatedBook.classificationStatus = .completed
+                        try? appState.database.saveBook(&updatedBook)
+                        appState.currentBook = updatedBook
+                    }
+                    
                     if let fresh = try? appState.database.fetchChapters(for: book) {
                         self.chapters = fresh
-                        if let current = currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                        if let current = self.currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                            let newlyGarbage = !current.isGarbage && fresh[idx].isGarbage
+                            if newlyGarbage {
+                                if let result = appState.readingSpeedTracker.endSession() {
+                                    appState.readingStats.addReadingTime(result.seconds)
+                                }
+                            }
                             self.currentChapter = fresh[idx]
-                        }
-                        if var updatedBook = appState.currentBook {
-                            updatedBook.classificationStatus = .completed
-                            try? appState.database.saveBook(&updatedBook)
-                            appState.currentBook = updatedBook
+                            // Now loadChapter will trigger processCurrentChapter with classification complete
+                            await self.loadChapter(at: appState.currentChapterIndex)
                         }
                     }
                 } catch {
@@ -158,70 +176,78 @@ final class ReaderSession {
     }
 
     func loadChapter(at index: Int) async {
-        guard let appState = appState, let book = appState.currentBook, index >= 0, index < chapters.count else { return }
-        if let result = appState.readingSpeedTracker.endSession() {
-            appState.readingStats.addReadingTime(result.seconds)
-        }
-        
-        let chapter = chapters[index]
-        let sameChapter = currentChapter?.id == chapter.id
-        currentChapter = chapter
-        autoScroll.updateMarkers([])
-        pendingMarkerInjections.removeAll()
-        pendingImageMarkerInjections.removeAll()
-        hasAutoSwitchedToQuiz = false
-        externalTabSelection = .insights
-        currentAnnotationId = nil
-        currentImageId = nil
-        currentFootnoteRefId = nil
-        showBackButton = false
-        savedScrollOffset = nil
-        backAnchorState = .inactive
-        
-        if let anchor = pendingAnchor {
-            scrollToQuote = anchor
-            pendingAnchor = nil
-            lastScrollPercent = 0; lastScrollOffset = 0
-            didRestoreInitialPosition = true
-        } else if sameChapter {
-            didRestoreInitialPosition = true
-        } else {
-            let restoring = !didRestoreInitialPosition && index == book.currentChapter
-            if restoring {
-                if book.currentScrollOffset > 0 { scrollToOffset = book.currentScrollOffset } 
-                else { scrollToPercent = book.currentScrollPercent }
-                lastScrollPercent = book.currentScrollPercent
-                lastScrollOffset = book.currentScrollOffset
+        chapterLoadTask?.cancel()
+        chapterLoadTask = Task { @MainActor in
+            guard let appState = appState, let book = appState.currentBook, index >= 0, index < chapters.count else { return }
+            guard !Task.isCancelled else { return }
+            if let result = appState.readingSpeedTracker.endSession() {
+                appState.readingStats.addReadingTime(result.seconds)
+            }
+            
+            let chapter = chapters[index]
+            guard !Task.isCancelled else { return }
+            let sameChapter = currentChapter?.id == chapter.id
+            currentChapter = chapter
+            autoScroll.updateMarkers([])
+            pendingMarkerInjections.removeAll()
+            pendingImageMarkerInjections.removeAll()
+            hasAutoSwitchedToQuiz = false
+            externalTabSelection = .insights
+            currentAnnotationId = nil
+            currentImageId = nil
+            currentFootnoteRefId = nil
+            showBackButton = false
+            savedScrollOffset = nil
+            backAnchorState = .inactive
+            lastAutoSwitchAt = 0
+            suppressContextAutoSwitchUntil = 0
+            
+            if let anchor = pendingAnchor {
+                scrollToQuote = anchor
+                pendingAnchor = nil
+                lastScrollPercent = 0; lastScrollOffset = 0
+                didRestoreInitialPosition = true
+            } else if sameChapter {
                 didRestoreInitialPosition = true
             } else {
-                scrollToPercent = 0; lastScrollPercent = 0; lastScrollOffset = 0
-                if didRestoreInitialPosition {
-                    appState.recordReadingProgress(chapter: chapter, currentPercent: 0, furthestPercent: chapter.maxScrollReached, scrollOffset: 0)
-                } else { didRestoreInitialPosition = true }
+                let restoring = !didRestoreInitialPosition && index == book.currentChapter
+                if restoring {
+                    if book.currentScrollOffset > 0 { scrollToOffset = book.currentScrollOffset } 
+                    else { scrollToPercent = book.currentScrollPercent }
+                    lastScrollPercent = book.currentScrollPercent
+                    lastScrollOffset = book.currentScrollOffset
+                    didRestoreInitialPosition = true
+                } else {
+                    scrollToPercent = 0; scrollToOffset = nil; lastScrollPercent = 0; lastScrollOffset = 0
+                    if didRestoreInitialPosition {
+                        appState.recordReadingProgress(chapter: chapter, currentPercent: 0, furthestPercent: chapter.maxScrollReached, scrollOffset: 0)
+                    } else { didRestoreInitialPosition = true }
+                }
             }
+            currentProgressPercent = lastScrollPercent
+            furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
+            
+            let wc = chapter.wordCount > 0 ? chapter.wordCount : chapter.contentHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+            if wc > 0, let id = chapter.id, (!chapter.isGarbage || !appState.settings.autoAIProcessingEnabled) {
+                appState.readingSpeedTracker.startSession(chapterId: id, wordCount: wc, startPercent: currentProgressPercent)
+            }
+            
+            currentLocation = nil; furthestLocation = nil
+            ensureProgressCalculator(for: chapter)
+            
+            do {
+                annotations = try appState.database.fetchAnnotations(for: chapter)
+                quizzes = try appState.database.fetchQuizzes(for: chapter)
+                footnotes = try appState.database.fetchFootnotes(for: chapter)
+                images = try appState.database.fetchImages(for: chapter)
+            } catch {
+                print("ReaderSession: Failed to load chapter assets: \(error)")
+            }
+            
+            autoScroll.start()
+            processCurrentChapter()
         }
-        currentProgressPercent = lastScrollPercent
-        furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
-        
-        let wc = chapter.wordCount > 0 ? chapter.wordCount : chapter.contentHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
-        if wc > 0, let id = chapter.id, (!chapter.isGarbage || !appState.settings.autoAIProcessingEnabled) {
-            appState.readingSpeedTracker.startSession(chapterId: id, wordCount: wc, startPercent: currentProgressPercent)
-        }
-        
-        currentLocation = nil; furthestLocation = nil
-        ensureProgressCalculator(for: chapter)
-        
-        do {
-            annotations = try appState.database.fetchAnnotations(for: chapter)
-            quizzes = try appState.database.fetchQuizzes(for: chapter)
-            footnotes = try appState.database.fetchFootnotes(for: chapter)
-            images = try appState.database.fetchImages(for: chapter)
-        } catch {
-            print("ReaderSession: Failed to load chapter assets: \(error)")
-        }
-        
-        autoScroll.start()
-        processCurrentChapter()
+        await chapterLoadTask?.value
     }
 
     func persistCurrentProgress() {
@@ -422,8 +448,16 @@ final class ReaderSession {
         }
     }
 
-    func processCurrentChapter() {
-        guard let chapter = currentChapter, let chapterId = chapter.id, let analyzer = analyzer, analyzer.shouldAutoProcess(chapter, in: chapters), let book = appState?.currentBook else { return }
+    func processCurrentChapter(force: Bool = false) {
+        guard let chapter = currentChapter, let chapterId = chapter.id, let analyzer = analyzer, let book = appState?.currentBook else { return }
+        
+        if !force {
+            guard analyzer.shouldAutoProcess(chapter, in: chapters, book: book) else { return }
+        } else {
+            // Manual trigger: only require LLM key and not already processed
+            let hasLLMKey = !(appState?.settings.googleAPIKey.isEmpty ?? true) || !(appState?.settings.openAIAPIKey.isEmpty ?? true) || !(appState?.settings.anthropicAPIKey.isEmpty ?? true)
+            guard hasLLMKey, !chapter.processed else { return }
+        }
         
         if analysisTasks[chapterId] != nil { return }
         
@@ -462,6 +496,8 @@ final class ReaderSession {
                         self.backgroundTasks = self.backgroundTasks.filter { !$0.isCancelled }
                         self.backgroundTasks.append(imgTask)
                     case .complete(let summary):
+                        if isCurrent { self.currentChapter?.processed = true }
+                        if let idx = self.chapters.firstIndex(where: { $0.id == chapterId }) { self.chapters[idx].processed = true }
                         if let summary = summary {
                             if isCurrent { self.currentChapter?.summary = summary }
                             if let idx = self.chapters.firstIndex(where: { $0.id == chapterId }) { self.chapters[idx].summary = summary }
@@ -482,8 +518,8 @@ final class ReaderSession {
         if let chapterId = currentChapter?.id {
             analysisTasks[chapterId]?.cancel()
             analysisTasks.removeValue(forKey: chapterId)
+            analyzer?.cancel(for: chapterId)
         }
-        analyzer?.cancel()
     }
 
     func handleWordClick(word: String, context: String, blockId: Int, action: BookContentView.WordAction) {
@@ -568,8 +604,15 @@ final class ReaderSession {
                 guard appState.currentBook?.id == bookId else { return }
                 if let fresh = try? appState.database.fetchChapters(for: book) {
                     self.chapters = fresh
-                    if let current = currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                    if let current = self.currentChapter, let idx = fresh.firstIndex(where: { $0.id == current.id }) {
+                        let newlyGarbage = !current.isGarbage && fresh[idx].isGarbage
+                        if newlyGarbage {
+                            if let result = appState.readingSpeedTracker.endSession() {
+                                appState.readingStats.addReadingTime(result.seconds)
+                            }
+                        }
                         self.currentChapter = fresh[idx]
+                        await self.loadChapter(at: appState.currentChapterIndex)
                     }
                     if var updatedBook = appState.currentBook {
                         updatedBook.classificationStatus = .completed

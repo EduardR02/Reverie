@@ -172,4 +172,61 @@ final class ChapterAnalyzerTests: XCTestCase {
         // Then
         XCTAssertTrue(result)
     }
+
+    func test_shouldAutoProcess_requiresClassificationComplete() {
+        // Given
+        var settings = UserSettings()
+        settings.autoAIProcessingEnabled = true
+        settings.googleAPIKey = "key"
+        let analyzer = ChapterAnalyzer(llm: llmService, imageService: imageService, database: database, settings: settings)
+        
+        let chapter = Chapter(id: 1, bookId: 1, index: 0, title: "C", contentHTML: "H", isGarbage: false)
+        let chapters = [chapter]
+        
+        // When & Then
+        var book = Book(title: "B", author: "A", epubPath: "")
+        
+        book.classificationStatus = .pending
+        XCTAssertFalse(analyzer.shouldAutoProcess(chapter, in: chapters, book: book))
+        
+        book.classificationStatus = .inProgress
+        XCTAssertFalse(analyzer.shouldAutoProcess(chapter, in: chapters, book: book))
+        
+        book.classificationStatus = .failed
+        XCTAssertFalse(analyzer.shouldAutoProcess(chapter, in: chapters, book: book))
+        
+        book.classificationStatus = .completed
+        XCTAssertTrue(analyzer.shouldAutoProcess(chapter, in: chapters, book: book))
+    }
+
+    func test_shouldAutoProcess_respectsAllConditions() {
+        // Test matrix of: autoAIProcessingEnabled, hasLLMKey, isGarbage, processed, classificationStatus
+        
+        func check(autoAI: Bool, hasKey: Bool, isGarbage: Bool, processed: Bool, status: ClassificationStatus) -> Bool {
+            var localSettings = UserSettings()
+            localSettings.autoAIProcessingEnabled = autoAI
+            localSettings.googleAPIKey = hasKey ? "key" : ""
+            
+            let localAnalyzer = ChapterAnalyzer(
+                llm: llmService,
+                imageService: imageService,
+                database: database,
+                settings: localSettings
+            )
+            
+            let chapter = Chapter(id: 1, bookId: 1, index: 0, title: "C", contentHTML: "H", processed: processed, isGarbage: isGarbage)
+            let book = Book(title: "B", author: "A", epubPath: "", classificationStatus: status)
+            return localAnalyzer.shouldAutoProcess(chapter, in: [chapter], book: book)
+        }
+        
+        // All true/correct -> True
+        XCTAssertTrue(check(autoAI: true, hasKey: true, isGarbage: false, processed: false, status: .completed))
+        
+        // One false -> False
+        XCTAssertFalse(check(autoAI: false, hasKey: true, isGarbage: false, processed: false, status: .completed))
+        XCTAssertFalse(check(autoAI: true, hasKey: false, isGarbage: false, processed: false, status: .completed))
+        XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: true, processed: false, status: .completed))
+        XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: false, processed: true, status: .completed))
+        XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: false, processed: false, status: .pending))
+    }
 }

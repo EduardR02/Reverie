@@ -44,6 +44,7 @@ final class AppState {
                 currentScreen = .settings
             } else {
                 currentScreen = .home
+                libraryNeedsRefresh = true
             }
         }
     }
@@ -62,8 +63,8 @@ final class AppState {
     // Services
     nonisolated let database: DatabaseService
     var databaseError: Error?
-    let llmService: LLMService
-    let imageService: ImageService
+    var llmService: LLMService
+    var imageService: ImageService
     let readingSpeedTracker: ReadingSpeedTracker
 
     // Settings
@@ -146,6 +147,7 @@ final class AppState {
         flushPendingProgress()
         currentBook = nil
         currentScreen = .home
+        libraryNeedsRefresh = true
     }
 
     func openSettings() {
@@ -158,6 +160,7 @@ final class AppState {
 
     func goHome() {
         currentScreen = .home
+        libraryNeedsRefresh = true
     }
 
     func nextChapter() {

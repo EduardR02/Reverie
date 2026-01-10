@@ -116,7 +116,11 @@ final class ChapterAnalyzer {
                     updatedChapter.summary = analysis.summary
                     updatedChapter.contentText = contentWithBlocks
                     updatedChapter.blockCount = blockCount
-                    try? database.saveChapter(&updatedChapter)
+                    do {
+                        try database.saveChapter(&updatedChapter)
+                    } catch {
+                        print("ChapterAnalyzer: Failed to save chapter after analysis: \(error)")
+                    }
                     
                     continuation.yield(.complete(chapterSummary: analysis.summary))
                     continuation.finish()
@@ -248,7 +252,11 @@ final class ChapterAnalyzer {
                 guard let id = chapter.id else { continue }
                 let isGarbage = classifications[chapter.index] ?? false
                 chapter.isGarbage = isGarbage
-                try? database.saveChapter(&chapter)
+                do {
+                    try database.saveChapter(&chapter)
+                } catch {
+                    print("ChapterAnalyzer: Failed to save chapter during classification: \(error)")
+                }
                 results[id] = isGarbage ? .garbage : .content
             }
             return results
@@ -264,20 +272,29 @@ final class ChapterAnalyzer {
     }
     
     // Cancellation
-    func cancel() {
-        for id in processingStates.keys {
-            updateState(for: id) { 
-                $0.isProcessingInsights = false
-                $0.isProcessingImages = false
-            }
+    func cancel(for chapterId: Int64) {
+        updateState(for: chapterId) { 
+            $0.isProcessingInsights = false
+            $0.isProcessingImages = false
         }
     }
     
+    func cancelAll() {
+        for id in processingStates.keys {
+            cancel(for: id)
+        }
+    }
+    
+    func cancel() {
+        cancelAll()
+    }
+    
     // Helpers
-    func shouldAutoProcess(_ chapter: Chapter, in chapters: [Chapter]) -> Bool {
+    func shouldAutoProcess(_ chapter: Chapter, in chapters: [Chapter], book: Book? = nil) -> Bool {
         if chapter.userOverride { return true }
         let hasLLMKey = !settings.googleAPIKey.isEmpty || !settings.openAIAPIKey.isEmpty || !settings.anthropicAPIKey.isEmpty
-        return settings.autoAIProcessingEnabled && hasLLMKey && !chapter.processed && !chapter.shouldSkipAutoProcessing
+        let isClassified = book == nil || book?.classificationStatus == .completed
+        return settings.autoAIProcessingEnabled && hasLLMKey && !chapter.processed && !chapter.shouldSkipAutoProcessing && isClassified
     }
     
     private func updateState(for chapterId: Int64, transform: (inout ProcessingState) -> Void) {

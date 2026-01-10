@@ -28,7 +28,6 @@ struct AIPanel: View {
     let onProcessManually: () -> Void // Process normal chapter manually
     let onRetryClassification: () -> Void  // Retry failed classification
     let onCancelAnalysis: () -> Void
-    let onCancelImages: () -> Void
     let autoScrollHighlightEnabled: Bool
     let isProgrammaticScroll: Bool
     @Binding var externalTabSelection: Tab?  // External control for tab switching
@@ -1016,8 +1015,7 @@ struct AIPanel: View {
             liveThinking: liveThinking,
             isThinkingExpanded: $isThinkingExpanded,
             onCancel: {
-                if isImages { onCancelImages() }
-                else { onCancelAnalysis() }
+                onCancelAnalysis()
             }
         )
     }
@@ -1049,16 +1047,18 @@ struct AIPanel: View {
                     
                     Spacer()
                     
-                    Button(action: onCancel) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(theme.muted.opacity(0.5))
-                            .padding(6)
-                            .background(theme.overlay.opacity(0.5))
-                            .clipShape(Circle())
+                    if !isImages {
+                        Button(action: onCancel) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(theme.muted.opacity(0.5))
+                                .padding(6)
+                                .background(theme.overlay.opacity(0.5))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Cancel analysis")
                     }
-                    .buttonStyle(.plain)
-                    .help("Cancel analysis")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)

@@ -70,6 +70,7 @@ final class AutoScrollEngine {
     
     func calculateScrollAmount(
         currentOffset: Double,
+        currentLocation: BlockLocation?,
         calculator: ChapterProgressCalculator?
     ) -> Double? {
         guard isActive,
@@ -121,13 +122,13 @@ final class AutoScrollEngine {
         
         if targetY <= currentOffset + 10 { return nil }
         
-        let scrollRange = scrollHeight - viewportHeight
-        let startWords = scrollRange > 0 ? Double(calculator.totalWords) * (currentOffset / scrollRange) : 0
+        let startWords = calculator.totalWords(upTo: currentLocation ?? BlockLocation(blockId: 1, offset: 0))
         
         let endWords: Double
         if let marker = targetMarker {
             endWords = calculator.totalWords(upTo: BlockLocation(blockId: marker.blockId, offset: 0))
         } else {
+            let scrollRange = scrollHeight - viewportHeight
             endWords = scrollRange > 0 ? Double(calculator.totalWords) * (targetY / scrollRange) : Double(calculator.totalWords)
         }
         
