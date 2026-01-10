@@ -275,6 +275,7 @@ final class ChapterAnalyzer {
     
     // Helpers
     func shouldAutoProcess(_ chapter: Chapter, in chapters: [Chapter]) -> Bool {
+        if chapter.userOverride { return true }
         let hasLLMKey = !settings.googleAPIKey.isEmpty || !settings.openAIAPIKey.isEmpty || !settings.anthropicAPIKey.isEmpty
         return settings.autoAIProcessingEnabled && hasLLMKey && !chapter.processed && !chapter.shouldSkipAutoProcessing
     }

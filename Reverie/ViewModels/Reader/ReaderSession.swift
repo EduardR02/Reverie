@@ -204,7 +204,7 @@ final class ReaderSession {
         furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
         
         let wc = chapter.wordCount > 0 ? chapter.wordCount : chapter.contentHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
-        if wc > 0, let id = chapter.id, (book.classificationStatus == .completed && !chapter.isGarbage || !appState.settings.autoAIProcessingEnabled) {
+        if wc > 0, let id = chapter.id, (!chapter.isGarbage || !appState.settings.autoAIProcessingEnabled) {
             appState.readingSpeedTracker.startSession(chapterId: id, wordCount: wc, startPercent: currentProgressPercent)
         }
         
@@ -216,7 +216,9 @@ final class ReaderSession {
             quizzes = try appState.database.fetchQuizzes(for: chapter)
             footnotes = try appState.database.fetchFootnotes(for: chapter)
             images = try appState.database.fetchImages(for: chapter)
-        } catch { }
+        } catch {
+            print("ReaderSession: Failed to load chapter assets: \(error)")
+        }
         
         autoScroll.start()
         processCurrentChapter()
@@ -231,7 +233,7 @@ final class ReaderSession {
         guard let id = chapter.id, calculatorCache.get(for: id) == nil else { return }
         let html = chapter.contentHTML
         let chapterWordCount = chapter.wordCount
-        Task.detached(priority: .utility) {
+        let task = Task.detached(priority: .utility) {
             let parser = ContentBlockParser()
             let (blocks, _) = parser.parse(html: html)
             let wordCounts = blocks.map { $0.text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
@@ -244,6 +246,8 @@ final class ReaderSession {
                 self.lastScrollPercent = self.currentProgressPercent
             }
         }
+        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+        backgroundTasks.append(task)
     }
 
     func startReadingTicker() {
@@ -451,7 +455,9 @@ final class ReaderSession {
                                         appState.readingStats.recordImage()
                                     }
                                 }
-                            } catch { }
+                            } catch {
+                                print("ReaderSession: Error generating images: \(error)")
+                            }
                         }
                         self.backgroundTasks = self.backgroundTasks.filter { !$0.isCancelled }
                         self.backgroundTasks.append(imgTask)
@@ -494,7 +500,9 @@ final class ReaderSession {
                             appState.readingStats.recordImage()
                         }
                     }
-                } catch { }
+                } catch {
+                    print("ReaderSession: Error generating single image: \(error)")
+                }
             }
             backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
             backgroundTasks.append(task)
@@ -570,6 +578,7 @@ final class ReaderSession {
                     }
                 }
             } catch {
+                print("ReaderSession: Classification retry failed: \(error)")
                 // Classification failed - don't mark as completed
             }
         }
