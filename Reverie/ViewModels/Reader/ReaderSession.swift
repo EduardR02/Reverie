@@ -99,12 +99,19 @@ final class ReaderSession {
     }
 
     func loadChapters() async {
-        guard let appState = appState, let currentBook = appState.currentBook else { return }
+        guard let appState = appState, let bookId = appState.currentBook?.id else { return }
         isLoadingChapters = true
         loadError = nil
         didRestoreInitialPosition = false
 
-        var book = currentBook
+        // Always fetch fresh from DB to avoid stale data from HomeView's list
+        guard var book = try? appState.database.fetchBook(id: bookId) else {
+            loadError = "Failed to load book."
+            isLoadingChapters = false
+            return
+        }
+        appState.currentBook = book
+        
         let start = Date()
         while book.importStatus == .metadataOnly {
             if Task.isCancelled { return }
