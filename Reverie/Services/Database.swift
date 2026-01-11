@@ -248,6 +248,24 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
 
+    func updateBookClassificationStatus(id: Int64, status: ClassificationStatus, error: String? = nil) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE books SET classificationStatus = ?, classificationError = ? WHERE id = ?",
+                arguments: [status.rawValue, error, id]
+            )
+        }
+    }
+
+    func updateBookImportStatus(id: Int64, status: ImportStatus) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE books SET importStatus = ? WHERE id = ?",
+                arguments: [status.rawValue, id]
+            )
+        }
+    }
+
     func deleteBook(_ book: Book) throws {
         try dbQueue.write { db in
             _ = try book.delete(db)
@@ -262,9 +280,39 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
 
+    func fetchChapterMetadata(for book: Book) throws -> [ChapterMetadata] {
+        try dbQueue.read { db in
+            try Chapter.filter(Column("bookId") == book.id)
+                .order(Column("index"))
+                .select(
+                    Column("id"),
+                    Column("bookId"),
+                    Column("index"),
+                    Column("title"),
+                    Column("processed"),
+                    Column("wordCount"),
+                    Column("isGarbage"),
+                    Column("userOverride")
+                )
+                .asRequest(of: ChapterMetadata.self)
+                .fetchAll(db)
+        }
+    }
+
     func saveChapter(_ chapter: inout Chapter) throws {
         try dbQueue.write { db in
             try chapter.save(db)
+        }
+    }
+
+    func updateChapterGarbageStatus(bookId: Int64, classifications: [Int: Bool]) throws {
+        try dbQueue.write { db in
+            for (index, isGarbage) in classifications {
+                try db.execute(
+                    sql: "UPDATE chapters SET isGarbage = ? WHERE bookId = ? AND index = ?",
+                    arguments: [isGarbage, bookId, index]
+                )
+            }
         }
     }
 

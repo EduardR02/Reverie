@@ -5,12 +5,17 @@ struct ProcessBookView: View {
     let isProcessing: Bool
     let progress: Double
     let currentChapter: String
-    let onStart: () -> Void
+    let onStart: (ClosedRange<Int>, Bool) -> Void
     let onClose: () -> Void
     let onStop: () -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
+
+    @State private var metadata: [ChapterMetadata] = []
+    @State private var startChapterIndex: Int = 0
+    @State private var endChapterIndex: Int = 0
+    @State private var includeContextSummary: Bool = true
 
     @State private var chapterStats = ChapterEstimateStats()
     @State private var classificationStatus: ClassificationStatus = .pending
@@ -18,33 +23,40 @@ struct ProcessBookView: View {
     @State private var isClassifying = false
     @State private var showBreakdown = false
 
+    @State private var showRangeSettings = false
+    @State private var showAIOptions = false
+    @State private var showingStartPicker = false
+    @State private var showingEndPicker = false
+
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.bottom, 24)
+                .padding(.bottom, 20)
 
             if isProcessing {
                 processingView
             } else {
-                VStack(spacing: 20) {
-                    metricsGrid
-                    
-                    costOverview
-                    
-                    if appState.settings.imagesEnabled {
-                        imageInclusionCard
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 16) {
+                        metricsGrid
+                        
+                        costOverview
+                        
+                        rangeSection
+                        
+                        aiOptionsSection
                     }
-                    
-                    garbageFilterSection
+                    .padding(.vertical, 4)
                 }
             }
 
-            Spacer(minLength: 24)
+            Spacer(minLength: 20)
 
             actionRow
         }
-        .padding(32)
+        .padding(28)
         .frame(width: 440)
+        .frame(maxHeight: 720)
         .background(theme.base)
         .clipShape(RoundedRectangle(cornerRadius: 24))
         .shadow(color: Color.black.opacity(0.15), radius: 30, x: 0, y: 20)
@@ -53,6 +65,227 @@ struct ProcessBookView: View {
             classificationError = book.classificationError
             refreshEstimateStats()
         }
+    }
+
+    // MARK: - Sections
+
+    private var rangeSection: some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(.spring(duration: 0.3)) {
+                    showRangeSettings.toggle()
+                }
+            } label: {
+                HStack {
+                    Label("Chapter Range", systemImage: "list.number")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(theme.text)
+                    
+                    Spacer()
+                    
+                    Text(rangeLabel)
+                        .font(.system(size: 12))
+                        .foregroundColor(theme.muted)
+                    
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(theme.subtle)
+                        .rotationEffect(.degrees(showRangeSettings ? 90 : 0))
+                }
+                .padding(16)
+                .background(theme.surface)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showRangeSettings {
+                VStack(spacing: 12) {
+                    HStack(spacing: 0) {
+                        chapterRangeCard(
+                            label: "START",
+                            index: startChapterIndex,
+                            color: theme.rose,
+                            isShowingPicker: $showingStartPicker
+                        ) { newIndex in
+                            startChapterIndex = newIndex
+                            if startChapterIndex > endChapterIndex {
+                                endChapterIndex = startChapterIndex
+                            }
+                            refreshEstimateStats(updateIndices: false)
+                        }
+
+                        rangeConnector
+
+                        chapterRangeCard(
+                            label: "END",
+                            index: endChapterIndex,
+                            color: theme.iris,
+                            isShowingPicker: $showingEndPicker
+                        ) { newIndex in
+                            endChapterIndex = newIndex
+                            if endChapterIndex < startChapterIndex {
+                                startChapterIndex = endChapterIndex
+                            }
+                            refreshEstimateStats(updateIndices: false)
+                        }
+                    }
+                    
+                    if startChapterIndex > 0 {
+                        let contextRange = startChapterIndex == 1 ? "Ch. 1" : "Ch. 1–\(startChapterIndex)"
+                        Text("Include context summaries: \(contextRange)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(includeContextSummary ? theme.rose : theme.muted)
+                            .opacity(includeContextSummary ? 1.0 : 0.6)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
+                .background(theme.surface)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(theme.overlay, lineWidth: 1)
+        }
+    }
+
+    private var aiOptionsSection: some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(.spring(duration: 0.3)) {
+                    showAIOptions.toggle()
+                }
+            } label: {
+                HStack {
+                    Label("AI & Filtering", systemImage: "wand.and.stars")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(theme.text)
+                    
+                    Spacer()
+                    
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(theme.subtle)
+                        .rotationEffect(.degrees(showAIOptions ? 90 : 0))
+                }
+                .padding(16)
+                .background(theme.surface)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showAIOptions {
+                VStack(spacing: 16) {
+                    if appState.settings.imagesEnabled {
+                        imageInclusionCard
+                    }
+                    
+                    garbageFilterSection
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+                .background(theme.surface)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(theme.overlay, lineWidth: 1)
+        }
+    }
+
+    private var rangeLabel: String {
+        if metadata.isEmpty { return "" }
+        if startChapterIndex == 0 && endChapterIndex == metadata.count - 1 {
+            return "Full Book"
+        }
+        return "Ch. \(startChapterIndex + 1) – \(endChapterIndex + 1)"
+    }
+
+    private func chapterRangeCard(
+        label: String,
+        index: Int,
+        color: Color,
+        isShowingPicker: Binding<Bool>,
+        onSelect: @escaping (Int) -> Void
+    ) -> some View {
+        Button {
+            isShowingPicker.wrappedValue = true
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(theme.muted)
+                    .opacity(0.8)
+                
+                if metadata.indices.contains(index) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(index + 1)")
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .foregroundColor(color)
+                        
+                        Text(metadata[index].title)
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.muted)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.overlay.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(theme.highlightHigh.opacity(0.3), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: isShowingPicker, arrowEdge: .bottom) {
+            ChapterPicker(
+                chapters: metadata,
+                selection: index,
+                theme: theme,
+                onSelect: onSelect
+            )
+        }
+    }
+
+    private var rangeConnector: some View {
+        ZStack {
+            Rectangle()
+                .fill(theme.overlay)
+                .frame(width: 32, height: 1)
+            
+            if startChapterIndex > 0 {
+                Button {
+                    withAnimation(.spring(duration: 0.2)) {
+                        includeContextSummary.toggle()
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(theme.surface)
+                            .frame(width: 24, height: 24)
+                        
+                        Image(systemName: includeContextSummary ? "brain.head.profile.fill" : "brain.head.profile")
+                            .font(.system(size: 12))
+                            .foregroundColor(includeContextSummary ? theme.rose : theme.muted)
+                    }
+                    .overlay {
+                        Circle()
+                            .stroke(includeContextSummary ? theme.rose.opacity(0.5) : theme.overlay, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Build Context Summary: Include previous chapters in AI memory")
+            }
+        }
+        .frame(width: 44)
     }
 
     // MARK: - Header
@@ -346,7 +579,7 @@ struct ProcessBookView: View {
                 .frame(maxWidth: .infinity)
 
                 Button("Start Processing") {
-                    onStart()
+                    onStart(startChapterIndex...endChapterIndex, includeContextSummary)
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .frame(maxWidth: .infinity)
@@ -513,33 +746,75 @@ struct ProcessBookView: View {
         return String(format: "%.1f", value)
     }
 
-    private func refreshEstimateStats() {
-        do {
-            let chapters = try appState.database.fetchChapters(for: book)
-            let totalWords = chapters.reduce(0) { $0 + $1.wordCount }
+    private func refreshEstimateStats(updateIndices: Bool = true) {
+        let currentMetadata = metadata
+        let bookToFetch = book
+        let database = appState.database
+        let currentStartIndex = startChapterIndex
+        let currentEndIndex = endChapterIndex
 
-            // Exclude garbage chapters AND already processed chapters
-            let excluded = chapters.filter { $0.shouldSkipAutoProcessing || $0.processed }
-            let included = chapters.filter { !$0.shouldSkipAutoProcessing && !$0.processed }
-            let includedWords = included.reduce(0) { $0 + $1.wordCount }
-            let previewWords = chapters.reduce(0) { total, chapter in
-                total + min(chapter.wordCount, CostEstimates.classificationPreviewWordLimit)
+        Task {
+            do {
+                let fetchedMetadata: [ChapterMetadata]
+                if currentMetadata.isEmpty {
+                    fetchedMetadata = try await Task.detached(priority: .userInitiated) {
+                        try database.fetchChapterMetadata(for: bookToFetch)
+                    }.value
+                } else {
+                    fetchedMetadata = currentMetadata
+                }
+
+                let finalStartIndex = updateIndices ? 0 : currentStartIndex
+                let finalEndIndex = updateIndices ? max(0, fetchedMetadata.count - 1) : currentEndIndex
+                
+                let range = finalStartIndex...finalEndIndex
+                let rangeMetadata = fetchedMetadata.filter { range.contains($0.index) }
+                
+                var totalWords = 0
+                var excludedChapters = 0
+                var includedWords = 0
+                var includedChapters = 0
+                var alreadyProcessedChapters = 0
+                
+                for chapter in rangeMetadata {
+                    totalWords += chapter.wordCount
+                    if chapter.shouldSkipAutoProcessing || chapter.processed {
+                        excludedChapters += 1
+                    }
+                    if !chapter.shouldSkipAutoProcessing && !chapter.processed {
+                        includedWords += chapter.wordCount
+                        includedChapters += 1
+                    }
+                    if chapter.processed {
+                        alreadyProcessedChapters += 1
+                    }
+                }
+                
+                let previewWords = fetchedMetadata.reduce(0) { total, chapter in
+                    total + min(chapter.wordCount, CostEstimates.classificationPreviewWordLimit)
+                }
+
+                let stats = ChapterEstimateStats(
+                    totalWords: totalWords,
+                    totalChapters: rangeMetadata.count,
+                    excludedChapters: excludedChapters,
+                    includedWords: includedWords,
+                    includedChapters: includedChapters,
+                    classificationPreviewWords: previewWords,
+                    alreadyProcessedChapters: alreadyProcessedChapters
+                )
+
+                await MainActor.run {
+                    self.metadata = fetchedMetadata
+                    if updateIndices {
+                        self.startChapterIndex = finalStartIndex
+                        self.endChapterIndex = finalEndIndex
+                    }
+                    self.chapterStats = stats
+                }
+            } catch {
+                print("Failed to fetch chapters for estimate: \(error)")
             }
-
-            // Count already processed separately for display
-            let alreadyProcessed = chapters.filter { $0.processed }.count
-
-            chapterStats = ChapterEstimateStats(
-                totalWords: totalWords,
-                totalChapters: chapters.count,
-                excludedChapters: excluded.count,
-                includedWords: includedWords,
-                includedChapters: included.count,
-                classificationPreviewWords: previewWords,
-                alreadyProcessedChapters: alreadyProcessed
-            )
-        } catch {
-            print("Failed to fetch chapters for estimate: \(error)")
         }
     }
 
@@ -550,54 +825,67 @@ struct ProcessBookView: View {
         classificationError = nil
         classificationStatus = .inProgress
 
-        // Fetch fresh copy to avoid overwriting newer data
-        var updatedBook = (try? appState.database.fetchAllBooks().first(where: { $0.id == book.id })) ?? book
-        updatedBook.classificationStatus = .inProgress
-        updatedBook.classificationError = nil
-        try? appState.database.saveBook(&updatedBook)
+        let bookId = book.id
+        let settings = appState.settings
+        let database = appState.database
+        let llmService = appState.llmService
+        let bookToClassify = self.book
 
         do {
-            let chapters = try appState.database.fetchChapters(for: book)
-            let chapterData: [(index: Int, title: String, preview: String)] = chapters.map { chapter in
-                let plainText = chapter.contentHTML
-                    .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return (index: chapter.index, title: chapter.title, preview: plainText)
-            }
+            // 1. Prepare data in background
+            let chapterData = try await Task.detached(priority: .userInitiated) {
+                if let bId = bookId {
+                    try database.updateBookClassificationStatus(id: bId, status: .inProgress)
+                }
 
-            let classifications = try await appState.llmService.classifyChapters(
+                let chapters = try database.fetchChapters(for: bookToClassify)
+                return chapters.map { chapter in
+                    let plainText = chapter.contentHTML
+                        .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return (index: chapter.index, title: chapter.title, preview: plainText)
+                }
+            }.value
+
+            // 2. Classify (MainActor async call, doesn't block)
+            let classifications = try await llmService.classifyChapters(
                 chapters: chapterData,
-                settings: appState.settings
+                settings: settings
             )
 
-            for chapter in chapters {
-                var updatedChapter = chapter
-                updatedChapter.isGarbage = classifications[chapter.index] ?? false
-                try appState.database.saveChapter(&updatedChapter)
-            }
+            // 3. Save results in background
+            try await Task.detached(priority: .userInitiated) {
+                if let bId = bookId {
+                    try database.updateChapterGarbageStatus(bookId: bId, classifications: classifications)
+                    try database.updateBookClassificationStatus(id: bId, status: .completed)
+                }
+            }.value
 
-            classificationStatus = .completed
-            classificationError = nil
-
-            if var finalBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
-                finalBook.classificationStatus = .completed
-                finalBook.classificationError = nil
-                try appState.database.saveBook(&finalBook)
+            // 4. Update UI
+            await MainActor.run {
+                classificationStatus = .completed
+                classificationError = nil
+                metadata = []
+                refreshEstimateStats(updateIndices: false)
+                isClassifying = false
             }
         } catch {
-            classificationStatus = .failed
-            classificationError = error.localizedDescription
+            let errorMessage = error.localizedDescription
+            
+            // Update book error status in background
+            if let bId = bookId {
+                _ = try? await Task.detached(priority: .userInitiated) {
+                    try database.updateBookClassificationStatus(id: bId, status: .failed, error: errorMessage)
+                }.value
+            }
 
-            if var errorBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
-                errorBook.classificationStatus = .failed
-                errorBook.classificationError = error.localizedDescription
-                try? appState.database.saveBook(&errorBook)
+            await MainActor.run {
+                classificationStatus = .failed
+                classificationError = errorMessage
+                isClassifying = false
             }
         }
-
-        isClassifying = false
-        refreshEstimateStats()
     }
 
     private var apiKeyMissing: Bool {
@@ -669,4 +957,102 @@ private struct ChapterEstimateStats {
     var includedChapters: Int = 0
     var classificationPreviewWords: Int = 0
     var alreadyProcessedChapters: Int = 0
+}
+
+private struct ChapterPicker: View {
+    let chapters: [ChapterMetadata]
+    let selection: Int
+    let theme: Theme
+    let onSelect: (Int) -> Void
+    
+    @State private var searchText = ""
+    @Environment(\.dismiss) private var dismiss
+    
+    private var filteredChapters: [(Int, ChapterMetadata)] {
+        let all = Array(chapters.enumerated())
+        if searchText.isEmpty {
+            return all.map { ($0.offset, $0.element) }
+        }
+        return all.filter { index, chapter in
+            String(index + 1).hasPrefix(searchText) ||
+            chapter.title.localizedCaseInsensitiveContains(searchText)
+        }.map { ($0.offset, $0.element) }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(theme.subtle)
+                
+                TextField("Search chapters...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundColor(theme.text)
+                
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(theme.subtle)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(theme.overlay.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(12)
+            
+            Divider()
+                .background(theme.overlay)
+            
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredChapters, id: \.0) { index, chapter in
+                            Button {
+                                onSelect(index)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .foregroundColor(index == selection ? theme.rose : theme.muted)
+                                        .frame(width: 28, alignment: .trailing)
+                                    
+                                    Text(chapter.title)
+                                        .font(.system(size: 13))
+                                        .foregroundColor(index == selection ? theme.text : theme.muted)
+                                        .lineLimit(1)
+                                    
+                                    Spacer()
+                                    
+                                    if index == selection {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(theme.rose)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                                .background(index == selection ? theme.rose.opacity(0.1) : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 300)
+                .onAppear {
+                    proxy.scrollTo(selection, anchor: .center)
+                }
+            }
+        }
+        .frame(width: 280)
+        .background(theme.surface)
+    }
 }

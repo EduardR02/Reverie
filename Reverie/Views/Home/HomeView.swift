@@ -79,8 +79,8 @@ struct HomeView: View {
                 isProcessing: appState.isProcessingBook,
                 progress: appState.processingProgress,
                 currentChapter: appState.processingChapter,
-                onStart: {
-                    startProcessing(book)
+                onStart: { range, includeContext in
+                    startProcessing(book, range: range, includeContext: includeContext)
                 },
                 onClose: {
                     bookToProcess = nil
@@ -93,12 +93,9 @@ struct HomeView: View {
         .task {
             await loadBooks()
         }
-        .onChange(of: appState.libraryNeedsRefresh) { _, newValue in
-            if newValue {
-                Task {
-                    await loadBooks()
-                    appState.libraryNeedsRefresh = false
-                }
+        .onChange(of: appState.libraryRefreshTrigger) { _, _ in
+            Task {
+                await loadBooks()
             }
         }
         .alert("Import Error", isPresented: $showImportError) {
@@ -381,7 +378,7 @@ struct HomeView: View {
         bookToProcess = book
     }
 
-    private func startProcessing(_ book: Book) {
+    private func startProcessing(_ book: Book, range: ClosedRange<Int>? = nil, includeContext: Bool = false) {
         guard !appState.isProcessingBook else { return }
         bookToProcess = nil  // Close sheet immediately
         let previousTask = appState.processingTask
@@ -390,7 +387,7 @@ struct HomeView: View {
             if let previousTask {
                 await previousTask.value
             }
-            await processFullBook(book)
+            await processFullBook(book, range: range, includeContext: includeContext)
         }
     }
 
@@ -647,7 +644,7 @@ struct HomeView: View {
         return trimmed
     }
 
-    private func processFullBook(_ book: Book) async {
+    private func processFullBook(_ book: Book, range: ClosedRange<Int>? = nil, includeContext: Bool = false) async {
         let isSimulation = false // Set to true to test UI without using tokens
         
         appState.isProcessingBook = true
@@ -718,8 +715,14 @@ struct HomeView: View {
 
         do {
             guard let bookId = book.id else { return }
-            let chapters = try appState.database.fetchChapters(for: book)
-            let chaptersToProcess = chapters.filter { !$0.processed && !$0.shouldSkipAutoProcessing }
+            let allChapters = try appState.database.fetchChapters(for: book)
+            
+            // Filter by range if provided
+            let effectiveRange = range ?? 0...(allChapters.count - 1)
+            let chaptersInRange = allChapters.filter { effectiveRange.contains($0.index) }
+            
+            // Only count chapters that actually require processing for the total
+            let chaptersToProcess = chaptersInRange.filter { !$0.shouldSkipAutoProcessing && !$0.processed }
             appState.processingTotalChapters = chaptersToProcess.count
 
             if chaptersToProcess.isEmpty {
@@ -732,7 +735,56 @@ struct HomeView: View {
             let blockParser = ContentBlockParser()
             var rollingSummary: String?
 
-            for chapter in chapters {
+            // Phase 1: Context building (if requested and starting mid-book)
+            if includeContext && effectiveRange.lowerBound > 0 {
+                appState.processingChapter = "Building context..."
+                let contextChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
+                
+                for chapter in contextChapters {
+                    if Task.isCancelled { return }
+                    
+                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !existingSummary.isEmpty {
+                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
+                    } else if !chapter.shouldSkipAutoProcessing {
+                        // Need to generate summary for context
+                        summaryPhase = "Context: \(chapter.title)"
+                        let (_, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
+                        let (generatedSummary, usage) = try await appState.llmService.generateSummary(
+                            contentWithBlocks: contentWithBlocks,
+                            rollingSummary: rollingSummary,
+                            settings: appState.settings
+                        )
+                        if let usage {
+                            liveInputTokens += usage.input
+                            liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
+                        }
+                        
+                        // Save summary for future use
+                        var updatedChapter = chapter
+                        updatedChapter.summary = generatedSummary
+                        updatedChapter.rollingSummary = rollingSummary
+                        try appState.database.saveChapter(&updatedChapter)
+                        
+                        rollingSummary = appendRollingSummary(rollingSummary, summary: generatedSummary)
+                    }
+                }
+            } else if effectiveRange.lowerBound > 0 {
+                // Not building context, but we might still want to reuse existing summaries for rolling context if they exist
+                let previousChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
+                for chapter in previousChapters {
+                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !existingSummary.isEmpty {
+                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
+                    }
+                }
+            }
+
+            // Phase 2: Processing range
+            liveSummaryCount = 0
+            appState.processingCompletedChapters = 0
+            
+            for chapter in chaptersInRange {
                 if Task.isCancelled {
                     await cancelAllInsightTasks()
                     return
@@ -878,16 +930,16 @@ struct HomeView: View {
                 }
             }
 
-            // Mark book as fully processed if all eligible chapters were done
-            if !isSimulation && appState.processingCompletedChapters == chaptersToProcess.count {
-                // Fetch fresh copy to avoid overwriting background classification status
-                if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
-                    updatedBook.processedFully = true
-                    try appState.database.saveBook(&updatedBook)
-                } else {
-                    var updatedBook = book
-                    updatedBook.processedFully = true
-                    try appState.database.saveBook(&updatedBook)
+            // Mark book as fully processed if all eligible chapters are done
+            if !isSimulation {
+                let freshChapters = (try? appState.database.fetchChapters(for: book)) ?? []
+                let allEligibleDone = freshChapters.filter { !$0.shouldSkipAutoProcessing }.allSatisfy { $0.processed }
+                
+                if allEligibleDone {
+                    if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
+                        updatedBook.processedFully = true
+                        try appState.database.saveBook(&updatedBook)
+                    }
                 }
             }
 

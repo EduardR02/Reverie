@@ -30,7 +30,7 @@ final class AppState {
     }
     var chatContextReference: ChatReference?
 
-    var libraryNeedsRefresh = false
+    private(set) var libraryRefreshTrigger = 0
 
     // UI State
     var showImportSheet = false
@@ -44,7 +44,7 @@ final class AppState {
                 currentScreen = .settings
             } else {
                 currentScreen = .home
-                libraryNeedsRefresh = true
+                triggerLibraryRefresh()
             }
         }
     }
@@ -147,7 +147,7 @@ final class AppState {
         flushPendingProgress()
         currentBook = nil
         currentScreen = .home
-        libraryNeedsRefresh = true
+        triggerLibraryRefresh()
     }
 
     func openSettings() {
@@ -160,7 +160,11 @@ final class AppState {
 
     func goHome() {
         currentScreen = .home
-        libraryNeedsRefresh = true
+        triggerLibraryRefresh()
+    }
+
+    func triggerLibraryRefresh() {
+        libraryRefreshTrigger += 1
     }
 
     func nextChapter() {
@@ -492,30 +496,26 @@ final class AppState {
             }
 
             try database.importChapters(importItems)
+            try database.updateBookImportStatus(id: bookId, status: .complete)
 
-            // Update book status
-            if var updatedBook = try database.fetchBook(id: bookId) {
-                updatedBook.importStatus = .complete
-                try database.saveBook(&updatedBook)
-                
-                let finalUpdatedBook = updatedBook
+            if let updatedBook = try? database.fetchBook(id: bookId) {
                 await MainActor.run {
                     if self.currentBook?.id == bookId {
-                        self.currentBook = finalUpdatedBook
+                        self.currentBook = updatedBook
                     }
-                    
-                    self.libraryNeedsRefresh = true
+                    self.triggerLibraryRefresh()
+                }
+            } else {
+                await MainActor.run {
+                    self.triggerLibraryRefresh()
                 }
             }
         } catch {
             print("Failed to finalize chapter import: \(error)")
-            if var failedBook = try? database.fetchBook(id: bookId) {
-                failedBook.importStatus = .failed
-                try? database.saveBook(&failedBook)
-                
-                await MainActor.run {
-                    self.libraryNeedsRefresh = true
-                }
+            _ = try? database.updateBookImportStatus(id: bookId, status: .failed)
+
+            await MainActor.run {
+                self.triggerLibraryRefresh()
             }
         }
     }

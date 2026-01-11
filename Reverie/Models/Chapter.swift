@@ -74,3 +74,18 @@ extension Chapter {
         isGarbage && !userOverride
     }
 }
+
+struct ChapterMetadata: Identifiable, Codable, FetchableRecord {
+    var id: Int64?
+    var bookId: Int64
+    var index: Int
+    var title: String
+    var processed: Bool
+    var wordCount: Int
+    var isGarbage: Bool
+    var userOverride: Bool
+
+    var shouldSkipAutoProcessing: Bool {
+        isGarbage && !userOverride
+    }
+}
