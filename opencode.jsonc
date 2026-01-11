@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-gemini-auth@latest"],
+  "plugin": ["opencode-antigravity-auth@beta"],
   "agent": {
     "Clopus the Orchestrator": {
       "description": "Strategic intelligence layer - plans, delegates, and ensures quality. Does not implement.",
@@ -8,8 +8,15 @@
       "model": "anthropic/claude-opus-4-5",
       "thinking": {
         "type": "enabled",
-        "budgetTokens": 31999
+        "budgetTokens": 32000
       },
+      "prompt": "{file:./prompts/orchestrator.txt}"
+    },
+    "Clopus the Orchestrator (Antigravity)": {
+      "description": "Strategic intelligence layer - plans, delegates, and ensures quality. Does not implement.",
+      "mode": "primary",
+      "model": "google/antigravity-claude-opus-4-5-thinking",
+      "variant": "max",
       "prompt": "{file:./prompts/orchestrator.txt}"
     },
     "G-3PO the Orchestrator": {
