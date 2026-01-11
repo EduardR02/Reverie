@@ -9,6 +9,14 @@ A macOS book reader that shows you interesting things while you read.
 
 Download the latest release from the [Releases](../../releases) page. Unzip and drag to Applications.
 
+First launch (unsigned build): right‑click `Reverie.app` → Open → Open. macOS will remember this and you only need to do it once.
+
+Optional terminal alternative:
+
+```
+xattr -dr com.apple.quarantine "/Applications/Reverie.app"
+```
+
 ## The Problem
 
 Books contain more than what's on the page. A novel mentions a historical battle—there's real history behind it. A character quotes a philosopher—there's a whole tradition there. Science fiction invokes physics—sometimes it's real, sometimes it's not. You could stop reading and look it up. You won't.
