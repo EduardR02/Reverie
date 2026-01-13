@@ -593,13 +593,15 @@ enum DensityLevel: String, Codable, CaseIterable {
     }
 }
 
-enum ReasoningLevel: String, Codable, CaseIterable {
+enum ReasoningLevel: String, Codable, CaseIterable, CustomStringConvertible {
     case off = "Off"
     case minimal = "Minimal"
     case low = "Low"
     case medium = "Medium"
     case high = "High"
     case xhigh = "Extra High"
+
+    var description: String { rawValue }
 
     func gemini3Level(isFlash: Bool) -> String {
         let effort = apiEffort
@@ -690,10 +692,12 @@ struct LLMModel {
     let name: String
 }
 
-enum LLMProvider: String, Codable, CaseIterable {
+enum LLMProvider: String, Codable, CaseIterable, CustomStringConvertible {
     case google = "Google"
     case openai = "OpenAI"
     case anthropic = "Anthropic"
+
+    var description: String { displayName }
 
     var displayName: String {
         switch self {
@@ -728,9 +732,16 @@ enum LLMProvider: String, Codable, CaseIterable {
     }
 }
 
-enum ImageModel: String, Codable, CaseIterable {
+enum ImageModel: String, Codable, CaseIterable, CustomStringConvertible {
     case gemini3Pro = "Gemini 3 Pro"
     case gemini25Flash = "Gemini 2.5 Flash"
+
+    var description: String {
+        switch self {
+        case .gemini3Pro: return "Nano Banana Pro"
+        case .gemini25Flash: return "Nano Banana"
+        }
+    }
 
     var apiModel: String {
         switch self {
@@ -739,7 +750,7 @@ enum ImageModel: String, Codable, CaseIterable {
         }
     }
 
-    var description: String {
+    var detailDescription: String {
         switch self {
         case .gemini3Pro: return "Best quality, slower"
         case .gemini25Flash: return "Fast, good quality"

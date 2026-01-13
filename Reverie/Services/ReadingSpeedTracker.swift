@@ -240,6 +240,27 @@ final class ReadingSpeedTracker {
         }
     }
 
+    func updateSessionWordCount(_ wordCount: Int) {
+        guard var session = currentSession else { return }
+        session.chapterWordCount = max(0, wordCount)
+        currentSession = session
+    }
+
+    @discardableResult
+    func discardSession() -> SessionResult? {
+        guard let session = currentSession else { return nil }
+        let result = SessionResult(
+            wpm: session.wpm,
+            minutes: Int(session.timeSpentSeconds / 60.0),
+            seconds: session.timeSpentSeconds,
+            words: session.wordsRead
+        )
+        currentSession = nil
+        lastActivityTime = nil
+        lastTickTime = nil
+        return result
+    }
+
     // MARK: - Auto-Scroll
 
     var effectiveAutoScrollWPM: Double {

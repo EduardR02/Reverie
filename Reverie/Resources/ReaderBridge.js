@@ -292,7 +292,9 @@ function updateFocus(forceReport = false) {
     const vh = focusState.viewportHeight || window.innerHeight;
     const sh = focusState.scrollHeight || document.documentElement.scrollHeight;
     const scrollMax = Math.max(1, sh - vh);
-    const scrollPercent = scrollY / scrollMax;
+    let scrollPercent = scrollMax <= 1 ? 1 : Math.min(1, scrollY / scrollMax);
+    // Snap to 1.0 if within 2 pixels of bottom
+    if ((scrollMax - scrollY) <= 2) scrollPercent = 1;
 
     const isLocked = programmatic.isSticky();
     const isAnimating = programmatic.isActive();

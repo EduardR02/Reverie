@@ -26,6 +26,7 @@ final class ReaderSessionTests: XCTestCase {
 
 
     func test_setup_initializesChildComponents() {
+        appState.settings.smartAutoScrollEnabled = true
         session.setup(with: appState)
         XCTAssertNotNil(session.analyzer)
         XCTAssertTrue(session.autoScroll.isActive) 
@@ -104,5 +105,38 @@ final class ReaderSessionTests: XCTestCase {
         
         // Then
         await fulfillment(of: [expectation], timeout: 2.0)
+    }
+
+    func test_combinedWordCounts_addsInsightAndFootnoteWords() {
+        let baseCounts = [2, 2]
+        let baseTexts = ["Base words", "More words"]
+        let annotation = Annotation(chapterId: 1, type: .science, title: "Extra", content: "Insight here", sourceBlockId: 1)
+        let footnote = Footnote(chapterId: 1, marker: "1", content: "Footnote text", refId: "note1", sourceBlockId: 2)
+
+        let combined = ReaderSession.combinedWordCounts(
+            baseCounts: baseCounts,
+            baseTexts: baseTexts,
+            annotations: [annotation],
+            footnotes: [footnote],
+            chapterWordCount: 4
+        )
+
+        XCTAssertEqual(combined, [5, 4])
+    }
+
+    func test_combinedWordCounts_skipsEmbeddedFootnoteContent() {
+        let baseCounts = [2, 2]
+        let baseTexts = ["Base words", "More words"]
+        let footnote = Footnote(chapterId: 1, marker: "1", content: "More words", refId: "note1", sourceBlockId: 2)
+
+        let combined = ReaderSession.combinedWordCounts(
+            baseCounts: baseCounts,
+            baseTexts: baseTexts,
+            annotations: [],
+            footnotes: [footnote],
+            chapterWordCount: 4
+        )
+
+        XCTAssertEqual(combined, baseCounts)
     }
 }

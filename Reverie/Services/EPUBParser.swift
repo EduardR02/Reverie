@@ -708,11 +708,12 @@ final class EPUBParser {
 
         // Find footnote references: <a epub:type="noteref" href="#id">marker</a>
         // Also handles: <a class="footnote" href="#id">marker</a>, <sup><a href="#fn1">1</a></sup>
+        // Marker capture uses (.*?) to handle nested tags like <sup>1</sup>
         let refPatterns = [
-            "<a[^>]*epub:type=[\"']noteref[\"'][^>]*href=[\"']#([^\"']+)[\"'][^>]*>([^<]+)</a>",
-            "<a[^>]*href=[\"']#([^\"']+)[\"'][^>]*epub:type=[\"']noteref[\"'][^>]*>([^<]+)</a>",
-            "<a[^>]*class=[\"'][^\"']*footnote[^\"']*[\"'][^>]*href=[\"']#([^\"']+)[\"'][^>]*>([^<]+)</a>",
-            "<sup[^>]*><a[^>]*href=[\"']#(fn\\d+|note\\d+|endnote\\d+)[\"'][^>]*>(\\d+)</a></sup>"
+            "<a[^>]*epub:type=[\"']noteref[\"'][^>]*href=[\"']#([^\"']+)[\"'][^>]*>(.*?)</a>",
+            "<a[^>]*href=[\"']#([^\"']+)[\"'][^>]*epub:type=[\"']noteref[\"'][^>]*>(.*?)</a>",
+            "<a[^>]*class=[\"'][^\"']*footnote[^\"']*[\"'][^>]*href=[\"']#([^\"']+)[\"'][^>]*>(.*?)</a>",
+            "<sup[^>]*>\\s*<a[^>]*href=[\"']#([^\"']+)[\"'][^>]*>(.*?)</a>\\s*</sup>"
         ]
 
         // Find footnote content: <aside epub:type="footnote" id="id">content</aside>

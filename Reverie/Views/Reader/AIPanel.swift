@@ -28,6 +28,7 @@ struct AIPanel: View {
     let onProcessManually: () -> Void // Process normal chapter manually
     let onRetryClassification: () -> Void  // Retry failed classification
     let onCancelAnalysis: () -> Void
+    let onDiscardSession: () -> Void
     let autoScrollHighlightEnabled: Bool
     let isProgrammaticScroll: Bool
     @Binding var externalTabSelection: Tab?  // External control for tab switching
@@ -36,7 +37,7 @@ struct AIPanel: View {
     @Binding var isChatInputFocused: Bool
 
     // Reading speed tracking
-    let scrollPercent: Double
+    let isAtChapterBottom: Bool
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
 
     @State private var highlightedFootnoteId: String?
@@ -190,7 +191,10 @@ struct AIPanel: View {
         // Only show speed prompt for classified content chapters
         let isClassifiedContent = appState.currentBook?.classificationStatus == .completed
             && chapter?.isGarbage != true
-        return scrollPercent > 0.9
+        
+        // Instruction says: Change from `scrollPercent >= 0.995` to a strict "user reached absolute bottom" check.
+        // Since AIPanel is given isAtChapterBottom from the ReaderSession, we use it directly.
+        return isAtChapterBottom
             && showedSpeedPromptForChapter != chapter?.id
             && isClassifiedContent
     }
@@ -371,6 +375,7 @@ struct AIPanel: View {
                     // Chapter complete prompt (shows at 90% scroll)
                     if shouldShowSpeedPrompt {
                         chapterCompletePrompt
+                            .id("chapter-complete-prompt")
                     }
                 }
                 .padding(16)
@@ -379,6 +384,13 @@ struct AIPanel: View {
                 guard let req = externalScrollRequest, req.tab == .insights else { return }
                 withAnimation(.easeOut(duration: 0.3)) {
                     proxy.scrollTo(req.id, anchor: UnitPoint(x: 0.5, y: 0.2))
+                }
+            }
+            .onChange(of: shouldShowSpeedPrompt) { _, newValue in
+                if newValue {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo("chapter-complete-prompt", anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: currentAnnotationId) { oldValue, newValue in
@@ -777,6 +789,9 @@ struct AIPanel: View {
                 onApplyAdjustment(adjustment)
                 showedSpeedPromptForChapter = chapter?.id
             },
+            onDiscardSession: {
+                onDiscardSession()
+            },
             onDismiss: {
                 showedSpeedPromptForChapter = chapter?.id
             }
@@ -793,6 +808,9 @@ struct AIPanel: View {
             onApplyAdjustment: { adjustment in
                 onApplyAdjustment(adjustment)
                 showedSpeedPromptForChapter = chapter?.id
+            },
+            onDiscardSession: {
+                onDiscardSession()
             },
             onDismiss: {
                 showedSpeedPromptForChapter = chapter?.id
@@ -2156,6 +2174,7 @@ struct ReadingSpeedPrompt: View {
     let averageWPM: Double
     let confidence: Double
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
+    let onDiscardSession: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
@@ -2255,7 +2274,10 @@ struct ReadingSpeedPrompt: View {
                     }
 
                     // Subtle dismissal for browsing
-                    Button(action: onDismiss) {
+                    Button {
+                        onDiscardSession()
+                        onDismiss()
+                    } label: {
                         Text("I was just browsing")
                             .font(.system(size: 11))
                             .foregroundColor(theme.muted)
@@ -2339,6 +2361,7 @@ struct CompactReadingSpeedPrompt: View {
     let averageWPM: Double
     let confidence: Double
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
+    let onDiscardSession: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
@@ -2439,7 +2462,10 @@ struct CompactReadingSpeedPrompt: View {
 
                     Spacer()
 
-                    Button(action: onDismiss) {
+                    Button {
+                        onDiscardSession()
+                        onDismiss()
+                    } label: {
                         Text("I was just browsing")
                             .font(.system(size: 11))
                             .foregroundColor(theme.muted)

@@ -16,6 +16,7 @@
 		BB5EFFFC2F11C05900A7A2E6 /* AutoScrollEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */; };
 		BB5EFFFE2F11C1E900A7A2E6 /* ChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */; };
 		BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */; };
+		BBBA135C2F146975008FC6ED /* ThemedControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBA135B2F146975008FC6ED /* ThemedControls.swift */; };
 		BBF6ECBD2F118B9F00258A92 /* ProgressCalculatorCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */; };
 		F001 /* ReverieApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = S001 /* ReverieApp.swift */; };
 		F002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = S002 /* AppState.swift */; };
@@ -64,6 +65,7 @@
 		BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterAnalyzer.swift; path = Reverie/ViewModels/Reader/ChapterAnalyzer.swift; sourceTree = "<group>"; };
 		BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSession.swift; path = Reverie/ViewModels/Reader/ReaderSession.swift; sourceTree = "<group>"; };
 		BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterProgressCalculator.swift; path = Reverie/Services/ChapterProgressCalculator.swift; sourceTree = "<group>"; };
+		BBBA135B2F146975008FC6ED /* ThemedControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ThemedControls.swift; path = Reverie/Views/Components/ThemedControls.swift; sourceTree = "<group>"; };
 		BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProgressCalculatorCache.swift; path = Reverie/Services/ProgressCalculatorCache.swift; sourceTree = "<group>"; };
 		PROD /* Reverie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reverie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		S001 /* ReverieApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReverieApp.swift; sourceTree = "<group>"; };
@@ -179,6 +181,7 @@
 				BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */,
 				BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */,
 				BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */,
+				BBBA135B2F146975008FC6ED /* ThemedControls.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -378,6 +381,7 @@
 				F018 /* SettingsView.swift in Sources */,
 				F019 /* Theme.swift in Sources */,
 				F020 /* RosePine.swift in Sources */,
+				BBBA135C2F146975008FC6ED /* ThemedControls.swift in Sources */,
 				F022 /* Footnote.swift in Sources */,
 				F023 /* ReadingSpeedTracker.swift in Sources */,
 				BB5E00002F11C1FB00A7A2E6 /* ReaderSession.swift in Sources */,

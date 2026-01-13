@@ -27,6 +27,7 @@ final class ReaderSession {
     var pendingAnchor: String?
     var pendingMarkerInjections: [MarkerInjection] = []
     var pendingImageMarkerInjections: [ImageMarkerInjection] = []
+    var isAtChapterBottom: Bool = false
     var lastScrollPercent: Double = 0
     var lastScrollOffset: Double = 0
     var didRestoreInitialPosition = false
@@ -46,6 +47,9 @@ final class ReaderSession {
     var suppressContextAutoSwitchUntil: TimeInterval = 0
     
     var calculatorCache = ProgressCalculatorCache()
+    private var baseWordCountsByChapter: [Int64: [Int]] = [:]
+    private var baseBlockTextsByChapter: [Int64: [String]] = [:]
+    private var didLoadChapterAssets = false
     var currentLocation: BlockLocation?
     var furthestLocation: BlockLocation?
     var currentProgressPercent: Double = 0
@@ -56,6 +60,7 @@ final class ReaderSession {
     private var chapterLoadTask: Task<Void, Never>?
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
     private var backgroundTasks: [Task<Void, Never>] = []
+    private var isCleaningUp = false
     var showChapterList = false
     var expandedImage: GeneratedImage?
     var loadError: String?
@@ -66,7 +71,11 @@ final class ReaderSession {
         self.appState = appState
         self.analyzer = ChapterAnalyzer(llm: appState.llmService, imageService: appState.imageService, database: appState.database, settings: appState.settings)
         autoScroll.configure(speedTracker: appState.readingSpeedTracker, settings: appState.settings)
-        autoScroll.start()
+        if appState.settings.smartAutoScrollEnabled {
+            autoScroll.start()
+        } else {
+            autoScroll.stop()
+        }
         startAutoScrollTicker()
     }
     
@@ -75,6 +84,8 @@ final class ReaderSession {
         autoScrollTickTask = Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !isCleaningUp else { break }
+                guard autoScroll.isActive else { continue }
                 guard let chapterId = currentChapter?.id, let calculator = calculatorCache.get(for: chapterId) else { continue }
                 if let amount = autoScroll.calculateScrollAmount(currentOffset: lastScrollOffset, currentLocation: currentLocation, calculator: calculator) {
                     self.scrollByAmount = amount
@@ -84,6 +95,8 @@ final class ReaderSession {
     }
     
     func cleanup() {
+        isCleaningUp = true
+        scrollByAmount = nil
         readingTickTask?.cancel()
         autoScrollTickTask?.cancel()
         for task in analysisTasks.values { task.cancel() }
@@ -195,10 +208,13 @@ final class ReaderSession {
             let chapter = chapters[index]
             guard !Task.isCancelled else { return }
             let sameChapter = currentChapter?.id == chapter.id
+            if !sameChapter {
+                cancelAnalysis()
+                pendingMarkerInjections.removeAll()
+                pendingImageMarkerInjections.removeAll()
+            }
             currentChapter = chapter
             autoScroll.updateMarkers([])
-            pendingMarkerInjections.removeAll()
-            pendingImageMarkerInjections.removeAll()
             hasAutoSwitchedToQuiz = false
             externalTabSelection = .insights
             currentAnnotationId = nil
@@ -209,6 +225,7 @@ final class ReaderSession {
             backAnchorState = .inactive
             lastAutoSwitchAt = 0
             suppressContextAutoSwitchUntil = 0
+            didLoadChapterAssets = false
             
             if let anchor = pendingAnchor {
                 scrollToQuote = anchor
@@ -235,11 +252,6 @@ final class ReaderSession {
             currentProgressPercent = lastScrollPercent
             furthestProgressPercent = max(chapter.maxScrollReached, currentProgressPercent)
             
-            let wc = chapter.wordCount > 0 ? chapter.wordCount : chapter.contentHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression).components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
-            if wc > 0, let id = chapter.id, (!chapter.isGarbage || !appState.settings.autoAIProcessingEnabled) {
-                appState.readingSpeedTracker.startSession(chapterId: id, wordCount: wc, startPercent: currentProgressPercent)
-            }
-            
             currentLocation = nil; furthestLocation = nil
             ensureProgressCalculator(for: chapter)
             
@@ -248,10 +260,13 @@ final class ReaderSession {
                 quizzes = try appState.database.fetchQuizzes(for: chapter)
                 footnotes = try appState.database.fetchFootnotes(for: chapter)
                 images = try appState.database.fetchImages(for: chapter)
+                didLoadChapterAssets = true
             } catch {
                 print("ReaderSession: Failed to load chapter assets: \(error)")
+                didLoadChapterAssets = true
             }
             
+            refreshProgressCalculator(for: chapter)
             autoScroll.start()
             processCurrentChapter()
         }
@@ -264,24 +279,123 @@ final class ReaderSession {
     }
 
     func ensureProgressCalculator(for chapter: Chapter) {
-        guard let id = chapter.id, calculatorCache.get(for: id) == nil else { return }
+        guard let id = chapter.id else { return }
+        if baseWordCountsByChapter[id] != nil {
+            refreshProgressCalculator(for: chapter)
+            return
+        }
         let html = chapter.contentHTML
-        let chapterWordCount = chapter.wordCount
         let task = Task.detached(priority: .utility) {
             let parser = ContentBlockParser()
             let (blocks, _) = parser.parse(html: html)
-            let wordCounts = blocks.map { $0.text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
-            let calculator = ChapterProgressCalculator(wordCounts: wordCounts, totalWords: max(chapterWordCount, wordCounts.reduce(0, +)))
+            let wordCounts = blocks.map { ReaderSession.wordCount(in: $0.text) }
+            let blockTexts = blocks.map { $0.text }
             await MainActor.run {
-                self.calculatorCache.insert(calculator, for: id, protecting: self.currentChapter?.id)
-                guard self.currentChapter?.id == id else { return }
-                if let loc = self.currentLocation { self.currentProgressPercent = calculator.percent(for: loc) }
-                if let floc = self.furthestLocation { self.furthestProgressPercent = max(self.furthestProgressPercent, calculator.percent(for: floc)) }
-                self.lastScrollPercent = self.currentProgressPercent
+                self.baseWordCountsByChapter[id] = wordCounts
+                self.baseBlockTextsByChapter[id] = blockTexts
+                self.refreshProgressCalculator(for: chapter)
             }
         }
         backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
         backgroundTasks.append(task)
+    }
+
+    private func refreshProgressCalculator(for chapter: Chapter) {
+        guard let id = chapter.id,
+              let baseCounts = baseWordCountsByChapter[id],
+              let baseTexts = baseBlockTextsByChapter[id],
+              !baseCounts.isEmpty else { return }
+
+        let combinedCounts = Self.combinedWordCounts(
+            baseCounts: baseCounts,
+            baseTexts: baseTexts,
+            annotations: annotations,
+            footnotes: footnotes,
+            chapterWordCount: chapter.wordCount
+        )
+        let totalWords = combinedCounts.reduce(0, +)
+        guard totalWords > 0 else { return }
+
+        let calculator = ChapterProgressCalculator(wordCounts: combinedCounts, totalWords: totalWords)
+        calculatorCache.insert(calculator, for: id, protecting: currentChapter?.id)
+
+        if currentChapter?.id == id {
+            if let loc = currentLocation { currentProgressPercent = calculator.percent(for: loc) }
+            if let floc = furthestLocation { furthestProgressPercent = max(furthestProgressPercent, calculator.percent(for: floc)) }
+            lastScrollPercent = currentProgressPercent
+        }
+
+        guard let appState = appState else { return }
+        let shouldTrack = !chapter.isGarbage || !appState.settings.autoAIProcessingEnabled
+        guard shouldTrack else { return }
+
+        if let session = appState.readingSpeedTracker.currentSession {
+            if session.chapterId == id {
+                appState.readingSpeedTracker.updateSessionWordCount(totalWords)
+            }
+        } else if didLoadChapterAssets && currentChapter?.id == id {
+            appState.readingSpeedTracker.startSession(chapterId: id, wordCount: totalWords, startPercent: currentProgressPercent)
+        }
+    }
+
+    nonisolated static func combinedWordCounts(
+        baseCounts: [Int],
+        baseTexts: [String],
+        annotations: [Annotation],
+        footnotes: [Footnote],
+        chapterWordCount: Int
+    ) -> [Int] {
+        guard !baseCounts.isEmpty else { return baseCounts }
+
+        var counts = baseCounts
+        let normalizedBlocks = baseTexts.map { normalizedText($0) }
+        var extraFootnoteWords = 0
+
+        for annotation in annotations {
+            let words = wordCount(in: annotation.title) + wordCount(in: annotation.content)
+            guard words > 0 else { continue }
+            let index = clampBlockIndex(annotation.sourceBlockId, count: counts.count)
+            counts[index] += words
+        }
+
+        for footnote in footnotes {
+            let normalizedFootnote = normalizedText(footnote.content)
+            guard !normalizedFootnote.isEmpty else { continue }
+            let isEmbedded = normalizedBlocks.contains { $0.contains(normalizedFootnote) }
+            guard !isEmbedded else { continue }
+            let words = wordCount(in: footnote.content)
+            guard words > 0 else { continue }
+            let index = clampBlockIndex(footnote.sourceBlockId, count: counts.count)
+            counts[index] += words
+            extraFootnoteWords += words
+        }
+
+        let baseTotal = baseCounts.reduce(0, +)
+        if chapterWordCount > baseTotal {
+            let residual = chapterWordCount - baseTotal
+            let residualAfterFootnotes = max(0, residual - extraFootnoteWords)
+            if residualAfterFootnotes > 0, !counts.isEmpty {
+                counts[counts.count - 1] += residualAfterFootnotes
+            }
+        }
+
+        return counts
+    }
+
+    nonisolated static func wordCount(in text: String) -> Int {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+    }
+
+    nonisolated static func normalizedText(_ text: String) -> String {
+        let collapsed = text
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func clampBlockIndex(_ blockId: Int, count: Int) -> Int {
+        let clampedId = min(max(blockId, 1), count)
+        return max(0, clampedId - 1)
     }
 
     func startReadingTicker() {
@@ -313,7 +427,7 @@ final class ReaderSession {
 
     func handleScrollUpdate(context: ScrollContext, chapter: Chapter) {
         isProgrammaticScroll = context.isProgrammatic
-        autoScroll.updateScrollPosition(offset: context.scrollOffset, viewportHeight: context.viewportHeight, scrollHeight: context.scrollHeight)
+        autoScroll.updateScrollPosition(offset: context.scrollOffset, viewportHeight: context.viewportHeight, scrollHeight: context.scrollHeight, isProgrammatic: context.isProgrammatic)
         
         if context.isProgrammatic {
             if let aid = context.annotationId { currentAnnotationId = aid }
@@ -324,6 +438,9 @@ final class ReaderSession {
         }
 
         var current = context.scrollPercent
+        let atBottom = context.scrollPercent >= 1.0
+        if isAtChapterBottom != atBottom { isAtChapterBottom = atBottom }
+        
         var furthest = max(furthestProgressPercent, current)
         if let blockId = context.blockId {
             let location = BlockLocation(blockId: blockId, offset: context.blockOffset ?? 0)
@@ -481,6 +598,7 @@ final class ReaderSession {
                         if isCurrent {
                             annotations.append(ann)
                             pendingMarkerInjections.append(MarkerInjection(annotationId: ann.id!, sourceBlockId: ann.sourceBlockId))
+                            refreshProgressCalculator(for: chapter)
                         }
                     case .quiz(let q):
                         if isCurrent { quizzes.append(q) }

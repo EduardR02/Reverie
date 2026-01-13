@@ -48,17 +48,25 @@ final class AutoScrollEngine {
     func updateScrollPosition(
         offset: Double,
         viewportHeight: Double,
-        scrollHeight: Double
+        scrollHeight: Double,
+        isProgrammatic: Bool = false
     ) {
-        let isProgrammatic = abs(offset - (lastTargetY ?? -9999)) < 10
         self.currentOffset = offset
         if viewportHeight > 0 { self.viewportHeight = viewportHeight }
         self.scrollHeight = scrollHeight
-        
-        if !isProgrammatic {
+
+        // Cancel countdown on any programmatic scroll (annotation jump, etc.)
+        if isProgrammatic {
+            cancelCountdown()
+            return
+        }
+
+        // Cancel if manual scroll detected during countdown (not near expected target)
+        let isNearTarget = abs(offset - (lastTargetY ?? -9999)) < 10
+        if !isNearTarget {
             cancelCountdown()
         }
-        
+
         if let target = lastTargetY, offset >= target - 10 {
             cancelCountdown()
         }

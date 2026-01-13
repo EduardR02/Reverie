@@ -115,21 +115,31 @@ struct BookContentView: NSViewRepresentable {
         }
 
         if !pendingMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            for inj in pendingMarkerInjections { 
+            let snapshots = pendingMarkerInjections
+            for inj in snapshots { 
                 webView.evaluateJavaScript("injectMarkerAtBlock(\(inj.annotationId), \(inj.sourceBlockId));") { _, _ in } 
             } 
-            DispatchQueue.main.async { self.pendingMarkerInjections = [] }
+            DispatchQueue.main.async { 
+                self.pendingMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
+            }
         }
         if !pendingImageMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            for inj in pendingImageMarkerInjections { 
+            let snapshots = pendingImageMarkerInjections
+            for inj in snapshots { 
                 webView.evaluateJavaScript("injectImageMarker(\(inj.imageId), \(inj.sourceBlockId));") { _, _ in } 
             } 
-            DispatchQueue.main.async { self.pendingImageMarkerInjections = [] }
+            DispatchQueue.main.async { 
+                self.pendingImageMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
+            }
         }
 
         if let amount = scrollByAmount {
             webView.evaluateJavaScript("window.scrollBy({top: \(amount), behavior: 'smooth'});") { _, _ in 
-                DispatchQueue.main.async { self.scrollByAmount = nil }
+                DispatchQueue.main.async {
+                    if self.scrollByAmount == amount {
+                        self.scrollByAmount = nil
+                    }
+                }
             }
         }
     }
@@ -329,6 +339,25 @@ struct BookContentView: NSViewRepresentable {
             } else if let p = pendingScrollPercent { 
                 webView.evaluateJavaScript("scrollToPercent(\(p))")
                 pendingScrollPercent = nil 
+            }
+
+            if !parent.pendingMarkerInjections.isEmpty {
+                let snapshots = parent.pendingMarkerInjections
+                for inj in snapshots {
+                    webView.evaluateJavaScript("injectMarkerAtBlock(\(inj.annotationId), \(inj.sourceBlockId));") { _, _ in }
+                }
+                DispatchQueue.main.async { 
+                    self.parent.pendingMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
+                }
+            }
+            if !parent.pendingImageMarkerInjections.isEmpty {
+                let snapshots = parent.pendingImageMarkerInjections
+                for inj in snapshots {
+                    webView.evaluateJavaScript("injectImageMarker(\(inj.imageId), \(inj.sourceBlockId));") { _, _ in }
+                }
+                DispatchQueue.main.async { 
+                    self.parent.pendingImageMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
+                }
             }
             
             // Trigger initial scroll report to ensure dimensions are known immediately

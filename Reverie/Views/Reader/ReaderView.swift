@@ -142,13 +142,14 @@ private struct ReaderAIPanel: View {
             onProcessManually: { session.processCurrentChapter(force: true) },
             onRetryClassification: { session.retryClassification() },
             onCancelAnalysis: { session.cancelAnalysis() },
+            onDiscardSession: { appState.readingSpeedTracker.discardSession() },
             autoScrollHighlightEnabled: appState.settings.autoScrollHighlightEnabled,
             isProgrammaticScroll: session.isProgrammaticScroll,
             externalTabSelection: Bindable(session).externalTabSelection,
             selectedTab: Bindable(session).aiPanelSelectedTab,
             pendingChatPrompt: Bindable(session).pendingChatPrompt,
             isChatInputFocused: Bindable(session).isChatInputFocused,
-            scrollPercent: session.lastScrollPercent,
+            isAtChapterBottom: session.isAtChapterBottom,
             onApplyAdjustment: { appState.readingSpeedTracker.applyAdjustment($0) },
             expandedImage: Bindable(session).expandedImage
         )
