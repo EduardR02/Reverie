@@ -375,7 +375,7 @@ struct ProcessBookView: View {
                     Divider()
                         .padding(.vertical, 4)
                         .opacity(0.3)
-                    costDetailRow("Tokens (In)", formatTokenCount(estimatedInputTokens))
+                    costDetailRow("Tokens (In)", Formatters.formatTokenCount(Int(estimatedInputTokens)))
                     costDetailRow("Tokens (Out)", formatTokenRange(estimatedOutputTokensRange))
                     costDetailRow("Text Analysis", formatCostRange(textCostRange))
                     if appState.settings.imagesEnabled {
@@ -533,24 +533,47 @@ struct ProcessBookView: View {
             }
             .padding(.top, 20)
             
-            VStack(spacing: 8) {
-                Text(currentChapter.isEmpty ? "Preparing..." : currentChapter)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(theme.text)
-                    .lineLimit(1)
-                
-                Text("Estimated time remaining: \(formatRemainingTime())")
-                    .font(.system(size: 13))
-                    .foregroundColor(theme.muted)
-                
-                if appState.processingCostEstimate > 0 {
-                    Text(String(format: "$%.2f spent", appState.processingCostEstimate))
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                        .foregroundColor(theme.foam)
-                        .padding(.top, 4)
+            VStack(spacing: 12) {
+                VStack(spacing: 8) {
+                    Text(currentChapter.isEmpty ? "Preparing..." : currentChapter)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(theme.text)
+                        .lineLimit(1)
+                    
+                    Text("Estimated time remaining: \(formatRemainingTime())")
+                        .font(.system(size: 13))
+                        .foregroundColor(theme.muted)
+                    
+                    if appState.processingCostEstimate > 0 {
+                        Text(String(format: "$%.2f spent", appState.processingCostEstimate))
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(theme.foam)
+                            .padding(.top, 4)
+                    }
                 }
+                
+                inFlightRow
             }
         }
+    }
+
+    private var inFlightRow: some View {
+        HStack(spacing: 16) {
+            inFlightItem(icon: "doc.text", count: appState.processingInFlightSummaries, color: theme.gold)
+            inFlightItem(icon: "lightbulb", count: appState.processingInFlightInsights, color: theme.rose)
+            inFlightItem(icon: "photo", count: appState.processingInFlightImages, color: theme.foam)
+        }
+    }
+
+    private func inFlightItem(icon: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+            Text("\(count)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+        }
+        .foregroundColor(count > 0 ? color : theme.subtle)
+        .opacity(count > 0 ? 1.0 : 0.4)
     }
 
     // MARK: - Actions
@@ -705,19 +728,9 @@ struct ProcessBookView: View {
         return inputCost + outputCost
     }
 
-    private func formatTokenCount(_ tokens: Double) -> String {
-        if tokens > 1_000_000 {
-            return String(format: "%.1fM", tokens / 1_000_000)
-        } else if tokens > 1_000 {
-            return String(format: "%.0fK", tokens / 1_000)
-        } else {
-            return "\(Int(tokens))"
-        }
-    }
-
     private func formatTokenRange(_ range: ClosedRange<Double>) -> String {
-        let minText = formatTokenCount(range.lowerBound)
-        let maxText = formatTokenCount(range.upperBound)
+        let minText = Formatters.formatTokenCount(Int(range.lowerBound))
+        let maxText = Formatters.formatTokenCount(Int(range.upperBound))
         if minText == maxText {
             return minText
         }

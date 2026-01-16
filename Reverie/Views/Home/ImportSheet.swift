@@ -8,7 +8,6 @@ struct ImportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedURL: URL?
-    @State private var estimatedCost: String?
     @State private var dragOver = false
 
     var body: some View {

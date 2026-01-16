@@ -318,26 +318,71 @@ struct SettingsView: View {
             sectionHeader("Parameters", icon: "slider.horizontal.3")
 
             settingsCard {
-                ThemedSlider(
-                    value: $state.settings.temperature,
-                    range: 0.0...2.0,
-                    step: 0.1
-                ) { val in
-                    HStack {
-                        Text("Temperature")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(theme.muted)
+                VStack(spacing: 24) {
+                    ThemedSlider(
+                        value: $state.settings.temperature,
+                        range: 0.0...2.0,
+                        step: 0.1
+                    ) { val in
+                        HStack {
+                            Text("Temperature")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.muted)
 
-                        Spacer()
-                        
-                        Text(String(format: "%.1f", val))
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(theme.text)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .frame(minWidth: 48)
-                            .background(theme.overlay)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            Spacer()
+                            
+                            Text(String(format: "%.1f", val))
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundColor(theme.text)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .frame(minWidth: 48)
+                                .background(theme.overlay)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                    }
+
+                    Divider().background(theme.overlay)
+                    
+                    #if DEBUG
+                    ThemedToggle(
+                        isOn: $state.settings.useSimulationMode,
+                        label: "Simulation Mode",
+                        subtitle: "Test processing UI without using actual tokens"
+                    )
+                    
+                    Divider().background(theme.overlay)
+                    #endif
+
+                    ThemedSlider(
+                        value: Binding(
+                            get: { Double(state.settings.maxConcurrentRequests) },
+                            set: { state.settings.maxConcurrentRequests = Int($0) }
+                        ),
+                        range: 1.0...10.0,
+                        step: 1.0
+                    ) { val in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Concurrency Limit")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(theme.muted)
+                                Text("Maximum simultaneous LLM and image requests per provider")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(theme.subtle)
+                            }
+
+                            Spacer()
+                            
+                            Text("\(Int(val))")
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundColor(theme.text)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .frame(minWidth: 48)
+                                .background(theme.overlay)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
                     }
                 }
             }

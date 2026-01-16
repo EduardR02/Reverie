@@ -218,7 +218,12 @@ final class ChapterAnalyzer {
                     return ImageService.ImageSuggestionInput(excerpt: $0.excerpt, prompt: prompt, sourceBlockId: blockId)
                 }
                 
-                let results = await imageService.generateImages(from: inputs, model: settings.imageModel, apiKey: apiKey)
+                let results = await imageService.generateImages(
+                    from: inputs,
+                    model: settings.imageModel,
+                    apiKey: apiKey,
+                    maxConcurrent: settings.maxConcurrentRequests
+                )
                 for result in results {
                     if Task.isCancelled { break }
                     do {

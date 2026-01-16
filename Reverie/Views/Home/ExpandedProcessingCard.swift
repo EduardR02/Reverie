@@ -7,6 +7,8 @@ struct ExpandedProcessingCard: View {
     let totalChapters: Int
     let liveInsightCount: Int
     let liveQuizCount: Int
+    let liveImageCount: Int
+    let wordsPerInsight: Int
     let summaryPhase: String
     let insightPhase: String
     let liveInputTokens: Int
@@ -16,6 +18,7 @@ struct ExpandedProcessingCard: View {
     let processingCost: Double
 
     @Environment(\.theme) private var theme
+    @Environment(AppState.self) private var appState
 
     var body: some View {
         HStack(spacing: 20) {
@@ -63,6 +66,8 @@ struct ExpandedProcessingCard: View {
 
                     // Separate phase lines
                     phaseDisplay
+                    
+                    inFlightRow
                 }
 
                 // Telemetry grid
@@ -88,6 +93,13 @@ struct ExpandedProcessingCard: View {
                             label: "Questions",
                             color: theme.foam
                         )
+                        
+                        telemetryItem(
+                            icon: "photo.fill",
+                            value: "\(liveImageCount)",
+                            label: "Images",
+                            color: theme.iris
+                        )
                     }
 
                     HStack(spacing: 0) {
@@ -100,6 +112,13 @@ struct ExpandedProcessingCard: View {
 
                         tokenTelemetryItem()
 
+                        telemetryItem(
+                            icon: "text.word.spacing",
+                            value: wordsPerInsight > 0 ? "\(wordsPerInsight)" : "-",
+                            label: "Words/Ins.",
+                            color: theme.gold
+                        )
+                        
                         telemetryItem(
                             icon: "clock.fill",
                             value: estimatedTimeRemaining,
@@ -171,6 +190,32 @@ struct ExpandedProcessingCard: View {
         .frame(height: 32, alignment: .leading)
     }
 
+    private var inFlightRow: some View {
+        HStack(spacing: 12) {
+            Text("In Flight:".uppercased())
+                .font(.system(size: 8, weight: .black))
+                .foregroundColor(theme.subtle)
+            
+            inFlightItem(icon: "doc.text.fill", count: appState.processingInFlightSummaries, color: theme.gold)
+            inFlightItem(icon: "lightbulb.fill", count: appState.processingInFlightInsights, color: theme.rose)
+            inFlightItem(icon: "photo.fill", count: appState.processingInFlightImages, color: theme.foam)
+            
+            Spacer()
+        }
+        .padding(.top, 4)
+    }
+
+    private func inFlightItem(icon: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9))
+            Text("\(count)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+        }
+        .foregroundColor(count > 0 ? color : theme.subtle)
+        .opacity(count > 0 ? 1.0 : 0.3)
+    }
+
     // MARK: - Telemetry Item
 
     private func telemetryItem(icon: String, value: String, label: String, color: Color) -> some View {
@@ -206,26 +251,26 @@ struct ExpandedProcessingCard: View {
                 .frame(height: 12, alignment: .center)
 
             VStack(spacing: 2) {
-                HStack(spacing: 4) {
-                    Text("IN")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(theme.muted)
-                        .frame(width: 28, alignment: .trailing)
-                    Text(formatTokens(liveInputTokens))
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(theme.text)
-                        .lineLimit(1)
-                }
-                HStack(spacing: 4) {
-                    Text("OUT")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(theme.muted)
-                        .frame(width: 28, alignment: .trailing)
-                    Text(formatTokens(liveOutputTokens))
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(theme.text)
-                        .lineLimit(1)
-                }
+                    HStack(spacing: 4) {
+                        Text("IN")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(theme.muted)
+                            .frame(width: 28, alignment: .trailing)
+                        Text(Formatters.formatTokenCount(liveInputTokens))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(theme.text)
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 4) {
+                        Text("OUT")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(theme.muted)
+                            .frame(width: 28, alignment: .trailing)
+                        Text(Formatters.formatTokenCount(liveOutputTokens))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(theme.text)
+                            .lineLimit(1)
+                    }
             }
             .frame(height: 28, alignment: .center)
 
@@ -288,14 +333,5 @@ struct ExpandedProcessingCard: View {
         } else {
             return "< 1s"
         }
-    }
-
-    private func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000)
-        }
-        return "\(count)"
     }
 }

@@ -309,7 +309,7 @@ final class DatabaseService: @unchecked Sendable {
         try dbQueue.write { db in
             for (index, isGarbage) in classifications {
                 try db.execute(
-                    sql: "UPDATE chapters SET isGarbage = ? WHERE bookId = ? AND index = ?",
+                    sql: "UPDATE chapters SET isGarbage = ? WHERE bookId = ? AND \"index\" = ?",
                     arguments: [isGarbage, bookId, index]
                 )
             }

@@ -59,6 +59,9 @@ final class AppState {
     var processingCompletedChapters: Int = 0
     var processingTask: Task<Void, Never>?
     var processingCostEstimate: Double = 0
+    var processingInFlightSummaries: Int = 0
+    var processingInFlightInsights: Int = 0
+    var processingInFlightImages: Int = 0
 
     // Services
     nonisolated let database: DatabaseService
@@ -671,6 +674,8 @@ struct UserSettings: Codable, Equatable {
     var showReadingSpeedFooter: Bool = true
     var useCheapestModelForClassification: Bool = true
     var autoAIProcessingEnabled: Bool = true
+    var useSimulationMode: Bool = false
+    var maxConcurrentRequests: Int = 5
 
     static func load() -> UserSettings {
         guard let data = UserDefaults.standard.data(forKey: "userSettings"),

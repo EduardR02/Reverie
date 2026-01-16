@@ -5,6 +5,44 @@ final class LLMService {
     typealias StreamChunk = LLMStreamChunk
     private weak var appState: AppState?
     
+    enum RequestKind {
+        case summary
+        case insight
+        case other
+    }
+
+    private actor ConcurrencyLimiter {
+        private var inFlight: [LLMProvider: Int] = [:]
+        private var queues: [LLMProvider: [CheckedContinuation<Void, Never>]] = [:]
+
+        func acquire(provider: LLMProvider, limit: Int) async {
+            let currentLimit = max(1, limit)
+            let currentInFlight = inFlight[provider, default: 0]
+
+            if currentInFlight < currentLimit {
+                inFlight[provider] = currentInFlight + 1
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                queues[provider, default: []].append(continuation)
+            }
+        }
+
+        func release(provider: LLMProvider) {
+            if let queue = queues[provider], !queue.isEmpty {
+                var newQueue = queue
+                let next = newQueue.removeFirst()
+                queues[provider] = newQueue
+                next.resume()
+            } else {
+                inFlight[provider] = max(0, inFlight[provider, default: 0] - 1)
+            }
+        }
+    }
+
+    private let limiter = ConcurrencyLimiter()
+    
     // Set to true to capture real API responses into Documents/Reverie/Captures
     var recordMode: Bool = false
 
@@ -152,7 +190,8 @@ final class LLMService {
             reasoning: settings.insightReasoningLevel,
             schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
             webSearch: settings.webSearchEnabled,
-            nameHint: "chapter_analysis_stream"
+            nameHint: "chapter_analysis_stream",
+            kind: .insight
         )
 
         return streamChapterAnalysisEvents(
@@ -264,7 +303,8 @@ final class LLMService {
             apiKey: key,
             temperature: 0.3,
             reasoning: .off,
-            nameHint: "chapter_summary"
+            nameHint: "chapter_summary",
+            kind: .summary
         )
 
         return (response.summary, usage)
@@ -297,7 +337,8 @@ final class LLMService {
             temperature: settings.temperature,
             reasoning: .off,
             webSearch: false, // Explicitly false
-            nameHint: "distill_search"
+            nameHint: "distill_search",
+            kind: .other
         )
     }
 
@@ -323,7 +364,8 @@ final class LLMService {
             temperature: settings.temperature,
             reasoning: settings.chatReasoningLevel,
             webSearch: false, // Explicitly false
-            nameHint: "chat_stream"
+            nameHint: "chat_stream",
+            kind: .other
         )
     }
 
@@ -351,7 +393,8 @@ final class LLMService {
             reasoning: settings.insightReasoningLevel,
             schema: SchemaLibrary.annotationsOnly,
             webSearch: settings.webSearchEnabled,
-            nameHint: "more_insights_stream"
+            nameHint: "more_insights_stream",
+            kind: .insight
         )
 
         return streamChapterAnalysisEvents(
@@ -381,7 +424,8 @@ final class LLMService {
             reasoning: settings.insightReasoningLevel,
             schema: SchemaLibrary.quizOnly,
             webSearch: settings.webSearchEnabled, // Quiz generation also gets it
-            nameHint: "more_questions_stream"
+            nameHint: "more_questions_stream",
+            kind: .insight
         )
 
         return streamChapterAnalysisEvents(
@@ -411,7 +455,8 @@ final class LLMService {
             apiKey: key,
             temperature: 0.3,
             reasoning: .off,
-            nameHint: "chapter_classification"
+            nameHint: "chapter_classification",
+            kind: .other
         )
 
         var result: [Int: Bool] = [:]
@@ -484,12 +529,23 @@ final class LLMService {
         temperature: Double,
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
-        nameHint: String? = nil
+        nameHint: String? = nil,
+        kind: RequestKind
     ) async throws -> String {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
         }
+
+        let limit = appState?.settings.maxConcurrentRequests ?? 5
+        let currentLimiter = self.limiter
+        await currentLimiter.acquire(provider: provider, limit: limit)
+        defer { 
+            Task { await currentLimiter.release(provider: provider) }
+        }
+        
+        incrementInFlight(kind)
+        defer { decrementInFlight(kind) }
 
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
@@ -520,12 +576,23 @@ final class LLMService {
         temperature: Double,
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
-        nameHint: String? = nil
+        nameHint: String? = nil,
+        kind: RequestKind
     ) async throws -> T {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
         }
+
+        let limit = appState?.settings.maxConcurrentRequests ?? 5
+        let currentLimiter = self.limiter
+        await currentLimiter.acquire(provider: provider, limit: limit)
+        defer { 
+            Task { await currentLimiter.release(provider: provider) }
+        }
+
+        incrementInFlight(kind)
+        defer { decrementInFlight(kind) }
 
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
@@ -556,12 +623,23 @@ final class LLMService {
         temperature: Double,
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
-        nameHint: String? = nil
+        nameHint: String? = nil,
+        kind: RequestKind
     ) async throws -> (T, TokenUsage?) {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
         }
+
+        let limit = appState?.settings.maxConcurrentRequests ?? 5
+        let currentLimiter = self.limiter
+        await currentLimiter.acquire(provider: provider, limit: limit)
+        defer { 
+            Task { await currentLimiter.release(provider: provider) }
+        }
+
+        incrementInFlight(kind)
+        defer { decrementInFlight(kind) }
 
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
@@ -766,7 +844,8 @@ final class LLMService {
         reasoning: ReasoningLevel,
         schema: LLMStructuredSchema? = nil,
         webSearch: Bool = false,
-        nameHint: String? = nil
+        nameHint: String? = nil,
+        kind: RequestKind
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -776,6 +855,16 @@ final class LLMService {
                         continuation.finish(throwing: LLMError.noAPIKey(provider))
                         return
                     }
+
+                    let limit = appState?.settings.maxConcurrentRequests ?? 5
+                    let currentLimiter = self.limiter
+                    await currentLimiter.acquire(provider: provider, limit: limit)
+                    defer { 
+                        Task { await currentLimiter.release(provider: provider) }
+                    }
+                    
+                    incrementInFlight(kind)
+                    defer { decrementInFlight(kind) }
 
                     let client = providerClient(for: provider)
                     let request = try client.makeRequest(
@@ -869,6 +958,30 @@ final class LLMService {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func incrementInFlight(_ kind: RequestKind) {
+        guard let appState = self.appState else { return }
+        Task { @MainActor in
+            guard appState.isProcessingBook else { return }
+            switch kind {
+            case .summary: appState.processingInFlightSummaries += 1
+            case .insight: appState.processingInFlightInsights += 1
+            case .other: break
+            }
+        }
+    }
+
+    private func decrementInFlight(_ kind: RequestKind) {
+        guard let appState = self.appState else { return }
+        Task { @MainActor in
+            guard appState.isProcessingBook else { return }
+            switch kind {
+            case .summary: appState.processingInFlightSummaries = max(0, appState.processingInFlightSummaries - 1)
+            case .insight: appState.processingInFlightInsights = max(0, appState.processingInFlightInsights - 1)
+            case .other: break
+            }
         }
     }
 

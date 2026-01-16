@@ -6,7 +6,6 @@ struct HomeView: View {
     @Environment(\.theme) private var theme
 
     @State private var books: [Book] = []
-    @State private var isLoading = false
     @State private var showImportSheet = false
     @State private var dragOver = false
 
@@ -17,6 +16,8 @@ struct HomeView: View {
     @State private var liveSummaryCount = 0
     @State private var liveInsightCount = 0
     @State private var liveQuizCount = 0
+    @State private var liveImageCount = 0
+    @State private var liveWordsPerInsight = 0
     @State private var processingStartTime: Date?
     @State private var summaryPhase = ""
     @State private var insightPhase = ""
@@ -267,6 +268,8 @@ struct HomeView: View {
             totalChapters: appState.processingTotalChapters,
             liveInsightCount: liveInsightCount,
             liveQuizCount: liveQuizCount,
+            liveImageCount: liveImageCount,
+            wordsPerInsight: liveWordsPerInsight,
             summaryPhase: summaryPhase,
             insightPhase: insightPhase,
             liveInputTokens: liveInputTokens,
@@ -381,13 +384,52 @@ struct HomeView: View {
     private func startProcessing(_ book: Book, range: ClosedRange<Int>? = nil, includeContext: Bool = false) {
         guard !appState.isProcessingBook else { return }
         bookToProcess = nil  // Close sheet immediately
+        
+        let processor = BookProcessor(
+            appState: appState,
+            book: book,
+            range: range,
+            includeContext: includeContext,
+            isSimulation: appState.settings.useSimulationMode
+        )
+        
+        // Setup telemetry
+        processor.onSummaryCountUpdate = { liveSummaryCount = $0 }
+        processor.onInsightCountUpdate = { liveInsightCount = $0 }
+        processor.onQuizCountUpdate = { liveQuizCount = $0 }
+        processor.onImageCountUpdate = { liveImageCount = $0 }
+        processor.onWordsPerInsightUpdate = { liveWordsPerInsight = $0 }
+        processor.onUsageUpdate = { input, output in
+            liveInputTokens = input
+            liveOutputTokens = output
+        }
+        processor.onPhaseUpdate = { summary, insight in
+            summaryPhase = summary
+            insightPhase = insight
+        }
+        processor.onCostUpdate = { _ in } // appState.processingCostEstimate is updated by processor
+        
+        processingStartTime = Date()
+        
         let previousTask = appState.processingTask
         previousTask?.cancel()
         appState.processingTask = Task { [previousTask] in
             if let previousTask {
                 await previousTask.value
             }
-            await processFullBook(book, range: range, includeContext: includeContext)
+            await processor.process()
+            
+            // Cleanup on finish
+            processingStartTime = nil
+            liveSummaryCount = 0
+            liveInsightCount = 0
+            liveQuizCount = 0
+            liveImageCount = 0
+            liveWordsPerInsight = 0
+            liveInputTokens = 0
+            liveOutputTokens = 0
+            summaryPhase = ""
+            insightPhase = ""
         }
     }
 
@@ -450,7 +492,6 @@ struct HomeView: View {
     }
 
     private func importBook(_ url: URL) async {
-        isLoading = true
         importError = nil
 
         // Start accessing security-scoped resource
@@ -459,7 +500,6 @@ struct HomeView: View {
             if accessGranted {
                 url.stopAccessingSecurityScopedResource()
             }
-            isLoading = false
         }
 
         do {
@@ -560,14 +600,12 @@ struct HomeView: View {
     enum ImportError: Error {
         case fileNotFound
         case notValidEPUB
-        case noChaptersFound
         case bookSaveFailed
 
         var message: String {
             switch self {
             case .fileNotFound: return "File not found or inaccessible"
             case .notValidEPUB: return "Not a valid EPUB file"
-            case .noChaptersFound: return "No chapters found in EPUB"
             case .bookSaveFailed: return "Failed to save book to database"
             }
         }
@@ -586,537 +624,16 @@ struct HomeView: View {
             }
         }
 
-        if isJpegData(cover.data) { return "jpg" }
-        if isPngData(cover.data) { return "png" }
-        if isGifData(cover.data) { return "gif" }
-        if isWebpData(cover.data) { return "webp" }
-        if isBmpData(cover.data) { return "bmp" }
-        if isSvgData(cover.data) { return "svg" }
+        if cover.data.isJpeg() { return "jpg" }
+        if cover.data.isPng() { return "png" }
+        if cover.data.isGif() { return "gif" }
+        if cover.data.isWebp() { return "webp" }
+        if cover.data.isBmp() { return "bmp" }
+        if cover.data.isSvg() { return "svg" }
 
         return "jpg"
     }
 
-    private func isJpegData(_ data: Data) -> Bool {
-        let bytes = [UInt8](data.prefix(3))
-        return bytes.count == 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF
-    }
-
-    private func isPngData(_ data: Data) -> Bool {
-        let bytes = [UInt8](data.prefix(8))
-        return bytes.count == 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47
-    }
-
-    private func isGifData(_ data: Data) -> Bool {
-        let bytes = [UInt8](data.prefix(4))
-        return bytes.count == 4 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38
-    }
-
-    private func isWebpData(_ data: Data) -> Bool {
-        let bytes = [UInt8](data.prefix(12))
-        return bytes.count == 12
-            && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
-            && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50
-    }
-
-    private func isBmpData(_ data: Data) -> Bool {
-        let bytes = [UInt8](data.prefix(2))
-        return bytes.count == 2 && bytes[0] == 0x42 && bytes[1] == 0x4D
-    }
-
-    private func isSvgData(_ data: Data) -> Bool {
-        let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
-        return text?.range(of: "<svg", options: .caseInsensitive) != nil
-    }
-
-    private struct InsightWorkItem {
-        let chapter: Chapter
-        let blocks: [ContentBlock]
-        let contentWithBlocks: String
-        let rollingSummary: String?
-    }
-
-    private func appendRollingSummary(_ existing: String?, summary: String) -> String? {
-        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return existing }
-        if let existing, !existing.isEmpty {
-            return existing + "\n\n" + trimmed
-        }
-        return trimmed
-    }
-
-    private func processFullBook(_ book: Book, range: ClosedRange<Int>? = nil, includeContext: Bool = false) async {
-        let isSimulation = false // Set to true to test UI without using tokens
-        
-        appState.isProcessingBook = true
-        appState.processingBookId = book.id
-        appState.processingProgress = 0
-        appState.processingCompletedChapters = 0
-        appState.processingTotalChapters = 0
-        appState.processingChapter = "Preparing..."
-        appState.processingCostEstimate = 0
-
-        // Initialize streaming state
-        liveSummaryCount = 0
-        liveInsightCount = 0
-        liveQuizCount = 0
-        liveInputTokens = 0
-        liveOutputTokens = 0
-        summaryPhase = ""
-        insightPhase = ""
-        processingStartTime = Date()
-
-        defer {
-            appState.isProcessingBook = false
-            appState.processingTask = nil
-            appState.processingBookId = nil
-            appState.processingChapter = ""
-            // Reset streaming state
-            liveSummaryCount = 0
-            liveInsightCount = 0
-            liveQuizCount = 0
-            liveInputTokens = 0
-            liveOutputTokens = 0
-            summaryPhase = ""
-            insightPhase = ""
-            processingStartTime = nil
-        }
-
-        // Track all running insight tasks for true parallelism
-        var runningInsightTasks: [Task<Void, Error>] = []
-        var runningInsightCount = 0
-        var lastInsightTitle: String?
-
-        func updateInsightPhase() {
-            guard runningInsightCount > 0 else {
-                insightPhase = ""
-                if summaryPhase.isEmpty {
-                    appState.processingChapter = ""
-                }
-                return
-            }
-
-            let title = lastInsightTitle ?? "Insights"
-            let suffix = runningInsightCount > 1 ? " (+\(runningInsightCount - 1) more)" : ""
-            insightPhase = "\(title)\(suffix)"
-            if summaryPhase.isEmpty {
-                appState.processingChapter = "Insights: \(insightPhase)"
-            }
-        }
-
-        func cancelAllInsightTasks() async {
-            for task in runningInsightTasks {
-                task.cancel()
-            }
-            for task in runningInsightTasks {
-                _ = try? await task.value
-            }
-            runningInsightTasks.removeAll()
-        }
-
-        do {
-            guard let bookId = book.id else { return }
-            let allChapters = try appState.database.fetchChapters(for: book)
-            
-            // Filter by range if provided
-            let effectiveRange = range ?? 0...(allChapters.count - 1)
-            let chaptersInRange = allChapters.filter { effectiveRange.contains($0.index) }
-            
-            // Only count chapters that actually require processing for the total
-            let chaptersToProcess = chaptersInRange.filter { !$0.shouldSkipAutoProcessing && !$0.processed }
-            appState.processingTotalChapters = chaptersToProcess.count
-
-            if chaptersToProcess.isEmpty {
-                appState.processingProgress = 1.0
-                summaryPhase = "Complete!"
-                appState.processingChapter = "Complete!"
-                return
-            }
-
-            let blockParser = ContentBlockParser()
-            var rollingSummary: String?
-
-            // Phase 1: Context building (if requested and starting mid-book)
-            if includeContext && effectiveRange.lowerBound > 0 {
-                appState.processingChapter = "Building context..."
-                let contextChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
-                
-                for chapter in contextChapters {
-                    if Task.isCancelled { return }
-                    
-                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !existingSummary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
-                    } else if !chapter.shouldSkipAutoProcessing {
-                        // Need to generate summary for context
-                        summaryPhase = "Context: \(chapter.title)"
-                        let (_, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
-                        let (generatedSummary, usage) = try await appState.llmService.generateSummary(
-                            contentWithBlocks: contentWithBlocks,
-                            rollingSummary: rollingSummary,
-                            settings: appState.settings
-                        )
-                        if let usage {
-                            liveInputTokens += usage.input
-                            liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
-                        }
-                        
-                        // Save summary for future use
-                        var updatedChapter = chapter
-                        updatedChapter.summary = generatedSummary
-                        updatedChapter.rollingSummary = rollingSummary
-                        try appState.database.saveChapter(&updatedChapter)
-                        
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: generatedSummary)
-                    }
-                }
-            } else if effectiveRange.lowerBound > 0 {
-                // Not building context, but we might still want to reuse existing summaries for rolling context if they exist
-                let previousChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
-                for chapter in previousChapters {
-                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !existingSummary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
-                    }
-                }
-            }
-
-            // Phase 2: Processing range
-            liveSummaryCount = 0
-            appState.processingCompletedChapters = 0
-            
-            for chapter in chaptersInRange {
-                if Task.isCancelled {
-                    await cancelAllInsightTasks()
-                    return
-                }
-
-                if chapter.shouldSkipAutoProcessing {
-                    continue
-                }
-
-                if chapter.processed {
-                    if let summary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !summary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
-                    }
-                    continue
-                }
-
-                // Update summary phase UI
-                summaryPhase = chapter.title
-                appState.processingChapter = "Summarizing: \(chapter.title)"
-                appState.processingProgress = Double(appState.processingCompletedChapters)
-                    / Double(max(1, appState.processingTotalChapters))
-
-                let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
-                let chapterRollingSummary = rollingSummary
-
-                let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let reuseSummary = (existingSummary?.isEmpty == false) && chapter.rollingSummary == chapterRollingSummary
-                let summary: String
-                if reuseSummary {
-                    summary = existingSummary ?? ""
-                } else if isSimulation {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000) // Simulate 1s latency
-                    summary = "This is a simulated summary for chapter \(chapter.index + 1). Simulation mode is active."
-                    liveInputTokens += 1000
-                    liveOutputTokens += 500
-                    appState.processingCostEstimate += 0.02
-                } else {
-                    let (generatedSummary, usage) = try await appState.llmService.generateSummary(
-                        contentWithBlocks: contentWithBlocks,
-                        rollingSummary: chapterRollingSummary,
-                        settings: appState.settings
-                    )
-                    summary = generatedSummary
-                    if let usage {
-                        liveInputTokens += usage.input
-                        liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
-                    }
-                }
-
-                var updatedChapter = chapter
-                updatedChapter.summary = summary
-                updatedChapter.rollingSummary = chapterRollingSummary
-                updatedChapter.contentText = contentWithBlocks
-                updatedChapter.blockCount = blocks.count
-                if !isSimulation {
-                    try appState.database.saveChapter(&updatedChapter)
-                }
-
-                liveSummaryCount += 1
-                rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
-
-                if Task.isCancelled {
-                    await cancelAllInsightTasks()
-                    return
-                }
-
-                // Fire insight task in parallel - DO NOT AWAIT
-                let workItem = InsightWorkItem(
-                    chapter: updatedChapter,
-                    blocks: blocks,
-                    contentWithBlocks: contentWithBlocks,
-                    rollingSummary: chapterRollingSummary
-                )
-                let chapterTitle = chapter.title
-                lastInsightTitle = chapterTitle
-                runningInsightCount += 1
-                updateInsightPhase()
-
-                let task = Task { @MainActor in
-                    defer {
-                        runningInsightCount -= 1
-                        updateInsightPhase()
-                    }
-                    guard let chapterId = workItem.chapter.id else { return }
-                    
-                    let analysis = try await processInsights(
-                        for: workItem,
-                        bookId: bookId,
-                        bookTitle: book.title,
-                        author: book.author,
-                        isSimulation: isSimulation
-                    )
-
-                    if !isSimulation, let analysis {
-                        try appState.database.saveAnalysis(analysis, chapterId: chapterId, blockCount: workItem.blocks.count)
-                        
-                        await generateSuggestedImages(
-                            analysis.imageSuggestions,
-                            blockCount: workItem.blocks.count,
-                            bookId: bookId,
-                            chapterId: chapterId
-                        )
-
-                        var updatedChapter = workItem.chapter
-                        updatedChapter.processed = true
-                        if updatedChapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
-                            updatedChapter.summary = analysis.summary
-                        }
-                        updatedChapter.contentText = workItem.contentWithBlocks
-                        updatedChapter.blockCount = workItem.blocks.count
-                        try appState.database.saveChapter(&updatedChapter)
-                    }
-                    
-                    appState.processingCompletedChapters += 1
-                    appState.processingProgress = Double(appState.processingCompletedChapters)
-                        / Double(max(1, appState.processingTotalChapters))
-                }
-                runningInsightTasks.append(task)
-
-                // Continue to next summary immediately - don't await insights!
-            }
-
-            // All summaries done, now wait for remaining insight tasks
-            summaryPhase = ""
-            updateInsightPhase()
-            if insightPhase.isEmpty {
-                appState.processingChapter = "Finalizing..."
-            }
-
-            for task in runningInsightTasks {
-                if Task.isCancelled {
-                    await cancelAllInsightTasks()
-                    return
-                }
-                do {
-                    try await task.value
-                } catch is CancellationError {
-                    await cancelAllInsightTasks()
-                    return
-                } catch {
-                    print("Insight task failed: \(error)")
-                }
-            }
-
-            // Mark book as fully processed if all eligible chapters are done
-            if !isSimulation {
-                let freshChapters = (try? appState.database.fetchChapters(for: book)) ?? []
-                let allEligibleDone = freshChapters.filter { !$0.shouldSkipAutoProcessing }.allSatisfy { $0.processed }
-                
-                if allEligibleDone {
-                    if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
-                        updatedBook.processedFully = true
-                        try appState.database.saveBook(&updatedBook)
-                    }
-                }
-            }
-
-            appState.processingProgress = 1.0
-            insightPhase = ""
-            appState.processingChapter = "Complete!"
-
-            await loadBooks()
-
-        } catch {
-            await cancelAllInsightTasks()
-            if error is CancellationError {
-                return
-            }
-            print("Failed to process book: \(error)")
-        }
-    }
-
-    @MainActor
-    private func processInsights(
-        for workItem: InsightWorkItem,
-        bookId: Int64,
-        bookTitle: String?,
-        author: String?,
-        isSimulation: Bool
-    ) async throws -> LLMService.ChapterAnalysis? {
-        var analysis: LLMService.ChapterAnalysis?
-
-        if isSimulation {
-            // Simulate a stream of events
-            for i in 1...5 {
-                try? await Task.sleep(nanoseconds: UInt64.random(in: 100_000_000...500_000_000))
-                if Task.isCancelled { throw CancellationError() }
-                
-                if i % 2 == 0 {
-                    liveInsightCount += 1
-                } else if i == 5 {
-                    liveQuizCount += 1
-                }
-                
-                liveInputTokens += Int.random(in: 1000...3000)
-                liveOutputTokens += Int.random(in: 500...1500)
-                appState.processingCostEstimate += Double.random(in: 0.01...0.05)
-            }
-            
-            analysis = LLMService.ChapterAnalysis(
-                annotations: [
-                    LLMService.AnnotationData(
-                        type: "science",
-                        title: "Simulated Science Insight",
-                        content: "This is a simulated insight content for chapter \(workItem.chapter.index + 1).",
-                        sourceBlockId: 1
-                    )
-                ],
-                quizQuestions: [
-                    LLMService.QuizData(
-                        question: "Simulated question for chapter \(workItem.chapter.index + 1)?",
-                        answer: "Simulated answer.",
-                        sourceBlockId: 1
-                    )
-                ],
-                imageSuggestions: [],
-                summary: "Simulated summary for chapter \(workItem.chapter.index + 1)."
-            )
-        } else {
-            // Use streaming API for live telemetry
-            let stream = appState.llmService.analyzeChapterStreaming(
-                contentWithBlocks: workItem.contentWithBlocks,
-                rollingSummary: workItem.rollingSummary,
-                bookTitle: bookTitle,
-                author: author,
-                settings: appState.settings
-            )
-
-            for try await event in stream {
-                if Task.isCancelled { throw CancellationError() }
-
-                switch event {
-                case .thinking:
-                    break  // Not displaying thinking in takeover view
-                case .insightFound:
-                    liveInsightCount += 1
-                case .quizQuestionFound:
-                    liveQuizCount += 1
-                case .usage(let usage):
-                    liveInputTokens += usage.input
-                    liveOutputTokens += usage.visibleOutput + (usage.reasoning ?? 0)
-                case .completed(let result):
-                    analysis = result
-                }
-            }
-        }
-
-        if Task.isCancelled { throw CancellationError() }
-
-        return analysis
-    }
-
-    private func generateSuggestedImages(
-        _ suggestions: [LLMService.ImageSuggestion],
-        blockCount: Int,
-        bookId: Int64,
-        chapterId: Int64
-    ) async {
-        guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
-        if Task.isCancelled { return }
-
-        let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            print("Skipping image generation: missing Google API key.")
-            return
-        }
-
-        let inputs = imageInputs(
-            from: suggestions,
-            blockCount: blockCount,
-            rewrite: appState.settings.rewriteImageExcerpts
-        )
-        let results = await appState.imageService.generateImages(
-            from: inputs,
-            model: appState.settings.imageModel,
-            apiKey: trimmedKey,
-            maxConcurrent: 5
-        )
-        if Task.isCancelled { return }
-
-        await storeGeneratedImages(
-            results,
-            bookId: bookId,
-            chapterId: chapterId
-        )
-    }
-
-    private func imageInputs(
-        from suggestions: [LLMService.ImageSuggestion],
-        blockCount: Int,
-        rewrite: Bool
-    ) -> [ImageService.ImageSuggestionInput] {
-        suggestions.map { suggestion in
-            let validBlockId = suggestion.sourceBlockId > 0 && suggestion.sourceBlockId <= blockCount
-                ? suggestion.sourceBlockId : 1
-            let excerpt = suggestion.excerpt
-            let prompt = appState.llmService.imagePromptFromExcerpt(excerpt, rewrite: rewrite)
-            return ImageService.ImageSuggestionInput(
-                excerpt: excerpt,
-                prompt: prompt,
-                sourceBlockId: validBlockId
-            )
-        }
-    }
-
-    private func storeGeneratedImages(
-        _ results: [ImageService.GeneratedImageResult],
-        bookId: Int64,
-        chapterId: Int64
-    ) async {
-        for result in results {
-            if Task.isCancelled { return }
-            do {
-                let imagePath = try appState.imageService.saveImage(
-                    result.imageData,
-                    for: bookId,
-                    chapterId: chapterId
-                )
-                var image = GeneratedImage(
-                    chapterId: chapterId,
-                    prompt: result.excerpt,
-                    imagePath: imagePath,
-                    sourceBlockId: result.sourceBlockId
-                )
-                try appState.database.saveImage(&image)
-                appState.readingStats.recordImage()
-            } catch {
-                print("Failed to save image: \(error)")
-            }
-        }
-    }
 }
 
 // MARK: - EPUB UTType Extension

@@ -269,7 +269,7 @@ struct StatsView: View {
 
                 Spacer()
 
-                Text(formatNumber(total))
+                Text(Formatters.formatTokenCount(total))
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
                     .foregroundColor(theme.text)
             }
@@ -693,7 +693,7 @@ struct TokenBar: View {
 
                 Spacer()
 
-                Text(formatTokens(value))
+                Text(Formatters.formatTokenCount(value))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(theme.muted)
             }

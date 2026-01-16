@@ -117,7 +117,9 @@ final class ImageService {
         from suggestions: [ImageSuggestionInput],
         model: ImageModel,
         apiKey: String,
-        maxConcurrent: Int = 5
+        maxConcurrent: Int = 5,
+        onRequestStart: (@Sendable () -> Void)? = nil,
+        onRequestFinish: (@Sendable () -> Void)? = nil
     ) async -> [GeneratedImageResult] {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty, !suggestions.isEmpty else {
@@ -126,6 +128,8 @@ final class ImageService {
 
         let limit = max(1, maxConcurrent)
         let results = await mapWithConcurrency(items: suggestions, maxConcurrent: limit) { suggestion in
+            onRequestStart?()
+            defer { onRequestFinish?() }
             do {
                 let data = try await self.generateImage(
                     prompt: suggestion.prompt,
