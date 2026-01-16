@@ -69,29 +69,55 @@ struct SelectableText: NSViewRepresentable {
             .paragraphStyle: paragraphStyle
         ]
 
-        textView.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+        let attributedString = NSAttributedString(string: text, attributes: attributes)
+        
+        if textView.attributedString() != attributedString {
+            textView.textStorage?.setAttributedString(attributedString)
+            textView.invalidateIntrinsicContentSize()
+        }
+
         textView.selectedTextAttributes = [
             .backgroundColor: NSColor(theme.rose),
             .foregroundColor: NSColor(theme.base)
         ]
-        textView.invalidateIntrinsicContentSize()
     }
 }
 
 final class IntrinsicTextView: NSTextView {
+    private var cachedSize: NSSize?
+    private var lastKnownWidth: CGFloat = 0
+
     override var intrinsicContentSize: NSSize {
+        if let cachedSize = cachedSize {
+            return cachedSize
+        }
+
         guard let textContainer = textContainer,
               let layoutManager = layoutManager else {
             return super.intrinsicContentSize
         }
-        layoutManager.ensureLayout(for: textContainer)
+
+        // We avoid calling ensureLayout here to prevent re-entrancy warnings.
+        // The usedRect(for:) will trigger layout if needed, but we rely on
+        // it being called in a safe context or being mostly ready.
         let rect = layoutManager.usedRect(for: textContainer)
-        let height = rect.height + textContainerInset.height * 2
-        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(height))
+        let height = ceil(rect.height + textContainerInset.height * 2)
+        let size = NSSize(width: NSView.noIntrinsicMetric, height: height)
+        cachedSize = size
+        return size
     }
 
     override func layout() {
         super.layout()
-        textContainer?.containerSize = NSSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude)
+        if bounds.width != lastKnownWidth {
+            lastKnownWidth = bounds.width
+            textContainer?.containerSize = NSSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude)
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override func invalidateIntrinsicContentSize() {
+        cachedSize = nil
+        super.invalidateIntrinsicContentSize()
     }
 }

@@ -17,6 +17,15 @@ final class LLMService {
             self.session = session
         } else {
             let config = URLSessionConfiguration.default
+            /*
+             * Disable HTTP/3 (QUIC) to avoid reliability issues like EMSGSIZE or MTU mismatches
+             * in certain network environments. While HTTP/3 offers faster handshakes and better
+             * performance on lossy links, HTTP/2 via TCP is more universally stable for long-running
+             * LLM streams. KVC is used for allowsHTTP3 to maintain compatibility with older SDKs.
+             */
+            if config.responds(to: NSSelectorFromString("setAllowsHTTP3:")) {
+                config.setValue(false, forKey: "allowsHTTP3")
+            }
             config.timeoutIntervalForRequest = 600 // 10 minutes
             config.timeoutIntervalForResource = 600
             self.session = URLSession(configuration: config)
