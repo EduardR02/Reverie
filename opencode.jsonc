@@ -85,7 +85,7 @@
       "description": "Final verification with gpt-5.2-codex. SLOW (15-30 min). Finds the most elusive bugs.",
       "mode": "subagent",
       "model": "openai/gpt-5.2-codex",
-      "reasoningEffort": "xhigh",
+      "reasoningEffort": "high",
       "reasoningSummary": "auto",
       "temperature": 0.1,
       "tools": {

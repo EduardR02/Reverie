@@ -178,11 +178,14 @@ class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) static var stubResponse: URLResponse?
     nonisolated(unsafe) static var stubError: Error?
     nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (URLResponse, Data))?
+    nonisolated(unsafe) static var requestCount: Int = 0
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.requestCount += 1
+        
         if let error = MockURLProtocol.stubError {
             client?.urlProtocol(self, didFailWithError: error)
             return

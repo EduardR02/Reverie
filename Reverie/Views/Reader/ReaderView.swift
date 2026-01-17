@@ -40,6 +40,11 @@ struct ReaderView: View {
             session.persistCurrentProgress()
             Task { await session.loadChapter(at: idx) } 
         }
+        .onChange(of: appState.settings.fontSize) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+        .onChange(of: appState.settings.fontFamily) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+        .onChange(of: appState.settings.lineSpacing) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+        .onChange(of: appState.settings.theme) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+        .onChange(of: appState.settings.inlineAIImages) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
         .onChange(of: session.aiPanelSelectedTab) { old, new in session.handleTabChange(from: old, to: new) }
         .onChange(of: session.expandedImage) { old, new in session.handleExpandedImageChange(from: old, to: new) }
     }

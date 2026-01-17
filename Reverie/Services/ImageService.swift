@@ -4,26 +4,17 @@ import AppKit
 /// Image generation service using Google Gemini (Image Generation)
 @MainActor
 final class ImageService {
-    private let session: URLSession
+    private let session: ResilientSession
 
     init() {
         let config = URLSessionConfiguration.default
-        /*
-         * Disable HTTP/3 (QUIC) to avoid reliability issues like EMSGSIZE or MTU mismatches
-         * in certain network environments. While HTTP/3 offers faster handshakes and better
-         * performance on lossy links, HTTP/2 via TCP is more universally stable for large
-         * image payloads. KVC is used for allowsHTTP3 to maintain compatibility with older SDKs.
-         */
-        if config.responds(to: NSSelectorFromString("setAllowsHTTP3:")) {
-            config.setValue(false, forKey: "allowsHTTP3")
-        }
         config.timeoutIntervalForRequest = 600
         config.timeoutIntervalForResource = 600
-        self.session = URLSession(configuration: config)
+        self.session = ResilientSession(configuration: config)
     }
 
     init(session: URLSession) {
-        self.session = session
+        self.session = ResilientSession(session: session)
     }
 
     struct ImageSuggestionInput {
@@ -83,18 +74,7 @@ final class ImageService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let error = errorJson["error"] as? [String: Any],
-               let message = error["message"] as? String {
-                throw ImageError.apiError(message)
-            }
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ImageError.httpError(statusCode)
-        }
+        let data = try await performRequest(request)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = json["candidates"] as? [[String: Any]],
@@ -257,6 +237,24 @@ final class ImageService {
             offset = chunkEnd
         }
         return nil
+    }
+
+    private func performRequest(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ImageError.invalidResponse
+        }
+
+        if httpResponse.statusCode != 200 {
+            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = errorJson["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                throw ImageError.apiError(message)
+            }
+            throw ImageError.httpError(httpResponse.statusCode)
+        }
+
+        return data
     }
 
     private func mapWithConcurrency<T: Sendable, U: Sendable>(

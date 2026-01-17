@@ -1,6 +1,6 @@
 import Foundation
 
-protocol LLMProviderClient {
+protocol LLMProviderClient: Sendable {
     func makeRequest(
         prompt: LLMRequestPrompt,
         model: String,

@@ -71,6 +71,7 @@ struct SelectableText: NSViewRepresentable {
 
         let attributedString = NSAttributedString(string: text, attributes: attributes)
         
+        // Invalidate cache when text changes
         if textView.attributedString() != attributedString {
             textView.textStorage?.setAttributedString(attributedString)
             textView.invalidateIntrinsicContentSize()
@@ -97,9 +98,9 @@ final class IntrinsicTextView: NSTextView {
             return super.intrinsicContentSize
         }
 
-        // We avoid calling ensureLayout here to prevent re-entrancy warnings.
-        // The usedRect(for:) will trigger layout if needed, but we rely on
-        // it being called in a safe context or being mostly ready.
+        // ensureLayout is required for accurate height - usedRect alone returns stale values.
+        // This may trigger re-entrancy warnings in Xcode console but they're benign.
+        layoutManager.ensureLayout(for: textContainer)
         let rect = layoutManager.usedRect(for: textContainer)
         let height = ceil(rect.height + textContainerInset.height * 2)
         let size = NSSize(width: NSView.noIntrinsicMetric, height: height)

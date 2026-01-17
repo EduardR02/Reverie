@@ -139,4 +139,53 @@ final class ReaderSessionTests: XCTestCase {
 
         XCTAssertEqual(combined, baseCounts)
     }
+
+    func test_loadChapter_guard_skipsSameChapterWithoutForce() async {
+        // Given
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        book.importStatus = .complete
+        try? database.saveBook(&book)
+        appState.currentBook = book
+        
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C1", contentHTML: "p1")
+        try? database.saveChapter(&chapter)
+        
+        session.setup(with: appState)
+        await session.loadChapters() // Loads chapter 0
+        
+        let originalChapterId = session.currentChapter?.id
+        XCTAssertNotNil(originalChapterId)
+        
+        // Reset scrollToPercent to check if it's touched again
+        session.scrollToPercent = nil
+        
+        // When
+        await session.loadChapter(at: 0, force: false)
+        
+        // Then
+        XCTAssertNil(session.scrollToPercent)
+    }
+    
+    func test_loadChapter_guard_proceedsWithForce() async {
+        // Given
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        book.importStatus = .complete
+        try? database.saveBook(&book)
+        appState.currentBook = book
+        
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C1", contentHTML: "p1")
+        try? database.saveChapter(&chapter)
+        
+        session.setup(with: appState)
+        await session.loadChapters()
+        
+        session.lastScrollOffset = 123.45
+        session.scrollToOffset = nil // Reset before forced reload
+        
+        // When
+        await session.loadChapter(at: 0, force: true)
+        
+        // Then
+        XCTAssertEqual(session.scrollToOffset, 123.45)
+    }
 }

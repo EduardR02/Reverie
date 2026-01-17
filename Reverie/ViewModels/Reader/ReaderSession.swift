@@ -179,24 +179,24 @@ final class ReaderSession {
                                     appState.readingStats.addReadingTime(result.seconds)
                                 }
                             }
-                            self.currentChapter = fresh[idx]
-                            // Now loadChapter will trigger processCurrentChapter with classification complete
-                            await self.loadChapter(at: appState.currentChapterIndex)
-                        }
+                        self.currentChapter = fresh[idx]
+                        // Now loadChapter will trigger processCurrentChapter with classification complete
+                        await self.loadChapter(at: appState.currentChapterIndex, force: true)
                     }
-                } catch {
-                    // Classification failed - don't update status, leave as pending/failed
                 }
+            } catch {
+                // Classification failed - don't update status, leave as pending/failed
             }
-            backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-            backgroundTasks.append(classificationTask)
-        } catch {
-            loadError = error.localizedDescription
-            isLoadingChapters = false
         }
+        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
+        backgroundTasks.append(classificationTask)
+    } catch {
+        loadError = error.localizedDescription
+        isLoadingChapters = false
     }
+}
 
-    func loadChapter(at index: Int) async {
+    func loadChapter(at index: Int, force: Bool = false) async {
         chapterLoadTask?.cancel()
         chapterLoadTask = Task { @MainActor in
             guard let appState = appState, let book = appState.currentBook, index >= 0, index < chapters.count else { return }
@@ -208,6 +208,11 @@ final class ReaderSession {
             let chapter = chapters[index]
             guard !Task.isCancelled else { return }
             let sameChapter = currentChapter?.id == chapter.id
+            
+            if sameChapter && pendingAnchor == nil && !force {
+                return
+            }
+
             if !sameChapter {
                 cancelAnalysis()
                 pendingMarkerInjections.removeAll()
@@ -233,11 +238,15 @@ final class ReaderSession {
                 lastScrollPercent = 0; lastScrollOffset = 0
                 didRestoreInitialPosition = true
             } else if sameChapter {
-                didRestoreInitialPosition = true
+                if force {
+                    if lastScrollOffset > 0 { scrollToOffset = lastScrollOffset }
+                    else { scrollToPercent = lastScrollPercent }
+                    didRestoreInitialPosition = true
+                }
             } else {
                 let restoring = !didRestoreInitialPosition && index == book.currentChapter
                 if restoring {
-                    if book.currentScrollOffset > 0 { scrollToOffset = book.currentScrollOffset } 
+                    if book.currentScrollOffset > 0 { scrollToOffset = book.currentScrollOffset }
                     else { scrollToPercent = book.currentScrollPercent }
                     lastScrollPercent = book.currentScrollPercent
                     lastScrollOffset = book.currentScrollOffset
@@ -745,7 +754,7 @@ final class ReaderSession {
                             }
                         }
                         self.currentChapter = fresh[idx]
-                        await self.loadChapter(at: appState.currentChapterIndex)
+                        await self.loadChapter(at: appState.currentChapterIndex, force: true)
                     }
                 }
             } catch {

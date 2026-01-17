@@ -46,27 +46,18 @@ final class LLMService {
     // Set to true to capture real API responses into Documents/Reverie/Captures
     var recordMode: Bool = false
 
-    private let session: URLSession
+    private let session: ResilientSession
 
     init(appState: AppState? = nil, session: URLSession? = nil) {
         self.appState = appState
         
         if let session = session {
-            self.session = session
+            self.session = ResilientSession(session: session)
         } else {
             let config = URLSessionConfiguration.default
-            /*
-             * Disable HTTP/3 (QUIC) to avoid reliability issues like EMSGSIZE or MTU mismatches
-             * in certain network environments. While HTTP/3 offers faster handshakes and better
-             * performance on lossy links, HTTP/2 via TCP is more universally stable for long-running
-             * LLM streams. KVC is used for allowsHTTP3 to maintain compatibility with older SDKs.
-             */
-            if config.responds(to: NSSelectorFromString("setAllowsHTTP3:")) {
-                config.setValue(false, forKey: "allowsHTTP3")
-            }
             config.timeoutIntervalForRequest = 600 // 10 minutes
             config.timeoutIntervalForResource = 600
-            self.session = URLSession(configuration: config)
+            self.session = ResilientSession(configuration: config)
         }
     }
 
@@ -822,6 +813,10 @@ final class LLMService {
         return data
     }
 
+    private func performRequestStreaming(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        try await session.bytes(for: request)
+    }
+
     private func parseErrorMessage(from data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -878,7 +873,7 @@ final class LLMService {
                         webSearch: webSearch
                     )
 
-                    let (bytes, response) = try await session.bytes(for: request)
+                    let (bytes, response) = try await self.session.bytes(for: request)
                     guard let httpResponse = response as? HTTPURLResponse else {
                         throw LLMError.invalidResponse
                     }
@@ -888,69 +883,53 @@ final class LLMService {
                         for try await byte in bytes {
                             errorData.append(byte)
                         }
-                        if let message = parseErrorMessage(from: errorData) {
+                        if let message = self.parseErrorMessage(from: errorData) {
                             throw LLMError.apiError(message)
                         }
                         throw LLMError.httpError(httpResponse.statusCode)
                     }
 
                     // A temporary continuation to intercept usage chunks
-                    let streamRecorder = self.recordMode ? StreamingRecorder(name: nameHint ?? "stream") : nil
-                    let interceptor = AsyncThrowingStream<StreamChunk, Error> { inner in
-                        let innerTask = Task {
-                            do {
-                                var lineParser = SSELineParser()
-                                var rawData = Data()
-                                var sawPayload = false
+                    let isRecordMode = self.recordMode
+                    let streamRecorder = isRecordMode ? StreamingRecorder(name: nameHint ?? "stream") : nil
+                    
+                    var lineParser = SSELineParser()
+                    var rawData = Data()
+                    var sawPayload = false
 
-                                func handleLine(_ line: String) throws {
-                                    guard let payload = ssePayload(from: line) else { return }
-                                    sawPayload = true
-                                    if payload == "[DONE]" { return }
+                    func handleLine(_ line: String) throws {
+                        guard let payload = ssePayload(from: line) else { return }
+                        sawPayload = true
+                        if payload == "[DONE]" { return }
 
-                                    // Record each streaming chunk for test fixture generation
-                                    streamRecorder?.recordChunk(payload)
+                        // Record each streaming chunk for test fixture generation
+                        streamRecorder?.recordChunk(payload)
 
-                                    guard let data = payload.data(using: .utf8),
-                                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                                        return
-                                    }
-
-                                    try client.handleStreamEvent(json, continuation: inner)
-                                }
-
-                                for try await byte in bytes {
-                                    if !sawPayload {
-                                        rawData.append(byte)
-                                    }
-                                    try lineParser.append(byte: byte, onLine: handleLine)
-                                }
-                                try lineParser.finalize(onLine: handleLine)
-
-                                if !sawPayload {
-                                    let (text, usage) = try client.parseResponseText(from: rawData)
-                                    if let usage { inner.yield(.usage(usage)) }
-                                    inner.yield(.content(text))
-                                }
-                                streamRecorder?.save()
-                                inner.finish()
-                            } catch {
-                                streamRecorder?.save()
-                                inner.finish(throwing: error)
-                            }
+                        guard let data = payload.data(using: .utf8),
+                                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                            return
                         }
-                        inner.onTermination = { _ in innerTask.cancel() }
+
+                        try client.handleStreamEvent(json, continuation: continuation)
                     }
 
-                    for try await chunk in interceptor {
-                        switch chunk {
-                        case .usage(let usage):
+                    for try await byte in bytes {
+                        if !sawPayload {
+                            rawData.append(byte)
+                        }
+                        try lineParser.append(byte: byte, onLine: handleLine)
+                    }
+                    try lineParser.finalize(onLine: handleLine)
+
+                    if !sawPayload {
+                        let (text, usage) = try client.parseResponseText(from: rawData)
+                        if let usage {
                             self.recordUsage(usage, model: model)
                             continuation.yield(.usage(usage))
-                        default:
-                            continuation.yield(chunk)
                         }
+                        continuation.yield(.content(text))
                     }
+                    streamRecorder?.save()
                     
                     continuation.finish()
                 } catch {
