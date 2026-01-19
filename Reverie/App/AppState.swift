@@ -675,6 +675,8 @@ struct UserSettings: Codable, Equatable {
     var useCheapestModelForClassification: Bool = true
     var autoAIProcessingEnabled: Bool = true
     var useSimulationMode: Bool = false
+    var rsvpEnabled: Bool = false      // Whether RSVP mode is the default when loading a chapter
+    var rsvpFontSize: CGFloat = 48     // Font size for RSVP display (separate from regular reading)
     var maxConcurrentRequests: Int = 5
 
     static func load() -> UserSettings {

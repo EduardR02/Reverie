@@ -29,7 +29,8 @@ final class ReaderSessionTests: XCTestCase {
         appState.settings.smartAutoScrollEnabled = true
         session.setup(with: appState)
         XCTAssertNotNil(session.analyzer)
-        XCTAssertTrue(session.autoScroll.isActive) 
+        // Autoscroll should not auto-start on setup anymore, even if enabled in settings
+        XCTAssertFalse(session.autoScroll.isActive) 
     }
 
     func test_handleAnnotationClick_setsScrollTarget() {

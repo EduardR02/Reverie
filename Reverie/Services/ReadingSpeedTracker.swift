@@ -69,7 +69,15 @@ final class ReadingSpeedTracker {
     private(set) var currentSession: ReadingSession?
     private(set) var historicalWPM: [Double] = []
     private(set) var averageWPM: Double = 0
-    private(set) var manualAutoScrollWPM: Double = 250
+    private(set) var manualAutoScrollWPM: Double = 250 {
+        didSet {
+            saveData()
+        }
+    }
+
+    func setManualSpeed(_ speed: Double) {
+        manualAutoScrollWPM = max(50, min(2000, speed))
+    }
     private(set) var confidence: Double = 0  // 0-1, how confident we are in the reading speed
     private(set) var activePauseReasons: Set<PauseReason> = []
     var isPaused: Bool { !activePauseReasons.isEmpty }
@@ -275,12 +283,10 @@ final class ReadingSpeedTracker {
 
     func incrementManualSpeed() {
         manualAutoScrollWPM += 10
-        saveData()
     }
 
     func decrementManualSpeed() {
         manualAutoScrollWPM = max(50, manualAutoScrollWPM - 10)
-        saveData()
     }
 
     func toggleLock() {

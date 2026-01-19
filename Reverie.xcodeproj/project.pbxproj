@@ -16,6 +16,9 @@
 		BB5EFFFC2F11C05900A7A2E6 /* AutoScrollEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */; };
 		BB5EFFFE2F11C1E900A7A2E6 /* ChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */; };
 		BB5F438E2F0AD757004A92D8 /* ChapterProgressCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */; };
+		BBB3B7062F1EBE2300791C96 /* RSVPEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB3B7052F1EBE2300791C96 /* RSVPEngine.swift */; };
+		BBB3B7082F1EBE3900791C96 /* RSVPFooterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB3B7072F1EBE3900791C96 /* RSVPFooterView.swift */; };
+		BBB3B70A2F1EBE4500791C96 /* RSVPView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB3B7092F1EBE4500791C96 /* RSVPView.swift */; };
 		BBBA135C2F146975008FC6ED /* ThemedControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBA135B2F146975008FC6ED /* ThemedControls.swift */; };
 		BBC04C5A2F1AFD47006D17FB /* BookProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC04C592F1AFD47006D17FB /* BookProcessor.swift */; };
 		BBC04C5D2F1B021D006D17FB /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC04C5B2F1B021D006D17FB /* Formatters.swift */; };
@@ -69,6 +72,9 @@
 		BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterAnalyzer.swift; path = Reverie/ViewModels/Reader/ChapterAnalyzer.swift; sourceTree = "<group>"; };
 		BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSession.swift; path = Reverie/ViewModels/Reader/ReaderSession.swift; sourceTree = "<group>"; };
 		BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChapterProgressCalculator.swift; path = Reverie/Services/ChapterProgressCalculator.swift; sourceTree = "<group>"; };
+		BBB3B7052F1EBE2300791C96 /* RSVPEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RSVPEngine.swift; path = Reverie/ViewModels/Reader/RSVPEngine.swift; sourceTree = "<group>"; };
+		BBB3B7072F1EBE3900791C96 /* RSVPFooterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RSVPFooterView.swift; path = Reverie/Views/Reader/RSVPFooterView.swift; sourceTree = "<group>"; };
+		BBB3B7092F1EBE4500791C96 /* RSVPView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RSVPView.swift; path = Reverie/Views/Reader/RSVPView.swift; sourceTree = "<group>"; };
 		BBBA135B2F146975008FC6ED /* ThemedControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ThemedControls.swift; path = Reverie/Views/Components/ThemedControls.swift; sourceTree = "<group>"; };
 		BBC04C592F1AFD47006D17FB /* BookProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BookProcessor.swift; path = Reverie/Services/BookProcessor.swift; sourceTree = "<group>"; };
 		BBC04C5B2F1B021D006D17FB /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Formatters.swift; path = Reverie/Utilities/Formatters.swift; sourceTree = "<group>"; };
@@ -180,6 +186,9 @@
 		ROOT = {
 			isa = PBXGroup;
 			children = (
+				BBB3B7052F1EBE2300791C96 /* RSVPEngine.swift */,
+				BBB3B7072F1EBE3900791C96 /* RSVPFooterView.swift */,
+				BBB3B7092F1EBE4500791C96 /* RSVPView.swift */,
 				BB5EFFFF2F11C1FB00A7A2E6 /* ReaderSession.swift */,
 				BB5EFFFD2F11C1E900A7A2E6 /* ChapterAnalyzer.swift */,
 				BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */,
@@ -375,6 +384,7 @@
 				BB5EFFFC2F11C05900A7A2E6 /* AutoScrollEngine.swift in Sources */,
 				BBC04C5A2F1AFD47006D17FB /* BookProcessor.swift in Sources */,
 				BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */,
+				BBB3B70A2F1EBE4500791C96 /* RSVPView.swift in Sources */,
 				F010 /* LLMService.swift in Sources */,
 				F027 /* LLMStream.swift in Sources */,
 				F028 /* LLMSchemas.swift in Sources */,
@@ -387,6 +397,7 @@
 				F013 /* BookCard.swift in Sources */,
 				F014 /* ImportSheet.swift in Sources */,
 				F036 /* ProcessBookView.swift in Sources */,
+				BBB3B7082F1EBE3900791C96 /* RSVPFooterView.swift in Sources */,
 				F033 /* BookProcessingStatus.swift in Sources */,
 				BB06EE412F0EF7C400E925E2 /* AIProcessingToggle.swift in Sources */,
 				F015 /* ReaderView.swift in Sources */,
@@ -396,6 +407,7 @@
 				F018 /* SettingsView.swift in Sources */,
 				F019 /* Theme.swift in Sources */,
 				BBC04C612F1B14A4006D17FB /* ResilientSession.swift in Sources */,
+				BBB3B7062F1EBE2300791C96 /* RSVPEngine.swift in Sources */,
 				F020 /* RosePine.swift in Sources */,
 				BBBA135C2F146975008FC6ED /* ThemedControls.swift in Sources */,
 				F022 /* Footnote.swift in Sources */,

@@ -6,14 +6,39 @@ struct ReaderView: View {
     @Environment(\.theme) private var theme
     @State private var session = ReaderSession()
 
+    func handleSpaceBar() -> KeyPress.Result {
+        session.handleSpaceBar()
+    }
+    
+    func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        session.handleKeyPress(press)
+    }
+
     var body: some View {
-        GeometryReader { proxy in
-            HSplitView {
-                ReaderBookPanel(session: session)
-                    .frame(minWidth: 400, idealWidth: proxy.size.width * appState.splitRatio)
-                ReaderAIPanel(session: session)
-                    .frame(minWidth: 280, idealWidth: proxy.size.width * (1 - appState.splitRatio))
+        ZStack {
+            GeometryReader { proxy in
+                HSplitView {
+                    ReaderBookPanel(session: session)
+                        .frame(minWidth: 400, idealWidth: proxy.size.width * appState.splitRatio)
+                    ReaderAIPanel(session: session)
+                        .frame(minWidth: 280, idealWidth: proxy.size.width * (1 - appState.splitRatio))
+                }
             }
+            Color.clear
+                .onChange(of: appState.currentChapterIndex) { _, idx in 
+                    session.persistCurrentProgress()
+                    Task { await session.loadChapter(at: idx) } 
+                }
+                .onChange(of: appState.settings.fontSize) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+                .onChange(of: appState.settings.fontFamily) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+                .onChange(of: appState.settings.lineSpacing) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+                .onChange(of: appState.settings.theme) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+                .onChange(of: appState.settings.inlineAIImages) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
+                .onChange(of: session.aiPanelSelectedTab) { old, new in session.handleTabChange(from: old, to: new) }
+                .onChange(of: session.expandedImage) { old, new in session.handleExpandedImageChange(from: old, to: new) }
+                .onChange(of: session.rsvpEngine.pendingPauseContent) { _, newValue in
+                    session.handleRSVPPauseContentChange(newValue)
+                }
         }
         .focusable()
         .focusEffectDisabled()
@@ -33,20 +58,12 @@ struct ReaderView: View {
             await session.loadChapters()
         }
         .onAppear { session.startReadingTicker() }
-        .onDisappear { session.cleanup() }
-        .onKeyPress(.space) { session.handleSpaceBar() }
-        .onKeyPress { session.handleKeyPress($0) }
-        .onChange(of: appState.currentChapterIndex) { _, idx in 
-            session.persistCurrentProgress()
-            Task { await session.loadChapter(at: idx) } 
+        .onChange(of: appState.readingSpeedTracker.manualAutoScrollWPM) { _, newValue in
+            session.rsvpEngine.setWPM(newValue)
         }
-        .onChange(of: appState.settings.fontSize) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
-        .onChange(of: appState.settings.fontFamily) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
-        .onChange(of: appState.settings.lineSpacing) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
-        .onChange(of: appState.settings.theme) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
-        .onChange(of: appState.settings.inlineAIImages) { _, _ in Task { await session.loadChapter(at: appState.currentChapterIndex, force: true) } }
-        .onChange(of: session.aiPanelSelectedTab) { old, new in session.handleTabChange(from: old, to: new) }
-        .onChange(of: session.expandedImage) { old, new in session.handleExpandedImageChange(from: old, to: new) }
+        .onDisappear { session.cleanup() }
+        .onKeyPress(.space) { handleSpaceBar() }
+        .onKeyPress { handleKeyPress($0) }
     }
 }
 
@@ -91,6 +108,21 @@ private struct ReaderBookPanel: View {
                         pendingImageMarkerInjections: Bindable(session).pendingImageMarkerInjections,
                         scrollByAmount: Bindable(session).scrollByAmount
                     )
+                    
+                    if session.isRSVPMode {
+                        RSVPView(
+                            word: session.rsvpEngine.currentWord,
+                            fontSize: appState.settings.rsvpFontSize,
+                            progress: session.rsvpEngine.progress,
+                            isPlaying: session.rsvpEngine.isPlaying
+                        )
+                        .transition(.opacity)
+                        .onTapGesture {
+                            session.rsvpEngine.toggle()
+                        }
+                        .zIndex(10) // Ensure it's above BookContentView
+                    }
+
                     if session.showBackButton {
                         ReaderBackAnchorOverlay(session: session)
                     }
@@ -154,12 +186,22 @@ private struct ReaderAIPanel: View {
             selectedTab: Bindable(session).aiPanelSelectedTab,
             pendingChatPrompt: Bindable(session).pendingChatPrompt,
             isChatInputFocused: Bindable(session).isChatInputFocused,
+            isRSVPMode: session.isRSVPMode,
+            isRSVPPlaying: session.rsvpEngine.isPlaying,
+            rsvpWPM: session.rsvpEngine.wpm,
+            onRSVPModeToggle: { enabled in
+                session.setRSVPMode(enabled)
+            },
+            onRSVPTogglePlay: {
+                session.rsvpEngine.toggle()
+            },
             isAtChapterBottom: session.isAtChapterBottom,
             onApplyAdjustment: { appState.readingSpeedTracker.applyAdjustment($0) },
             onToggleAutoScroll: { enabled in
                 appState.settings.smartAutoScrollEnabled = enabled
                 appState.settings.save()
                 if enabled {
+                    session.isRSVPMode = false
                     session.autoScroll.start()
                 } else {
                     session.autoScroll.stop()

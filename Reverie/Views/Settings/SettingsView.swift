@@ -473,6 +473,55 @@ struct SettingsView: View {
                 }
             }
 
+            sectionHeader("RSVP Reading", icon: "bolt.fill")
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    ThemedToggle(
+                        isOn: $state.settings.rsvpEnabled,
+                        label: "Enable Rapid serial visual presentation (RSVP) by default",
+                        subtitle: "Start chapters in RSVP mode"
+                    )
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.overlay)
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        ThemedSlider(
+                            value: Binding(
+                                get: { Double(state.settings.rsvpFontSize) },
+                                set: { state.settings.rsvpFontSize = CGFloat($0) }
+                            ),
+                            range: 24...96,
+                            step: 4
+                        ) { val in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("RSVP font size")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(theme.muted)
+                                    Text("Font size for RSVP display")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(theme.subtle)
+                                }
+
+                                Spacer()
+
+                                Text("\(Int(val))px")
+                                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(theme.text)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .frame(minWidth: 54)
+                                    .background(theme.overlay)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                            }
+                        }
+                    }
+                    .padding(.vertical, 12)
+                }
+            }
+
             sectionHeader("Interface", icon: "macwindow")
 
             settingsCard {

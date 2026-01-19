@@ -5,6 +5,7 @@ import AppKit
 @Observable @MainActor
 final class ReaderSession {
     private(set) var autoScroll = AutoScrollEngine()
+    private(set) var rsvpEngine = RSVPEngine()
     private(set) var analyzer: ChapterAnalyzer?
     private weak var appState: AppState?
     
@@ -28,6 +29,7 @@ final class ReaderSession {
     var pendingMarkerInjections: [MarkerInjection] = []
     var pendingImageMarkerInjections: [ImageMarkerInjection] = []
     var isAtChapterBottom: Bool = false
+    var isRSVPMode = false
     var lastScrollPercent: Double = 0
     var lastScrollOffset: Double = 0
     var didRestoreInitialPosition = false
@@ -71,9 +73,9 @@ final class ReaderSession {
         self.appState = appState
         self.analyzer = ChapterAnalyzer(llm: appState.llmService, imageService: appState.imageService, database: appState.database, settings: appState.settings)
         autoScroll.configure(speedTracker: appState.readingSpeedTracker, settings: appState.settings)
-        if appState.settings.smartAutoScrollEnabled {
-            autoScroll.start()
-        } else {
+        rsvpEngine.setWPM(appState.readingSpeedTracker.manualAutoScrollWPM)
+        if appState.settings.rsvpEnabled {
+            isRSVPMode = true
             autoScroll.stop()
         }
         startAutoScrollTicker()
@@ -269,6 +271,17 @@ final class ReaderSession {
                 quizzes = try appState.database.fetchQuizzes(for: chapter)
                 footnotes = try appState.database.fetchFootnotes(for: chapter)
                 images = try appState.database.fetchImages(for: chapter)
+                
+                // Load content into RSVP engine
+                let parser = ContentBlockParser()
+                let (blocks, _) = parser.parse(html: chapter.contentHTML)
+                rsvpEngine.loadChapter(
+                    blocks: blocks,
+                    annotations: annotations,
+                    images: images,
+                    footnotes: footnotes
+                )
+                
                 didLoadChapterAssets = true
             } catch {
                 print("ReaderSession: Failed to load chapter assets: \(error)")
@@ -276,7 +289,7 @@ final class ReaderSession {
             }
             
             refreshProgressCalculator(for: chapter)
-            autoScroll.start()
+            autoScroll.stop()
             processCurrentChapter()
         }
         await chapterLoadTask?.value
@@ -519,8 +532,62 @@ final class ReaderSession {
         suppressContextAutoSwitchUntil = max(suppressContextAutoSwitchUntil, Date().timeIntervalSinceReferenceDate + duration)
     }
     
+    func setRSVPMode(_ enabled: Bool) {
+        isRSVPMode = enabled
+        if enabled {
+            // Disable auto-scroll when entering RSVP
+            appState?.settings.smartAutoScrollEnabled = false
+            appState?.settings.save()
+            autoScroll.stop()
+            
+            // Sync RSVP to current reading position
+            syncRSVPToCurrentPosition()
+        } else {
+            // Pause RSVP when exiting
+            rsvpEngine.pause()
+        }
+    }
+    
+    /// Synchronizes the RSVP engine's current word index to the user's current scroll position.
+    func syncRSVPToCurrentPosition() {
+        guard let location = currentLocation, !rsvpEngine.words.isEmpty else { return }
+        
+        // Find the first word that belongs to the current block
+        if let index = rsvpEngine.words.firstIndex(where: { $0.sourceBlockId == location.blockId }) {
+            rsvpEngine.currentWordIndex = index
+            rsvpEngine.pendingPauseContent = nil
+        }
+    }
+    
+    func handleRSVPPauseContentChange(_ content: PauseContent?) {
+        guard let content = content else { return }
+        switch content {
+        case .insight(let annotation):
+            if let id = annotation.id {
+                currentAnnotationId = id
+                aiPanelSelectedTab = .insights
+            }
+        case .image(let image):
+            if let id = image.id {
+                currentImageId = id
+                aiPanelSelectedTab = .images
+            }
+        case .footnote(let footnote):
+            currentFootnoteRefId = footnote.refId
+            aiPanelSelectedTab = .footnotes
+        }
+    }
+
     func handleSpaceBar() -> KeyPress.Result {
         guard !isChatInputFocused else { return .ignored }
+        
+        // RSVP mode: space toggles play/pause
+        if isRSVPMode {
+            rsvpEngine.toggle()
+            return .handled
+        }
+        
+        // Otherwise toggle auto-scroll (existing behavior)
         appState?.settings.smartAutoScrollEnabled.toggle()
         if let enabled = appState?.settings.smartAutoScrollEnabled, !enabled {
             autoScroll.cancelCountdown()
@@ -541,6 +608,20 @@ final class ReaderSession {
         }
 
         guard !isChatInputFocused else { return .ignored }
+
+        // RSVP mode: arrows skip words (override chapter navigation)
+        if isRSVPMode {
+            switch press.key {
+            case .leftArrow:
+                rsvpEngine.skip(words: -10)
+                return .handled
+            case .rightArrow:
+                rsvpEngine.skip(words: 10)
+                return .handled
+            default:
+                break
+            }
+        }
 
         switch press.key {
         case .upArrow:
