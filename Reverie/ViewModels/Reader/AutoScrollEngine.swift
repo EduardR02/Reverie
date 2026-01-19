@@ -82,11 +82,10 @@ final class AutoScrollEngine {
         calculator: ChapterProgressCalculator?
     ) -> Double? {
         guard isActive,
-              let settings = settings,
+              settings != nil,
               let speedTracker = speedTracker,
-              settings.smartAutoScrollEnabled,
               !speedTracker.isPaused,
-              (speedTracker.confidence >= 0.5 || currentOffset < 50),
+              (speedTracker.confidence >= 0.5 || currentOffset < 50 || speedTracker.isLocked || speedTracker.manualAutoScrollWPM > 0),
               let calculator = calculator,
               viewportHeight > 0 else {
             return nil

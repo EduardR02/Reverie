@@ -39,6 +39,7 @@ struct AIPanel: View {
     // Reading speed tracking
     let isAtChapterBottom: Bool
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
+    let onToggleAutoScroll: (Bool) -> Void
 
     @State private var highlightedFootnoteId: String?
     @State private var showedSpeedPromptForChapter: Int64?  // Track which chapter we showed prompt for
@@ -794,7 +795,8 @@ struct AIPanel: View {
             },
             onDismiss: {
                 showedSpeedPromptForChapter = chapter?.id
-            }
+            },
+            tracker: appState.readingSpeedTracker
         )
     }
 
@@ -814,7 +816,8 @@ struct AIPanel: View {
             },
             onDismiss: {
                 showedSpeedPromptForChapter = chapter?.id
-            }
+            },
+            tracker: appState.readingSpeedTracker
         )
     }
 
@@ -903,8 +906,7 @@ struct AIPanel: View {
                         
                         Button {
                             withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                                appState.settings.smartAutoScrollEnabled = false
-                                appState.settings.save()
+                                onToggleAutoScroll(false)
                             }
                         } label: {
                             Image(systemName: "pause.fill")
@@ -922,8 +924,7 @@ struct AIPanel: View {
                     // Base State: Play Button
                     Button {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                            appState.settings.smartAutoScrollEnabled = true
-                            appState.settings.save()
+                            onToggleAutoScroll(true)
                         }
                     } label: {
                         HStack(spacing: 8) {
@@ -2176,6 +2177,7 @@ struct ReadingSpeedPrompt: View {
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
     let onDiscardSession: () -> Void
     let onDismiss: () -> Void
+    let tracker: ReadingSpeedTracker
 
     @Environment(\.theme) private var theme
     @State private var showAdjustments = false
@@ -2261,7 +2263,10 @@ struct ReadingSpeedPrompt: View {
                         }
                         .buttonStyle(.plain)
 
-                        Button(action: onDismiss) {
+                        Button(action: {
+                            tracker.lockSession()
+                            onDismiss()
+                        }) {
                             Text("Looks right")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(theme.foam)
@@ -2275,6 +2280,7 @@ struct ReadingSpeedPrompt: View {
 
                     // Subtle dismissal for browsing
                     Button {
+                        tracker.lockSession()
                         onDiscardSession()
                         onDismiss()
                     } label: {
@@ -2293,6 +2299,7 @@ struct ReadingSpeedPrompt: View {
 
                     ForEach(ReadingSpeedTracker.AdjustmentType.allCases, id: \.self) { adjustment in
                         Button {
+                            tracker.lockSession()
                             onApplyAdjustment(adjustment)
                         } label: {
                             HStack {
@@ -2363,6 +2370,7 @@ struct CompactReadingSpeedPrompt: View {
     let onApplyAdjustment: (ReadingSpeedTracker.AdjustmentType) -> Void
     let onDiscardSession: () -> Void
     let onDismiss: () -> Void
+    let tracker: ReadingSpeedTracker
 
     @Environment(\.theme) private var theme
     @State private var showAdjustments = false
@@ -2449,7 +2457,10 @@ struct CompactReadingSpeedPrompt: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button(action: onDismiss) {
+                    Button(action: {
+                        tracker.lockSession()
+                        onDismiss()
+                    }) {
                         Text("Looks right")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundColor(theme.foam)
@@ -2463,6 +2474,7 @@ struct CompactReadingSpeedPrompt: View {
                     Spacer()
 
                     Button {
+                        tracker.lockSession()
                         onDiscardSession()
                         onDismiss()
                     } label: {
@@ -2482,6 +2494,7 @@ struct CompactReadingSpeedPrompt: View {
                     LazyVGrid(columns: columns, spacing: 6) {
                         ForEach(ReadingSpeedTracker.AdjustmentType.allCases, id: \.self) { adjustment in
                             Button {
+                                tracker.lockSession()
                                 onApplyAdjustment(adjustment)
                             } label: {
                                 HStack(spacing: 6) {

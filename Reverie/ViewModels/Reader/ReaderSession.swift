@@ -392,7 +392,8 @@ final class ReaderSession {
     }
 
     nonisolated static func wordCount(in text: String) -> Int {
-        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+        let alphanumericCount = text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.count
+        return alphanumericCount / 5
     }
 
     nonisolated static func normalizedText(_ text: String) -> String {

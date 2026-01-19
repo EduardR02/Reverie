@@ -156,6 +156,15 @@ private struct ReaderAIPanel: View {
             isChatInputFocused: Bindable(session).isChatInputFocused,
             isAtChapterBottom: session.isAtChapterBottom,
             onApplyAdjustment: { appState.readingSpeedTracker.applyAdjustment($0) },
+            onToggleAutoScroll: { enabled in
+                appState.settings.smartAutoScrollEnabled = enabled
+                appState.settings.save()
+                if enabled {
+                    session.autoScroll.start()
+                } else {
+                    session.autoScroll.stop()
+                }
+            },
             expandedImage: Bindable(session).expandedImage
         )
     }

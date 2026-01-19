@@ -140,6 +140,31 @@ final class ReaderSessionTests: XCTestCase {
         XCTAssertEqual(combined, baseCounts)
     }
 
+    func test_wordCount_calculatesCorrectly() {
+        // Basic case: "Hello world" (10 alphanumeric chars) -> 2 words
+        XCTAssertEqual(ReaderSession.wordCount(in: "Hello world"), 2)
+        
+        // Punctuation ignored: "Hello, world!!!" -> still 2 words
+        XCTAssertEqual(ReaderSession.wordCount(in: "Hello, world!!!"), 2)
+        
+        // Empty string -> 0 words
+        XCTAssertEqual(ReaderSession.wordCount(in: ""), 0)
+        
+        // Short string (< 5 chars): "Hi" -> 0 words
+        XCTAssertEqual(ReaderSession.wordCount(in: "Hi"), 0)
+        
+        // Numbers included: "Test123" (7 chars) -> 1 word
+        XCTAssertEqual(ReaderSession.wordCount(in: "Test123"), 1)
+        
+        // Only special chars: "!@#$%^" -> 0 words
+        XCTAssertEqual(ReaderSession.wordCount(in: "!@#$%^"), 0)
+        
+        // Mixed content: "Chapter 1: The Beginning!"
+        // C h a p t e r (7) + 1 (1) + T h e (3) + B e g i n n i n g (9) = 20 alphanum
+        // 20 / 5 = 4 words
+        XCTAssertEqual(ReaderSession.wordCount(in: "Chapter 1: The Beginning!"), 4)
+    }
+
     func test_loadChapter_guard_skipsSameChapterWithoutForce() async {
         // Given
         var book = Book(title: "Book", author: "Author", epubPath: "")

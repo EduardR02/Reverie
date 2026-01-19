@@ -834,6 +834,8 @@ final class EPUBParser {
               let text = body.stringValue else {
             return 0
         }
-        return text.split(whereSeparator: { $0.isWhitespace }).count
+        
+        let alphanumericCount = text.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.count
+        return alphanumericCount / 5
     }
 }

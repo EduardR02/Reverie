@@ -59,4 +59,37 @@ final class ReadingSpeedTrackerTests: XCTestCase {
         tracker.applyAdjustment(.readingSlowly)
         XCTAssertEqual(tracker.averageWPM, initialAvg, "Average WPM should not change with adjustment when locked")
     }
+
+    func testSessionLocking() {
+        let tracker = ReadingSpeedTracker()
+        let start = Date(timeIntervalSince1970: 0)
+        
+        // 1. lockSession() sets sessionLocked to true
+        tracker.lockSession()
+        XCTAssertTrue(tracker.sessionLocked)
+        
+        // 2. When locked, tick() doesn't increment time
+        tracker.startSession(chapterId: 1, wordCount: 1000, startPercent: 0, now: start)
+        // Need to set sessionLocked again because startSession resets it
+        tracker.lockSession()
+        
+        _ = tracker.tick(now: start.addingTimeInterval(60))
+        XCTAssertEqual(tracker.currentSession?.timeSpentSeconds, 0)
+        
+        // 3. When locked, updateSession() doesn't update progress
+        tracker.updateSession(scrollPercent: 0.5, now: start.addingTimeInterval(60))
+        XCTAssertEqual(tracker.currentSession?.maxPercent, 0)
+        
+        // 4. When locked, updateSessionWordCount() doesn't update word count
+        tracker.updateSessionWordCount(2000)
+        XCTAssertEqual(tracker.currentSession?.chapterWordCount, 1000)
+        
+        // 5. When locked, applyAdjustment() doesn't apply
+        tracker.applyAdjustment(.readingSlowly)
+        XCTAssertEqual(tracker.currentSession?.adjustments.count, 0)
+        
+        // 6. startSession() resets sessionLocked to false
+        tracker.startSession(chapterId: 1, wordCount: 1000, startPercent: 0, now: start)
+        XCTAssertFalse(tracker.sessionLocked)
+    }
 }

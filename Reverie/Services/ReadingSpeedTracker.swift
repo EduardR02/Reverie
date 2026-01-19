@@ -74,6 +74,7 @@ final class ReadingSpeedTracker {
     private(set) var activePauseReasons: Set<PauseReason> = []
     var isPaused: Bool { !activePauseReasons.isEmpty }
     private(set) var isLocked: Bool = false  // User locked their reading speed
+    private(set) var sessionLocked: Bool = false
 
     static let idleThresholdSeconds: TimeInterval = 300
 
@@ -103,6 +104,7 @@ final class ReadingSpeedTracker {
         startPercent: Double = 0,
         now: Date = Date()
     ) {
+        sessionLocked = false
         let clampedStart = min(max(startPercent, 0), 1)
         currentSession = ReadingSession(
             startTime: now,
@@ -119,6 +121,7 @@ final class ReadingSpeedTracker {
     }
 
     func updateSession(scrollPercent: Double, now: Date = Date()) {
+        guard !sessionLocked else { return }
         guard var session = currentSession else { return }
 
         lastActivityTime = now
@@ -162,6 +165,7 @@ final class ReadingSpeedTracker {
 
     @discardableResult
     func tick(now: Date = Date()) -> Double {
+        guard !sessionLocked else { return 0 }
         guard var session = currentSession else { return 0 }
         guard let lastTick = lastTickTime else {
             lastTickTime = now
@@ -229,6 +233,7 @@ final class ReadingSpeedTracker {
     // MARK: - Adjustments
 
     func applyAdjustment(_ type: AdjustmentType) {
+        guard !sessionLocked else { return }
         guard var session = currentSession else { return }
         session.adjustments.append(SpeedAdjustment(type: type, factor: type.factor))
         currentSession = session
@@ -241,6 +246,7 @@ final class ReadingSpeedTracker {
     }
 
     func updateSessionWordCount(_ wordCount: Int) {
+        guard !sessionLocked else { return }
         guard var session = currentSession else { return }
         session.chapterWordCount = max(0, wordCount)
         currentSession = session
@@ -280,6 +286,10 @@ final class ReadingSpeedTracker {
     func toggleLock() {
         isLocked.toggle()
         UserDefaults.standard.set(isLocked, forKey: isLockedKey)
+    }
+
+    func lockSession() {
+        sessionLocked = true
     }
 
     /// Returns the delay in seconds before next scroll
