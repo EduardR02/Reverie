@@ -69,6 +69,7 @@ final class ImageService {
             "generationConfig": [
                 "temperature": 1.0,
                 "maxOutputTokens": 32768,
+                "responseModalities": ["IMAGE", "TEXT"],
                 "imageConfig": imageConfig
             ]
         ]

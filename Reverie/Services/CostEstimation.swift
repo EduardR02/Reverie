@@ -68,6 +68,8 @@ enum PricingCatalog {
         switch model {
         case .gemini3Pro:
             return ImagePricing(inputPerMToken: 2, outputPerMToken: 12, outputPerImage: nil)
+        case .gemini31Flash:
+            return ImagePricing(inputPerMToken: 0.5, outputPerMToken: nil, outputPerImage: 0.10)
         case .gemini25Flash:
             return ImagePricing(inputPerMToken: 0.3, outputPerMToken: nil, outputPerImage: 0.039)
         }
