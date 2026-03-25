@@ -74,9 +74,13 @@ enum SchemaLibrary {
     private static let imageSuggestion = JSONSchemaBuilder.object(
         properties: [
             "excerpt": JSONSchemaBuilder.string(description: "Verbatim excerpt that captures the scene to visualize."),
-            "sourceBlockId": JSONSchemaBuilder.integer(description: "Block number [N] where the excerpt starts.")
+            "sourceBlockId": JSONSchemaBuilder.integer(description: "Block number [N] where the excerpt starts."),
+            "aspectRatio": JSONSchemaBuilder.string(
+                description: "Best framing for the scene. Must be one of 16:9, 1:1, or 9:16.",
+                enumValues: ["16:9", "1:1", "9:16"]
+            )
         ],
-        required: ["excerpt", "sourceBlockId"]
+        required: ["excerpt", "sourceBlockId", "aspectRatio"]
     )
 
     static func chapterAnalysis(imagesEnabled: Bool) -> LLMStructuredSchema {

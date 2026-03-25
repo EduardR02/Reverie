@@ -136,6 +136,74 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testRewriteImagePromptSuccess() async throws {
+        let jsonResponse = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "  safe cinematic city skyline at dusk  "
+                    }]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = jsonResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        var settings = UserSettings()
+        settings.googleAPIKey = "mock-key"
+
+        let rewritten = try await llmService.rewriteImagePrompt(
+            originalPrompt: "A violent battle scene with gore",
+            refusalReason: "Policy violation",
+            settings: settings
+        )
+
+        XCTAssertEqual(rewritten, "safe cinematic city skyline at dusk")
+    }
+
+    @MainActor
+    func testAnalyzeChapterDecodesImageSuggestionAspectRatio() async throws {
+        let jsonResponse = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "{\\\"summary\\\": \\\"Test Summary\\\", \\\"annotations\\\": [], \\\"quizQuestions\\\": [], \\\"imageSuggestions\\\": [{\\\"excerpt\\\": \\\"A narrow tower over the city.\\\", \\\"sourceBlockId\\\": 3, \\\"aspectRatio\\\": \\\"9:16\\\"}]}"
+                    }]
+                }
+            }],
+            "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 50 }
+        }
+        """
+        MockURLProtocol.stubResponseData = jsonResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        var settings = UserSettings()
+        settings.googleAPIKey = "mock-key"
+        let analysis = try await llmService.analyzeChapter(
+            contentWithBlocks: "Some content",
+            rollingSummary: nil,
+            bookTitle: nil,
+            author: nil,
+            settings: settings
+        )
+
+        XCTAssertEqual(analysis.imageSuggestions.first?.aspectRatio, "9:16")
+    }
+
+    @MainActor
     func testHandleAPIError() async throws {
         let errorJson = """
         {

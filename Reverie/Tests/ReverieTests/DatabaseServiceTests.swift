@@ -108,4 +108,49 @@ final class DatabaseServiceTests: XCTestCase {
         let fetched = try db.fetchQuizzes(for: chapter)
         XCTAssertNil(fetched.first?.qualityFeedback)
     }
+
+    func testGeneratedImageStatusPersists() throws {
+        var book = Book(title: "T", author: "A", epubPath: "P")
+        try db.saveBook(&book)
+
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "C", contentHTML: "H")
+        try db.saveChapter(&chapter)
+
+        var image = GeneratedImage(
+            chapterId: chapter.id!,
+            prompt: "Prompt",
+            imagePath: "",
+            sourceBlockId: 1,
+            status: .refused,
+            failureReason: "Blocked by policy"
+        )
+        try db.saveImage(&image)
+
+        let fetched = try db.fetchImages(for: chapter)
+        XCTAssertEqual(fetched.count, 1)
+        XCTAssertEqual(fetched[0].status, .refused)
+        XCTAssertEqual(fetched[0].failureReason, "Blocked by policy")
+        XCTAssertEqual(fetched[0].excerpt, "Prompt")
+    }
+
+    func testGeneratedImageDecodesWithoutStatusAsSuccess() throws {
+        let json = """
+        {
+          "id": 1,
+          "chapterId": 2,
+          "prompt": "Prompt",
+          "imagePath": "/tmp/test.png",
+          "sourceBlockId": 3,
+          "createdAt": "2026-01-01T00:00:00Z"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let image = try decoder.decode(GeneratedImage.self, from: Data(json.utf8))
+
+        XCTAssertEqual(image.status, .success)
+        XCTAssertNil(image.failureReason)
+        XCTAssertEqual(image.excerpt, "Prompt")
+    }
 }

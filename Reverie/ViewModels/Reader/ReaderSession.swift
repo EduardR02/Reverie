@@ -60,6 +60,7 @@ final class ReaderSession {
     private var readingTickTask: Task<Void, Never>?
     private var autoScrollTickTask: Task<Void, Never>?
     private var chapterLoadTask: Task<Void, Never>?
+    private var rsvpLoadTask: Task<Void, Never>?
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
     private var backgroundTasks: [Task<Void, Never>] = []
     private var isCleaningUp = false
@@ -67,6 +68,7 @@ final class ReaderSession {
     var expandedImage: GeneratedImage?
     var loadError: String?
     var isLoadingChapters = true
+    private var loadedRSVPChapterId: Int64?
 
     func setup(with appState: AppState) {
         guard self.appState == nil else { return }
@@ -101,6 +103,7 @@ final class ReaderSession {
         scrollByAmount = nil
         readingTickTask?.cancel()
         autoScrollTickTask?.cancel()
+        rsvpLoadTask?.cancel()
         for task in analysisTasks.values { task.cancel() }
         analysisTasks.removeAll()
         for task in backgroundTasks { task.cancel() }
@@ -219,6 +222,9 @@ final class ReaderSession {
                 cancelAnalysis()
                 pendingMarkerInjections.removeAll()
                 pendingImageMarkerInjections.removeAll()
+                rsvpLoadTask?.cancel()
+                loadedRSVPChapterId = nil
+                rsvpEngine.unloadChapter()
             }
             currentChapter = chapter
             autoScroll.updateMarkers([])
@@ -235,6 +241,8 @@ final class ReaderSession {
             didLoadChapterAssets = false
             
             if let anchor = pendingAnchor {
+                scrollToOffset = nil
+                scrollToPercent = nil
                 scrollToQuote = anchor
                 pendingAnchor = nil
                 lastScrollPercent = 0; lastScrollOffset = 0
@@ -271,18 +279,16 @@ final class ReaderSession {
                 quizzes = try appState.database.fetchQuizzes(for: chapter)
                 footnotes = try appState.database.fetchFootnotes(for: chapter)
                 images = try appState.database.fetchImages(for: chapter)
-                
-                // Load content into RSVP engine
-                let parser = ContentBlockParser()
-                let (blocks, _) = parser.parse(html: chapter.contentHTML)
-                rsvpEngine.loadChapter(
-                    blocks: blocks,
-                    annotations: annotations,
-                    images: images,
-                    footnotes: footnotes
-                )
-                
+
                 didLoadChapterAssets = true
+                if isRSVPMode {
+                    scheduleRSVPContentLoad(
+                        for: chapter,
+                        annotations: annotations,
+                        images: images,
+                        footnotes: footnotes
+                    )
+                }
             } catch {
                 print("ReaderSession: Failed to load chapter assets: \(error)")
                 didLoadChapterAssets = true
@@ -306,10 +312,10 @@ final class ReaderSession {
             refreshProgressCalculator(for: chapter)
             return
         }
+        let contentText = chapter.contentText
         let html = chapter.contentHTML
         let task = Task.detached(priority: .utility) {
-            let parser = ContentBlockParser()
-            let (blocks, _) = parser.parse(html: html)
+            let blocks = Self.logicalBlocks(contentText: contentText, html: html)
             let wordCounts = blocks.map { ReaderSession.wordCount(in: $0.text) }
             let blockTexts = blocks.map { $0.text }
             await MainActor.run {
@@ -419,6 +425,73 @@ final class ReaderSession {
     nonisolated static func clampBlockIndex(_ blockId: Int, count: Int) -> Int {
         let clampedId = min(max(blockId, 1), count)
         return max(0, clampedId - 1)
+    }
+
+    nonisolated static func logicalBlocks(contentText: String?, html: String) -> [ContentBlock] {
+        if let contentText,
+           let cachedBlocks = cachedBlocks(from: contentText),
+           !cachedBlocks.isEmpty {
+            return cachedBlocks
+        }
+
+        return ContentBlockParser().parse(html: html).blocks
+    }
+
+    nonisolated static func cachedBlocks(from contentText: String) -> [ContentBlock]? {
+        guard let regex = try? NSRegularExpression(pattern: #"(?m)^\[(\d+)\]\s"#) else {
+            return nil
+        }
+
+        let nsRange = NSRange(contentText.startIndex..., in: contentText)
+        let matches = regex.matches(in: contentText, options: [], range: nsRange)
+        guard !matches.isEmpty else {
+            let trimmed = contentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+            return [ContentBlock(
+                id: 1,
+                text: trimmed,
+                htmlStartOffset: 0,
+                contentStartOffset: 0,
+                contentEndOffset: 0,
+                htmlEndOffset: 0
+            )]
+        }
+
+        var blocks: [ContentBlock] = []
+        blocks.reserveCapacity(matches.count)
+
+        for (index, match) in matches.enumerated() {
+            guard let markerRange = Range(match.range, in: contentText),
+                  let idRange = Range(match.range(at: 1), in: contentText),
+                  let blockId = Int(String(contentText[idRange])) else {
+                continue
+            }
+
+            let contentStart = markerRange.upperBound
+            let contentEnd: String.Index
+
+            if index + 1 < matches.count,
+               let nextMarkerRange = Range(matches[index + 1].range, in: contentText) {
+                contentEnd = nextMarkerRange.lowerBound
+            } else {
+                contentEnd = contentText.endIndex
+            }
+
+            let text = contentText[contentStart..<contentEnd]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+
+            blocks.append(ContentBlock(
+                id: blockId,
+                text: text,
+                htmlStartOffset: 0,
+                contentStartOffset: 0,
+                contentEndOffset: 0,
+                htmlEndOffset: 0
+            ))
+        }
+
+        return blocks
     }
 
     func startReadingTicker() {
@@ -539,12 +612,56 @@ final class ReaderSession {
             appState?.settings.smartAutoScrollEnabled = false
             appState?.settings.save()
             autoScroll.stop()
-            
-            // Sync RSVP to current reading position
-            syncRSVPToCurrentPosition()
+
+            guard let chapter = currentChapter else { return }
+            if loadedRSVPChapterId == chapter.id, !rsvpEngine.words.isEmpty {
+                syncRSVPToCurrentPosition()
+                return
+            }
+
+            scheduleRSVPContentLoad(
+                for: chapter,
+                annotations: annotations,
+                images: images,
+                footnotes: footnotes
+            )
         } else {
             // Pause RSVP when exiting
             rsvpEngine.pause()
+        }
+    }
+
+    private func scheduleRSVPContentLoad(
+        for chapter: Chapter,
+        annotations: [Annotation],
+        images: [GeneratedImage],
+        footnotes: [Footnote]
+    ) {
+        rsvpLoadTask?.cancel()
+
+        let chapterId = chapter.id
+        let contentText = chapter.contentText
+        let html = chapter.contentHTML
+
+        rsvpLoadTask = Task { @MainActor in
+            let blocks = await Task.detached(priority: .userInitiated) {
+                Self.logicalBlocks(contentText: contentText, html: html)
+            }.value
+
+            guard !Task.isCancelled,
+                  isRSVPMode,
+                  currentChapter?.id == chapterId else {
+                return
+            }
+
+            rsvpEngine.loadChapter(
+                blocks: blocks,
+                annotations: annotations,
+                images: images,
+                footnotes: footnotes
+            )
+            loadedRSVPChapterId = chapterId
+            syncRSVPToCurrentPosition()
         }
     }
     
@@ -702,8 +819,12 @@ final class ReaderSession {
                                     if Task.isCancelled { break }
                                     if self.currentChapter?.id == chapterId {
                                         images.append(img)
-                                        pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
-                                        appState.readingStats.recordImage()
+                                        if let imageId = img.id {
+                                            pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: imageId, sourceBlockId: img.sourceBlockId))
+                                        }
+                                        if img.status == .success {
+                                            appState.readingStats.recordImage()
+                                        }
                                     }
                                 }
                             } catch {
@@ -749,8 +870,12 @@ final class ReaderSession {
                     for try await img in analyzer.generateImages(suggestions: [.init(excerpt: context, sourceBlockId: blockId)], book: book, chapter: chapter) {
                         if currentChapter?.id == chapter.id {
                             images.append(img)
-                            pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: img.id!, sourceBlockId: img.sourceBlockId))
-                            appState.readingStats.recordImage()
+                            if let imageId = img.id {
+                                pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: imageId, sourceBlockId: img.sourceBlockId))
+                            }
+                            if img.status == .success {
+                                appState.readingStats.recordImage()
+                            }
                         }
                     }
                 } catch {
@@ -762,12 +887,61 @@ final class ReaderSession {
         }
     }
 
+    func retryImage(_ image: GeneratedImage) async {
+        await regenerateImage(image, rewritePrompt: false)
+    }
+
+    func rewriteAndRetryImage(_ image: GeneratedImage) async {
+        await regenerateImage(image, rewritePrompt: true)
+    }
+
+    private func regenerateImage(_ image: GeneratedImage, rewritePrompt: Bool) async {
+        guard let appState = appState,
+              let analyzer = analyzer,
+              let chapter = currentChapter,
+              let book = appState.currentBook,
+              image.status != .success else { return }
+
+        let chapterIdAtRequestStart = chapter.id
+
+        do {
+            let updated = try await (rewritePrompt
+                ? analyzer.rewriteAndRetryImage(image, book: book, chapter: chapter)
+                : analyzer.retryImage(image, book: book, chapter: chapter))
+            if currentChapter?.id == chapterIdAtRequestStart {
+                upsertImage(updated)
+            }
+            if updated.status == .success {
+                appState.readingStats.recordImage()
+            }
+        } catch {
+            print("ReaderSession: Image retry failed: \(error)")
+        }
+    }
+
+    private func upsertImage(_ image: GeneratedImage) {
+        if let imageId = image.id, let index = images.firstIndex(where: { $0.id == imageId }) {
+            images[index] = image
+            return
+        }
+        images.append(image)
+    }
+
     func handleAnnotationClick(_ annotation: Annotation) {
         currentAnnotationId = annotation.id; externalTabSelection = .insights
     }
 
     func handleImageMarkerClick(_ imageId: Int64) {
         if images.contains(where: { $0.id == imageId }) { currentImageId = imageId; externalTabSelection = .images }
+    }
+
+    func handleImageMarkerDoubleClick(_ imageId: Int64) {
+        guard let image = images.first(where: { $0.id == imageId }), image.status == .success else {
+            return
+        }
+        withAnimation(.easeOut(duration: 0.2)) {
+            expandedImage = image
+        }
     }
 
     func handleFootnoteClick(_ refId: String) {

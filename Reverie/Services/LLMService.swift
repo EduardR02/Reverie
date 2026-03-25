@@ -131,6 +131,13 @@ final class LLMService {
     struct ImageSuggestion: Codable {
         let excerpt: String
         let sourceBlockId: Int
+        let aspectRatio: String?
+
+        init(excerpt: String, sourceBlockId: Int, aspectRatio: String? = nil) {
+            self.excerpt = excerpt
+            self.sourceBlockId = sourceBlockId
+            self.aspectRatio = aspectRatio
+        }
     }
 
     struct ChapterClassification: Codable {
@@ -148,6 +155,22 @@ final class LLMService {
 
     func imagePromptFromExcerpt(_ excerpt: String, rewrite: Bool = false) -> String {
         PromptLibrary.imagePromptFromExcerpt(excerpt, rewrite: rewrite)
+    }
+
+    func rewriteImagePrompt(originalPrompt: String, refusalReason: String, settings: UserSettings) async throws -> String {
+        let prompt = PromptLibrary.rewriteImagePrompt(originalPrompt: originalPrompt, refusalReason: refusalReason)
+        let rewritten = try await requestText(
+            prompt: prompt,
+            provider: settings.llmProvider,
+            model: settings.llmModel,
+            apiKey: apiKey(for: settings.llmProvider, settings: settings),
+            temperature: min(settings.temperature, 0.7),
+            reasoning: .off,
+            webSearch: false,
+            nameHint: "image_prompt_rewrite",
+            kind: .other
+        )
+        return rewritten.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Analyze Chapter
@@ -470,7 +493,7 @@ final class LLMService {
             // 1. If Google Key exists -> ALWAYS prefer Gemini Flash
             let googleKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if !googleKey.isEmpty {
-                return (.google, "gemini-3-flash-preview", googleKey)
+                return (.google, SupportedModels.Google.gemini3FlashPreview, googleKey)
             }
             
             // 2. Otherwise, use the cheapest model from the CURRENT provider
@@ -479,18 +502,18 @@ final class LLMService {
             
             if !currentKey.isEmpty {
                 switch provider {
-                case .google: return (.google, "gemini-3-flash-preview", currentKey)
-                case .openai: return (.openai, "gpt-5.2", currentKey)
-                case .anthropic: return (.anthropic, "claude-haiku-4-5", currentKey)
+                case .google: return (.google, SupportedModels.Google.gemini3FlashPreview, currentKey)
+                case .openai: return (.openai, SupportedModels.OpenAI.gpt54, currentKey)
+                case .anthropic: return (.anthropic, SupportedModels.Anthropic.haiku45, currentKey)
                 }
             }
             
             // 3. Fallback to any other key in order of "cheapness"
             if !settings.anthropicAPIKey.isEmpty {
-                return (.anthropic, "claude-haiku-4-5", settings.anthropicAPIKey)
+                return (.anthropic, SupportedModels.Anthropic.haiku45, settings.anthropicAPIKey)
             }
             if !settings.openAIAPIKey.isEmpty {
-                return (.openai, "gpt-5.2", settings.openAIAPIKey)
+                return (.openai, SupportedModels.OpenAI.gpt54, settings.openAIAPIKey)
             }
         }
         
@@ -499,15 +522,15 @@ final class LLMService {
         let currentKey = apiKey(for: currentProvider, settings: settings).trimmingCharacters(in: .whitespacesAndNewlines)
         
         if !currentKey.isEmpty {
-            return (currentProvider, settings.llmModel, currentKey)
+            return (currentProvider, SupportedModels.canonicalLLMModelID(settings.llmModel), currentKey)
         }
 
         // Final fallback
         if !settings.googleAPIKey.isEmpty {
-            return (.google, "gemini-3-flash-preview", settings.googleAPIKey)
+            return (.google, SupportedModels.Google.gemini3FlashPreview, settings.googleAPIKey)
         }
         
-        return (.google, "gemini-3-flash-preview", "")
+        return (.google, SupportedModels.Google.gemini3FlashPreview, "")
     }
 
     // MARK: - Request Handling
@@ -523,6 +546,7 @@ final class LLMService {
         nameHint: String? = nil,
         kind: RequestKind
     ) async throws -> String {
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
@@ -541,7 +565,7 @@ final class LLMService {
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
             prompt: prompt,
-            model: model,
+            model: resolvedModel,
             apiKey: trimmedKey,
             temperature: temperature,
             reasoning: reasoning,
@@ -554,7 +578,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "text_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: model) }
+        if let usage { recordUsage(usage, model: resolvedModel) }
         return text
     }
 
@@ -570,6 +594,7 @@ final class LLMService {
         nameHint: String? = nil,
         kind: RequestKind
     ) async throws -> T {
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
@@ -588,7 +613,7 @@ final class LLMService {
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
             prompt: prompt,
-            model: model,
+            model: resolvedModel,
             apiKey: trimmedKey,
             temperature: temperature,
             reasoning: reasoning,
@@ -601,7 +626,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: model) }
+        if let usage { recordUsage(usage, model: resolvedModel) }
         return try decodeStructured(T.self, from: text)
     }
 
@@ -617,6 +642,7 @@ final class LLMService {
         nameHint: String? = nil,
         kind: RequestKind
     ) async throws -> (T, TokenUsage?) {
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw LLMError.noAPIKey(provider)
@@ -635,7 +661,7 @@ final class LLMService {
         let client = providerClient(for: provider)
         let request = try client.makeRequest(
             prompt: prompt,
-            model: model,
+            model: resolvedModel,
             apiKey: trimmedKey,
             temperature: temperature,
             reasoning: reasoning,
@@ -648,7 +674,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
 
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: model) }
+        if let usage { recordUsage(usage, model: resolvedModel) }
         let result: T = try decodeStructured(T.self, from: text)
         return (result, usage)
     }
@@ -845,6 +871,7 @@ final class LLMService {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    let resolvedModel = SupportedModels.canonicalLLMModelID(model)
                     let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmedKey.isEmpty else {
                         continuation.finish(throwing: LLMError.noAPIKey(provider))
@@ -864,7 +891,7 @@ final class LLMService {
                     let client = providerClient(for: provider)
                     let request = try client.makeRequest(
                         prompt: prompt,
-                        model: model,
+                        model: resolvedModel,
                         apiKey: trimmedKey,
                         temperature: temperature,
                         reasoning: reasoning,
@@ -924,7 +951,7 @@ final class LLMService {
                     if !sawPayload {
                         let (text, usage) = try client.parseResponseText(from: rawData)
                         if let usage {
-                            self.recordUsage(usage, model: model)
+                            self.recordUsage(usage, model: resolvedModel)
                             continuation.yield(.usage(usage))
                         }
                         continuation.yield(.content(text))

@@ -42,11 +42,11 @@ final class ClassificationTests: XCTestCase {
         settings.anthropicAPIKey = ""
         settings.openAIAPIKey = "o-key"
         settings.llmProvider = .openai
-        settings.llmModel = "gpt-5.2"
+        settings.llmModel = SupportedModels.OpenAI.legacyGPT52
         
         (provider, model, key) = llmService.classificationModelSelection(settings: settings)
         XCTAssertEqual(provider, .openai)
-        XCTAssertEqual(model, "gpt-5.2")
+        XCTAssertEqual(model, SupportedModels.OpenAI.gpt54)
         
         // 4. Setting OFF -> Should always use currently selected model
         settings.useCheapestModelForClassification = false
@@ -81,9 +81,9 @@ final class ClassificationTests: XCTestCase {
         settings.anthropicAPIKey = ""
         settings.openAIAPIKey = ""
         settings.llmProvider = .openai
-        settings.llmModel = "gpt-5.2"
+        settings.llmModel = SupportedModels.OpenAI.legacyGPT52
         (provider, _, _) = llmService.classificationModelSelection(settings: settings)
-        // Since useCheapest is on, but no "cheap" keys exist, it uses the selected model (gpt-5.2) 
+        // Since useCheapest is on, but no "cheap" keys exist, it uses the selected model if it has a key.
         // if it has no key, it might hit final fallback. 
         // In our logic: if current (openai) has no key, it hits final fallback (google).
         XCTAssertEqual(provider, .google)

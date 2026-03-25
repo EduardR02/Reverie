@@ -46,4 +46,18 @@ final class LLMPromptsTests: XCTestCase {
         
         XCTAssertFalse(prompt.text.contains("[Book context:"))
     }
+
+    func testAnalysisPromptIncludesImageAspectRatioGuidance() {
+        let prompt = PromptLibrary.analysisPrompt(
+            contentWithBlocks: "[1] Test content",
+            rollingSummary: nil,
+            bookTitle: nil,
+            author: nil,
+            insightDensity: .medium,
+            imageDensity: .medium,
+            wordCount: 1000
+        )
+
+        XCTAssertTrue(prompt.text.contains("aspectRatio: choose exactly one of 16:9, 1:1, or 9:16"))
+    }
 }

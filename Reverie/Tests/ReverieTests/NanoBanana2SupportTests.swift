@@ -42,7 +42,7 @@ final class NanoBanana2ImageServiceRequestTests: XCTestCase {
         try await super.tearDown()
     }
 
-    func testGenerateImageIncludesResponseModalitiesForGemini25Flash() async throws {
+    func testGenerateImageUsesImageOnlyOutputForGemini25Flash() async throws {
         var generationConfig: [String: Any]?
         let responseData = makeImageResponseData()
 
@@ -62,12 +62,38 @@ final class NanoBanana2ImageServiceRequestTests: XCTestCase {
         )
 
         let config = try XCTUnwrap(generationConfig)
-        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE", "TEXT"])
+        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE"])
         let imageConfig = try XCTUnwrap(config["imageConfig"] as? [String: Any])
+        XCTAssertEqual(imageConfig["aspectRatio"] as? String, "16:9")
         XCTAssertNil(imageConfig["imageSize"])
     }
 
-    func testGenerateImageIncludesResponseModalitiesAndImageSizeForGemini31Flash() async throws {
+    func testGenerateImageDefaultsGemini31FlashTo2K() async throws {
+        var generationConfig: [String: Any]?
+        let responseData = makeImageResponseData()
+
+        MockURLProtocol.requestHandler = { request in
+            let requestBody = self.requestBodyData(from: request)
+            let json = try? JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            generationConfig = json?["generationConfig"] as? [String: Any]
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        _ = try await imageService.generateImage(
+            prompt: "Test prompt",
+            model: .gemini31Flash,
+            apiKey: "test-key"
+        )
+
+        let config = try XCTUnwrap(generationConfig)
+        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE"])
+        let imageConfig = try XCTUnwrap(config["imageConfig"] as? [String: Any])
+        XCTAssertEqual(imageConfig["aspectRatio"] as? String, "16:9")
+        XCTAssertEqual(imageConfig["imageSize"] as? String, "2K")
+    }
+
+    func testGenerateImagePreservesExplicit4KForGemini31Flash() async throws {
         var generationConfig: [String: Any]?
         let responseData = makeImageResponseData()
 
@@ -87,9 +113,36 @@ final class NanoBanana2ImageServiceRequestTests: XCTestCase {
         )
 
         let config = try XCTUnwrap(generationConfig)
-        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE", "TEXT"])
+        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE"])
         let imageConfig = try XCTUnwrap(config["imageConfig"] as? [String: Any])
         XCTAssertEqual(imageConfig["imageSize"] as? String, "4K")
+    }
+
+    func testGenerateImageFallsBackToSafeAspectRatioAndDefaultSizeForGemini31Flash() async throws {
+        var generationConfig: [String: Any]?
+        let responseData = makeImageResponseData()
+
+        MockURLProtocol.requestHandler = { request in
+            let requestBody = self.requestBodyData(from: request)
+            let json = try? JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            generationConfig = json?["generationConfig"] as? [String: Any]
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        _ = try await imageService.generateImage(
+            prompt: "Test prompt",
+            model: .gemini31Flash,
+            apiKey: "test-key",
+            aspectRatio: "4:3",
+            imageResolution: "  "
+        )
+
+        let config = try XCTUnwrap(generationConfig)
+        XCTAssertEqual(config["responseModalities"] as? [String], ["IMAGE"])
+        let imageConfig = try XCTUnwrap(config["imageConfig"] as? [String: Any])
+        XCTAssertEqual(imageConfig["aspectRatio"] as? String, "16:9")
+        XCTAssertEqual(imageConfig["imageSize"] as? String, "2K")
     }
 
     private func makeImageResponseData() -> Data {

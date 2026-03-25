@@ -45,6 +45,7 @@ Suggest scenes worth visualizing:
 Each needs:
 - excerpt: a verbatim excerpt from the chapter, long enough to capture the scene (2-6 sentences or more if needed). Use contiguous text only. No paraphrase, no added words, no [N] labels.
 - sourceBlockId: block number [N] where the excerpt starts (if it spans multiple blocks, use the first).
+- aspectRatio: choose exactly one of 16:9, 1:1, or 9:16 based on the best composition for the scene.
 Skip if nothing merits visualization.
 """
         } else {
@@ -330,6 +331,29 @@ Excerpt:
 \(excerpt)
 \"\"\"
 """
+    }
+
+    static func rewriteImagePrompt(originalPrompt: String, refusalReason: String) -> LLMRequestPrompt {
+        let prompt = """
+Rewrite the following image generation prompt so it keeps the same scene and intent but avoids triggering safety or policy filters.
+
+Rules:
+- Keep the core visual composition and mood.
+- Remove or soften details likely to trigger filters.
+- Prefer neutral, non-graphic wording.
+- Return ONLY the rewritten prompt text.
+
+Original prompt:
+\"\"\"
+\(originalPrompt)
+\"\"\"
+
+Model refusal/error reason:
+\"\"\"
+\(refusalReason)
+\"\"\"
+"""
+        return LLMRequestPrompt(text: prompt)
     }
 
     // MARK: - Search Query Distillation

@@ -710,9 +710,6 @@ struct SettingsView: View {
         .onChange(of: state.settings) { _, _ in
             state.settings.save()
         }
-        .onChange(of: state.splitRatio) { _, _ in
-            state.saveSplitRatio()
-        }
     }
 
     private func apiKeyCard(

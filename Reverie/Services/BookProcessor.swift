@@ -381,7 +381,12 @@ final class BookProcessor {
         let inputs = suggestions.map { suggestion -> ImageService.ImageSuggestionInput in
             let validBlockId = suggestion.sourceBlockId > 0 && suggestion.sourceBlockId <= blockCount ? suggestion.sourceBlockId : 1
             let prompt = appState.llmService.imagePromptFromExcerpt(suggestion.excerpt, rewrite: appState.settings.rewriteImageExcerpts)
-            return ImageService.ImageSuggestionInput(excerpt: suggestion.excerpt, prompt: prompt, sourceBlockId: validBlockId)
+            return ImageService.ImageSuggestionInput(
+                excerpt: suggestion.excerpt,
+                prompt: prompt,
+                sourceBlockId: validBlockId,
+                aspectRatio: suggestion.aspectRatio
+            )
         }
         
         let results = await appState.imageService.generateImages(
@@ -399,26 +404,59 @@ final class BookProcessor {
         
         for result in results {
             if Task.isCancelled { return }
-            
-            // Track total image count
-            liveImageCount += 1
-            onImageCountUpdate?(liveImageCount)
-            
-            // Fix Real Mode Image Cost Tracking
-            let pricing = PricingCatalog.imagePricing(for: appState.settings.imageModel)
-            if let perImage = pricing.outputPerImage {
-                updateCost(perImage)
-            } else if let outputPerM = pricing.outputPerMToken {
-                // Approximate image cost if based on tokens
-                let tokens = CostEstimates.imageOutputTokensPerImage
-                updateCost((Double(tokens) / 1_000_000) * outputPerM)
-            }
-            
+
             do {
-                let imagePath = try appState.imageService.saveImage(result.imageData, for: bookId, chapterId: chapterId)
-                var image = GeneratedImage(chapterId: chapterId, prompt: result.excerpt, imagePath: imagePath, sourceBlockId: result.sourceBlockId)
+                var status = result.status
+                var failureReason = result.failureReason
+                var imagePath = ""
+
+                if result.status == .success {
+                    guard let data = result.imageData else {
+                        status = .failed
+                        failureReason = "Image generation returned no image data."
+                        var image = GeneratedImage(
+                            chapterId: chapterId,
+                            excerpt: result.excerpt,
+                            prompt: result.prompt,
+                            imagePath: imagePath,
+                            sourceBlockId: result.sourceBlockId,
+                            aspectRatio: result.aspectRatio,
+                            status: status,
+                            failureReason: failureReason
+                        )
+                        try appState.database.saveImage(&image)
+                        continue
+                    }
+
+                    imagePath = try appState.imageService.saveImage(data, for: bookId, chapterId: chapterId)
+
+                    // Track total image count and cost for successful generations only
+                    liveImageCount += 1
+                    onImageCountUpdate?(liveImageCount)
+
+                    let pricing = PricingCatalog.imagePricing(for: appState.settings.imageModel)
+                    if let perImage = pricing.outputPerImage {
+                        updateCost(perImage)
+                    } else if let outputPerM = pricing.outputPerMToken {
+                        let tokens = CostEstimates.imageOutputTokensPerImage
+                        updateCost((Double(tokens) / 1_000_000) * outputPerM)
+                    }
+                }
+
+                var image = GeneratedImage(
+                    chapterId: chapterId,
+                    excerpt: result.excerpt,
+                    prompt: result.prompt,
+                    imagePath: imagePath,
+                    sourceBlockId: result.sourceBlockId,
+                    aspectRatio: result.aspectRatio,
+                    status: status,
+                    failureReason: failureReason
+                )
                 try appState.database.saveImage(&image)
-                appState.readingStats.recordImage()
+                if status == .success {
+                    appState.readingStats.recordImage()
+                }
             } catch {
                 print("Failed to save image: \(error)")
             }

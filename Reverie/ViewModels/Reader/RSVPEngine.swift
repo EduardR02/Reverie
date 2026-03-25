@@ -132,6 +132,14 @@ final class RSVPEngine {
         currentWordIndex = 0
         pendingPauseContent = nil
     }
+
+    func unloadChapter() {
+        pause()
+        words = []
+        pausePoints = [:]
+        currentWordIndex = 0
+        pendingPauseContent = nil
+    }
     
     func setWPM(_ wpm: Double) {
         self.wpm = max(50.0, wpm)

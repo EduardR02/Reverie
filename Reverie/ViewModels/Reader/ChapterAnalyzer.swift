@@ -215,7 +215,12 @@ final class ChapterAnalyzer {
                 let inputs = suggestions.map {
                     let blockId = ($0.sourceBlockId > 0 && $0.sourceBlockId <= blockCount) ? $0.sourceBlockId : 1
                     let prompt = llm.imagePromptFromExcerpt($0.excerpt, rewrite: settings.rewriteImageExcerpts)
-                    return ImageService.ImageSuggestionInput(excerpt: $0.excerpt, prompt: prompt, sourceBlockId: blockId)
+                    return ImageService.ImageSuggestionInput(
+                        excerpt: $0.excerpt,
+                        prompt: prompt,
+                        sourceBlockId: blockId,
+                        aspectRatio: $0.aspectRatio
+                    )
                 }
                 
                 let results = await imageService.generateImages(
@@ -224,12 +229,11 @@ final class ChapterAnalyzer {
                     apiKey: apiKey,
                     maxConcurrent: settings.maxConcurrentRequests
                 )
+
                 for result in results {
                     if Task.isCancelled { break }
                     do {
-                        let path = try imageService.saveImage(result.imageData, for: bookId, chapterId: chapterId)
-                        var image = GeneratedImage(chapterId: chapterId, prompt: result.excerpt, imagePath: path, sourceBlockId: result.sourceBlockId)
-                        try database.saveImage(&image)
+                        let image = try persistGeneratedImage(result, bookId: bookId, chapterId: chapterId)
                         continuation.yield(image)
                     } catch {
                         continue
@@ -239,6 +243,101 @@ final class ChapterAnalyzer {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    func retryImage(_ image: GeneratedImage, book: Book, chapter: Chapter) async throws -> GeneratedImage {
+        try await regenerateImage(image, book: book, chapter: chapter, rewritePrompt: false)
+    }
+
+    func rewriteAndRetryImage(_ image: GeneratedImage, book: Book, chapter: Chapter) async throws -> GeneratedImage {
+        try await regenerateImage(image, book: book, chapter: chapter, rewritePrompt: true)
+    }
+
+    private func regenerateImage(
+        _ image: GeneratedImage,
+        book: Book,
+        chapter: Chapter,
+        rewritePrompt: Bool
+    ) async throws -> GeneratedImage {
+        guard let chapterId = chapter.id, let bookId = book.id else {
+            throw ImageService.ImageError.invalidResponse
+        }
+
+        let apiKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            throw ImageService.ImageError.missingAPIKey
+        }
+
+        updateState(for: chapterId) { $0.isProcessingImages = true }
+        defer { updateState(for: chapterId) { $0.isProcessingImages = false } }
+
+        let promptToUse: String
+        if rewritePrompt {
+            let reason = image.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackReason = (reason?.isEmpty == false ? reason : nil) ?? "The image model rejected the prompt."
+            promptToUse = try await llm.rewriteImagePrompt(originalPrompt: image.prompt, refusalReason: fallbackReason, settings: settings)
+        } else {
+            promptToUse = image.prompt
+        }
+
+        let input = ImageService.ImageSuggestionInput(
+            excerpt: image.excerpt,
+            prompt: promptToUse,
+            sourceBlockId: image.sourceBlockId,
+            aspectRatio: image.aspectRatio
+        )
+        guard let result = await imageService.generateImages(
+            from: [input],
+            model: settings.imageModel,
+            apiKey: apiKey,
+            maxConcurrent: 1
+        ).first else {
+            throw ImageService.ImageError.invalidResponse
+        }
+
+        var updatedImage = image
+        updatedImage.prompt = promptToUse
+        return try persistGeneratedImage(result, bookId: bookId, chapterId: chapterId, existingImage: updatedImage)
+    }
+
+    private func persistGeneratedImage(
+        _ result: ImageService.GeneratedImageResult,
+        bookId: Int64,
+        chapterId: Int64,
+        existingImage: GeneratedImage? = nil
+    ) throws -> GeneratedImage {
+        var status = result.status
+        var failureReason = result.failureReason
+        var imagePath = ""
+
+        if status == .success {
+            if let data = result.imageData {
+                imagePath = try imageService.saveImage(data, for: bookId, chapterId: chapterId)
+            } else {
+                status = .failed
+                failureReason = "Image generation returned no image data."
+            }
+        }
+
+        var image = existingImage ?? GeneratedImage(
+            chapterId: chapterId,
+            excerpt: result.excerpt,
+            prompt: result.prompt,
+            imagePath: imagePath,
+            sourceBlockId: result.sourceBlockId,
+            aspectRatio: result.aspectRatio
+        )
+        image.chapterId = chapterId
+        image.excerpt = result.excerpt
+        image.prompt = result.prompt
+        image.imagePath = imagePath
+        image.sourceBlockId = result.sourceBlockId
+        image.aspectRatio = result.aspectRatio
+        image.status = status
+        image.failureReason = failureReason
+
+        try database.saveImage(&image)
+        return image
     }
     
     // Classification

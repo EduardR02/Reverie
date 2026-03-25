@@ -46,18 +46,18 @@ enum PricingCatalog {
     static let cachedInputMultiplier: Double = 0.1
 
     static func textPricing(for modelId: String) -> ModelPricing? {
-        switch modelId {
-        case "gemini-3-pro-preview":
+        switch SupportedModels.canonicalLLMModelID(modelId) {
+        case SupportedModels.Google.gemini31ProPreview:
             return ModelPricing(inputPerMToken: 2, outputPerMToken: 12, cachedInputMultiplier: cachedInputMultiplier)
-        case "gemini-3-flash-preview":
+        case SupportedModels.Google.gemini3FlashPreview:
             return ModelPricing(inputPerMToken: 0.5, outputPerMToken: 3, cachedInputMultiplier: cachedInputMultiplier)
-        case "gpt-5.2":
-            return ModelPricing(inputPerMToken: 1.75, outputPerMToken: 14, cachedInputMultiplier: cachedInputMultiplier)
-        case "claude-opus-4-5":
+        case SupportedModels.OpenAI.gpt54:
+            return ModelPricing(inputPerMToken: 2.5, outputPerMToken: 15, cachedInputMultiplier: cachedInputMultiplier)
+        case SupportedModels.Anthropic.opus45, SupportedModels.Anthropic.opus46:
             return ModelPricing(inputPerMToken: 5, outputPerMToken: 25, cachedInputMultiplier: cachedInputMultiplier)
-        case "claude-sonnet-4-5":
+        case SupportedModels.Anthropic.sonnet45:
             return ModelPricing(inputPerMToken: 3, outputPerMToken: 15, cachedInputMultiplier: cachedInputMultiplier)
-        case "claude-haiku-4-5":
+        case SupportedModels.Anthropic.haiku45:
             return ModelPricing(inputPerMToken: 1, outputPerMToken: 5, cachedInputMultiplier: cachedInputMultiplier)
         default:
             return nil

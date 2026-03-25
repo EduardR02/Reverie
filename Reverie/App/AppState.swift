@@ -17,6 +17,8 @@ enum AppScreen {
 
 @Observable @MainActor
 final class AppState {
+    static let splitRatioDefaultsKey = "splitRatio"
+
     // Navigation
     var currentScreen: AppScreen = .home
     var currentBook: Book?
@@ -48,7 +50,11 @@ final class AppState {
             }
         }
     }
-    var splitRatio: CGFloat = 0.65  // Persisted
+    var splitRatio: CGFloat = 0.65 {  // Persisted
+        didSet {
+            saveSplitRatio()
+        }
+    }
 
     // Processing State
     var isProcessingBook = false
@@ -119,8 +125,8 @@ final class AppState {
         }
 
         // Load persisted split ratio
-        if let ratio = UserDefaults.standard.object(forKey: "splitRatio") as? CGFloat {
-            self.splitRatio = ratio
+        if let ratio = UserDefaults.standard.object(forKey: Self.splitRatioDefaultsKey) as? Double {
+            self.splitRatio = CGFloat(ratio)
         }
 
         #if os(macOS)
@@ -449,7 +455,7 @@ final class AppState {
     // MARK: - Persistence
 
     func saveSplitRatio() {
-        UserDefaults.standard.set(splitRatio, forKey: "splitRatio")
+        UserDefaults.standard.set(Double(splitRatio), forKey: Self.splitRatioDefaultsKey)
     }
 
     // MARK: - Import
@@ -684,13 +690,19 @@ struct UserSettings: Codable, Equatable {
               let settings = try? JSONDecoder().decode(UserSettings.self, from: data) else {
             return UserSettings()
         }
-        return settings
+        return settings.normalized()
     }
 
     func save() {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: "userSettings")
         }
+    }
+
+    func normalized() -> UserSettings {
+        var normalized = self
+        normalized.llmModel = SupportedModels.canonicalLLMModelID(llmModel)
+        return normalized
     }
 }
 
@@ -715,25 +727,27 @@ enum LLMProvider: String, Codable, CaseIterable, CustomStringConvertible {
     }
 
     func modelName(for id: String) -> String {
-        models.first { $0.id == id }?.name ?? id
+        let resolvedID = SupportedModels.canonicalLLMModelID(id)
+        return models.first { $0.id == resolvedID }?.name ?? resolvedID
     }
 
     var models: [LLMModel] {
         switch self {
         case .google:
             return [
-                LLMModel(id: "gemini-3-flash-preview", name: "Gemini 3 Flash"),
-                LLMModel(id: "gemini-3-pro-preview", name: "Gemini 3 Pro")
+                LLMModel(id: SupportedModels.Google.gemini3FlashPreview, name: "Gemini 3 Flash"),
+                LLMModel(id: SupportedModels.Google.gemini31ProPreview, name: "Gemini 3.1 Pro")
             ]
         case .openai:
             return [
-                LLMModel(id: "gpt-5.2", name: "GPT 5.2")
+                LLMModel(id: SupportedModels.OpenAI.gpt54, name: "GPT 5.4")
             ]
         case .anthropic:
             return [
-                LLMModel(id: "claude-haiku-4-5", name: "Claude 4.5 Haiku"),
-                LLMModel(id: "claude-sonnet-4-5", name: "Claude 4.5 Sonnet"),
-                LLMModel(id: "claude-opus-4-5", name: "Claude 4.5 Opus")
+                LLMModel(id: SupportedModels.Anthropic.haiku45, name: "Claude 4.5 Haiku"),
+                LLMModel(id: SupportedModels.Anthropic.sonnet45, name: "Claude 4.5 Sonnet"),
+                LLMModel(id: SupportedModels.Anthropic.opus45, name: "Claude 4.5 Opus"),
+                LLMModel(id: SupportedModels.Anthropic.opus46, name: "Claude 4.6 Opus")
             ]
         }
     }

@@ -21,21 +21,42 @@ final class ImageService {
         let excerpt: String
         let prompt: String
         let sourceBlockId: Int
+        let aspectRatio: String?
+
+        init(
+            excerpt: String,
+            prompt: String,
+            sourceBlockId: Int,
+            aspectRatio: String? = nil
+        ) {
+            self.excerpt = excerpt
+            self.prompt = prompt
+            self.sourceBlockId = sourceBlockId
+            self.aspectRatio = aspectRatio
+        }
     }
 
     struct GeneratedImageResult {
         let excerpt: String
-        let imageData: Data
+        let prompt: String
+        let imageData: Data?
         let sourceBlockId: Int
+        let aspectRatio: String
+        let status: GeneratedImage.Status
+        let failureReason: String?
     }
 
     // MARK: - Generate Image
+
+    nonisolated private static let defaultAspectRatio = "16:9"
+    nonisolated private static let supportedAspectRatios: Set<String> = ["16:9", "1:1", "9:16"]
+    private static let defaultGeminiImageSize = "2K"
 
     func generateImage(
         prompt: String,
         model: ImageModel,
         apiKey: String,
-        aspectRatio: String = "16:9",
+        aspectRatio: String? = nil,
         imageResolution: String = "2K"
     ) async throws -> Data {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,11 +70,23 @@ final class ImageService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Build imageConfig matching JS implementation
-        let isGemini3 = model.apiModel.contains("gemini-3")
-        var imageConfig: [String: Any] = ["aspectRatio": aspectRatio]
-        if isGemini3 {
-            imageConfig["imageSize"] = imageResolution
+        let normalizedAspectRatio = Self.normalizedAspectRatio(aspectRatio)
+        let normalizedImageResolution = normalizedImageResolution(imageResolution, model: model)
+
+        var imageConfig: [String: Any] = [
+            "aspectRatio": normalizedAspectRatio
+        ]
+        if let normalizedImageResolution {
+            imageConfig["imageSize"] = normalizedImageResolution
+        }
+
+        var generationConfig: [String: Any] = [
+            "temperature": 1.0,
+            "maxOutputTokens": 32768,
+            "responseModalities": ["IMAGE"]
+        ]
+        if !imageConfig.isEmpty {
+            generationConfig["imageConfig"] = imageConfig
         }
 
         let body: [String: Any] = [
@@ -66,32 +99,30 @@ final class ImageService {
                 ["category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"],
                 ["category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"]
             ],
-            "generationConfig": [
-                "temperature": 1.0,
-                "maxOutputTokens": 32768,
-                "responseModalities": ["IMAGE", "TEXT"],
-                "imageConfig": imageConfig
-            ]
+            "generationConfig": generationConfig
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let data = try await performRequest(request)
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let candidates = json["candidates"] as? [[String: Any]],
-              let content = candidates.first?["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]] else {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ImageError.invalidResponse
         }
 
-        let inlineData = parts.compactMap { $0["inlineData"] as? [String: Any] }.first
-        let mimeType = inlineData?["mimeType"] as? String
-        guard let base64Image = inlineData?["data"] as? String,
-              let imageData = sanitizedImageData(from: base64Image, mimeType: mimeType) else {
-            throw ImageError.invalidResponse
+        let parts = responseParts(from: json)
+        if let imageData = bestImageData(from: parts) {
+            return imageData
         }
 
-        return imageData
+        if let refusal = extractResponseText(from: parts) {
+            throw ImageError.noImageReturned(refusal)
+        }
+
+        if let blockedReason = Self.blockedPromptFeedbackReason(from: json) {
+            throw ImageError.noImageReturned(blockedReason)
+        }
+
+        throw ImageError.invalidResponse
     }
 
     func generateImages(
@@ -111,24 +142,239 @@ final class ImageService {
         let results = await mapWithConcurrency(items: suggestions, maxConcurrent: limit) { suggestion in
             onRequestStart?()
             defer { onRequestFinish?() }
+
+            let resolvedAspectRatio = Self.normalizedAspectRatio(suggestion.aspectRatio)
+
             do {
                 let data = try await self.generateImage(
                     prompt: suggestion.prompt,
                     model: model,
-                    apiKey: trimmedKey
+                    apiKey: trimmedKey,
+                    aspectRatio: resolvedAspectRatio
                 )
+
                 return GeneratedImageResult(
                     excerpt: suggestion.excerpt,
+                    prompt: suggestion.prompt,
                     imageData: data,
-                    sourceBlockId: suggestion.sourceBlockId
+                    sourceBlockId: suggestion.sourceBlockId,
+                    aspectRatio: resolvedAspectRatio,
+                    status: .success,
+                    failureReason: nil
                 )
             } catch {
                 print("Failed to generate image: \(error)")
-                return nil
+
+                let (status, reason) = Self.failureMetadata(from: error)
+                return GeneratedImageResult(
+                    excerpt: suggestion.excerpt,
+                    prompt: suggestion.prompt,
+                    imageData: nil,
+                    sourceBlockId: suggestion.sourceBlockId,
+                    aspectRatio: resolvedAspectRatio,
+                    status: status,
+                    failureReason: reason
+                )
             }
         }
 
-        return results.compactMap { $0 }
+        return results
+    }
+
+    private struct ResponsePart {
+        let text: String?
+        let inlineData: [String: Any]?
+        let isThought: Bool
+        let candidateIndex: Int
+        let partIndex: Int
+    }
+
+    private struct ResponseImage {
+        let data: Data
+        let isThought: Bool
+        let candidateIndex: Int
+        let partIndex: Int
+    }
+
+    private nonisolated static func normalizedAspectRatio(_ aspectRatio: String?) -> String {
+        let trimmed = aspectRatio?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased() ?? ""
+        guard Self.supportedAspectRatios.contains(trimmed) else {
+            return Self.defaultAspectRatio
+        }
+        return trimmed
+    }
+
+    private func normalizedImageResolution(_ imageResolution: String, model: ImageModel) -> String? {
+        guard SupportedModels.supportsGeminiImageSize(model.apiModel) else {
+            return nil
+        }
+
+        let trimmed = imageResolution
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+
+        switch trimmed {
+        case "":
+            return Self.defaultGeminiImageSize
+        case "1K", "2K", "4K":
+            return trimmed
+        case "512" where model == .gemini31Flash:
+            return trimmed
+        default:
+            return Self.defaultGeminiImageSize
+        }
+    }
+
+    private func responseParts(from json: [String: Any]) -> [ResponsePart] {
+        let candidates = json["candidates"] as? [[String: Any]] ?? []
+
+        return candidates.enumerated().flatMap { candidateIndex, candidate in
+            guard let content = candidate["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]] else {
+                return [ResponsePart]()
+            }
+
+            return parts.enumerated().map { partIndex, part in
+                ResponsePart(
+                    text: part["text"] as? String,
+                    inlineData: inlineData(from: part),
+                    isThought: part["thought"] as? Bool ?? false,
+                    candidateIndex: candidateIndex,
+                    partIndex: partIndex
+                )
+            }
+        }
+    }
+
+    private func inlineData(from part: [String: Any]) -> [String: Any]? {
+        if let inlineData = part["inlineData"] as? [String: Any] {
+            return inlineData
+        }
+        return part["inline_data"] as? [String: Any]
+    }
+
+    private func mimeType(from inlineData: [String: Any]) -> String? {
+        if let mimeType = inlineData["mimeType"] as? String {
+            return mimeType
+        }
+        return inlineData["mime_type"] as? String
+    }
+
+    private func bestImageData(from parts: [ResponsePart]) -> Data? {
+        let images = parts.compactMap { part -> ResponseImage? in
+            guard let inlineData = part.inlineData,
+                  let base64Image = inlineData["data"] as? String else {
+                return nil
+            }
+
+            let mimeType = mimeType(from: inlineData)
+            if let mimeType, !mimeType.lowercased().hasPrefix("image/") {
+                return nil
+            }
+
+            guard let imageData = sanitizedImageData(from: base64Image, mimeType: mimeType) else {
+                return nil
+            }
+
+            return ResponseImage(
+                data: imageData,
+                isThought: part.isThought,
+                candidateIndex: part.candidateIndex,
+                partIndex: part.partIndex
+            )
+        }
+
+        return images.max(by: isLessPreferredImage)?.data
+    }
+
+    private func isLessPreferredImage(_ lhs: ResponseImage, _ rhs: ResponseImage) -> Bool {
+        if lhs.isThought != rhs.isThought {
+            return lhs.isThought && !rhs.isThought
+        }
+        if lhs.candidateIndex != rhs.candidateIndex {
+            return lhs.candidateIndex > rhs.candidateIndex
+        }
+        return lhs.partIndex < rhs.partIndex
+    }
+
+    private func extractResponseText(from parts: [ResponsePart]) -> String? {
+        let text = parts
+            .compactMap(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    private nonisolated static func blockedPromptFeedbackReason(from json: [String: Any]) -> String? {
+        guard let promptFeedback = json["promptFeedback"] as? [String: Any] else {
+            return nil
+        }
+
+        if let message = nonEmptyString(promptFeedback["blockReasonMessage"]) {
+            return message
+        }
+
+        if let blockReason = nonEmptyString(promptFeedback["blockReason"]) {
+            return "Prompt blocked by Gemini: \(blockReason)."
+        }
+
+        let blockedCategories = (promptFeedback["safetyRatings"] as? [[String: Any]] ?? []).compactMap { rating -> String? in
+            guard rating["blocked"] as? Bool == true else {
+                return nil
+            }
+            return nonEmptyString(rating["category"])
+        }
+
+        guard !blockedCategories.isEmpty else {
+            return nil
+        }
+        return "Prompt blocked by Gemini safety filters (\(blockedCategories.joined(separator: ", ")))."
+    }
+
+    private nonisolated static func nonEmptyString(_ value: Any?) -> String? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private nonisolated static func failureMetadata(from error: Error) -> (GeneratedImage.Status, String) {
+        if let imageError = error as? ImageError {
+            switch imageError {
+            case .noImageReturned(let reason):
+                return (isLikelyRefusal(reason) ? .refused : .failed, reason)
+            case .apiError(let message):
+                return (isLikelyRefusal(message) ? .refused : .failed, message)
+            default:
+                let fallback = imageError.errorDescription ?? "Image generation failed."
+                return (.failed, fallback)
+            }
+        }
+
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (.failed, message.isEmpty ? "Image generation failed." : message)
+    }
+
+    private nonisolated static func isLikelyRefusal(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        let refusalSignals = [
+            "policy",
+            "safety",
+            "cannot",
+            "can't",
+            "refuse",
+            "not able",
+            "not allowed",
+            "disallowed",
+            "blocked",
+            "unsafe",
+            "content filter",
+            "harmful"
+        ]
+        return refusalSignals.contains { normalized.contains($0) }
     }
 
     // MARK: - Save Image
@@ -261,12 +507,12 @@ final class ImageService {
     private func mapWithConcurrency<T: Sendable, U: Sendable>(
         items: [T],
         maxConcurrent: Int,
-        transform: @Sendable @escaping (T) async -> U?
-    ) async -> [U?] {
-        var results = Array<U?>(repeating: nil, count: items.count)
+        transform: @Sendable @escaping (T) async -> U
+    ) async -> [U] {
+        var results: [U?] = Array(repeating: nil, count: items.count)
         var nextIndex = 0
 
-        await withTaskGroup(of: (Int, U?).self) { group in
+        await withTaskGroup(of: (Int, U).self) { group in
             func enqueueNext() {
                 guard nextIndex < items.count else { return }
                 let index = nextIndex
@@ -287,7 +533,7 @@ final class ImageService {
             }
         }
 
-        return results
+        return results.compactMap { $0 }
     }
 
     func saveImage(_ data: Data, for bookId: Int64, chapterId: Int64) throws -> String {
@@ -325,6 +571,7 @@ final class ImageService {
         case apiError(String)
         case httpError(Int)
         case invalidResponse
+        case noImageReturned(String)
         case saveFailed
 
         var errorDescription: String? {
@@ -337,6 +584,8 @@ final class ImageService {
                 return "Image generation failed with HTTP \(status)."
             case .invalidResponse:
                 return "Image generation returned an invalid response."
+            case .noImageReturned(let reason):
+                return reason
             case .saveFailed:
                 return "Failed to save generated image."
             }

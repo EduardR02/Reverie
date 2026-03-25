@@ -161,6 +161,26 @@ final class DatabaseService: @unchecked Sendable {
             try db.create(index: "idx_footnotes_chapterId", on: "footnotes", columns: ["chapterId"])
         }
 
+        migrator.registerMigration("v2_image_status") { db in
+            try db.alter(table: "generated_images") { t in
+                t.add(column: "status", .text).notNull().defaults(to: GeneratedImage.Status.success.rawValue)
+                t.add(column: "failureReason", .text)
+            }
+        }
+
+        migrator.registerMigration("v3_image_excerpt") { db in
+            try db.alter(table: "generated_images") { t in
+                t.add(column: "excerpt", .text).notNull().defaults(to: "")
+            }
+            try db.execute(sql: "UPDATE generated_images SET excerpt = prompt WHERE excerpt = ''")
+        }
+
+        migrator.registerMigration("v4_image_aspect_ratio") { db in
+            try db.alter(table: "generated_images") { t in
+                t.add(column: "aspectRatio", .text)
+            }
+        }
+
         do {
             try migrator.migrate(dbQueue)
         } catch {
@@ -434,7 +454,9 @@ final class DatabaseService: @unchecked Sendable {
         try dbQueue.read { db in
             let insightsCount = try Annotation.fetchCount(db)
             let finishedCount = try Book.filter(Book.Columns.isFinished == true).fetchCount(db)
-            let imagesCount = try GeneratedImage.fetchCount(db)
+            let imagesCount = try GeneratedImage
+                .filter(GeneratedImage.Columns.status == GeneratedImage.Status.success.rawValue)
+                .fetchCount(db)
             let quizzesTotal = try Quiz.fetchCount(db)
             
             let quizzes = try Quiz.filter(Quiz.Columns.userAnswered == true).fetchAll(db)

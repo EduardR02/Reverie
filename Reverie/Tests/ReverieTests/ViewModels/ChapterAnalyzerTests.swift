@@ -229,4 +229,76 @@ final class ChapterAnalyzerTests: XCTestCase {
         XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: false, processed: true, status: .completed))
         XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: false, processed: false, status: .pending))
     }
+
+    func test_generateImages_persistsWrappedPromptInsteadOfExcerpt() async throws {
+        var book = Book(title: "Book 1", author: "Author 1", epubPath: "")
+        try database.saveBook(&book)
+
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "Chapter 1", contentHTML: "<p>Content</p>")
+        try database.saveChapter(&chapter)
+
+        let excerpt = "A narrow alley at dusk"
+        let expectedPrompt = llmService.imagePromptFromExcerpt(excerpt, rewrite: settings.rewriteImageExcerpts)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!
+            let data = #"{"error":{"message":"blocked by policy","code":400}}"#.data(using: .utf8)!
+            return (response, data)
+        }
+
+        var generated: [GeneratedImage] = []
+        let stream = analyzer.generateImages(
+            suggestions: [.init(excerpt: excerpt, sourceBlockId: 1)],
+            book: book,
+            chapter: chapter
+        )
+        for try await image in stream {
+            generated.append(image)
+        }
+
+        XCTAssertEqual(generated.count, 1)
+        XCTAssertEqual(generated[0].excerpt, excerpt)
+        XCTAssertEqual(generated[0].prompt, expectedPrompt)
+
+        let persisted = try database.fetchImages(for: chapter)
+        XCTAssertEqual(persisted.count, 1)
+        XCTAssertEqual(persisted[0].excerpt, excerpt)
+        XCTAssertEqual(persisted[0].prompt, expectedPrompt)
+    }
+
+    func test_retryImage_usesStoredPromptForGenerationRequest() async throws {
+        var book = Book(title: "Book 1", author: "Author 1", epubPath: "")
+        try database.saveBook(&book)
+
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "Chapter 1", contentHTML: "<p>Content</p>")
+        try database.saveChapter(&chapter)
+
+        let storedPrompt = "FULL_WRAPPED_IMAGE_PROMPT"
+        var failedImage = GeneratedImage(
+            chapterId: chapter.id!,
+            excerpt: "Short excerpt",
+            prompt: storedPrompt,
+            imagePath: "",
+            sourceBlockId: 1,
+            status: .failed,
+            failureReason: "Old failure"
+        )
+        try database.saveImage(&failedImage)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!
+            let data = #"{"error":{"message":"retry still blocked","code":400}}"#.data(using: .utf8)!
+            return (response, data)
+        }
+
+        let updated = try await analyzer.retryImage(failedImage, book: book, chapter: chapter)
+
+        XCTAssertEqual(updated.excerpt, "Short excerpt")
+        XCTAssertEqual(updated.prompt, storedPrompt)
+
+        let persisted = try database.fetchImages(for: chapter)
+        XCTAssertEqual(persisted.count, 1)
+        XCTAssertEqual(persisted[0].excerpt, "Short excerpt")
+        XCTAssertEqual(persisted[0].prompt, storedPrompt)
+    }
 }

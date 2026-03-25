@@ -22,7 +22,7 @@ protocol LLMProviderClient: Sendable {
 
 struct OpenAIProvider: LLMProviderClient {
     private func isReasoner(_ model: String) -> Bool {
-        model.hasPrefix("gpt-5") || model.hasPrefix("o1") || model.hasPrefix("o3")
+        SupportedModels.isOpenAIReasoningModel(model)
     }
 
     func makeRequest(
@@ -35,11 +35,12 @@ struct OpenAIProvider: LLMProviderClient {
         stream: Bool,
         webSearch: Bool
     ) throws -> URLRequest {
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
         let url = URL(string: "https://api.openai.com/v1/responses")!
-        let reasoner = isReasoner(model)
+        let reasoner = isReasoner(resolvedModel)
 
         var body: [String: Any] = [
-            "model": model,
+            "model": resolvedModel,
             "input": [
                 ["role": "user", "content": [["type": "input_text", "text": prompt.text]]]
             ],
@@ -163,14 +164,15 @@ struct GeminiProvider: LLMProviderClient {
         stream: Bool,
         webSearch: Bool
     ) throws -> URLRequest {
-        let isGemini3 = model.contains("gemini-3")
-        let isGemini25 = model.contains("gemini-2.5") && !model.contains("image")
-        let isGemini25Pro = isGemini25 && model.contains("pro")
-        let canToggle = isGemini25 && model.contains("flash")
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
+        let isGemini3 = SupportedModels.isGemini3Family(resolvedModel)
+        let isGemini25 = SupportedModels.isGemini25TextModel(resolvedModel)
+        let isGemini25Pro = isGemini25 && resolvedModel.contains("pro")
+        let canToggle = isGemini25 && resolvedModel.contains("flash")
         let shouldThink = reasoning != .off
         let isThinking = isGemini3 || isGemini25Pro || (canToggle && shouldThink)
 
-        let maxTokens = isThinking ? 65536 : geminiMaxTokens(for: model)
+        let maxTokens = isThinking ? 65536 : geminiMaxTokens(for: resolvedModel)
         var generationConfig: [String: Any] = [
             "temperature": temperature,
             "maxOutputTokens": maxTokens
@@ -184,7 +186,7 @@ struct GeminiProvider: LLMProviderClient {
         }
 
         if isGemini3 {
-            let isFlash = model.contains("flash")
+            let isFlash = resolvedModel.contains("flash")
             generationConfig["thinking_config"] = [
                 "thinkingLevel": reasoning.gemini3Level(isFlash: isFlash),
                 "include_thoughts": true
@@ -197,7 +199,7 @@ struct GeminiProvider: LLMProviderClient {
         }
 
         let endpoint = stream ? "streamGenerateContent?alt=sse&" : "generateContent?"
-        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(endpoint)key=\(apiKey)")!
+        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(resolvedModel):\(endpoint)key=\(apiKey)")!
 
         var body: [String: Any] = [
             "contents": [
@@ -311,7 +313,7 @@ struct GeminiProvider: LLMProviderClient {
         if model.contains("image") {
             return 32768
         }
-        if model.contains("gemini-3") || model.contains("gemini-2.5") {
+        if SupportedModels.isGemini3Family(model) || model.contains("gemini-2.5") {
             return 65536
         }
         return 8192
@@ -320,7 +322,7 @@ struct GeminiProvider: LLMProviderClient {
 
 struct AnthropicProvider: LLMProviderClient {
     private func canThink(_ model: String) -> Bool {
-        model.contains("sonnet-4") || model.contains("opus-4") || model.contains("haiku-4") || model.contains("claude-4")
+        SupportedModels.supportsAnthropicThinking(model)
     }
 
     func makeRequest(
@@ -333,8 +335,9 @@ struct AnthropicProvider: LLMProviderClient {
         stream: Bool,
         webSearch: Bool
     ) throws -> URLRequest {
+        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
-        let thinkingCapable = canThink(model)
+        let thinkingCapable = canThink(resolvedModel)
         let shouldThink = thinkingCapable && reasoning != .off
 
         let maxTokens: Int
@@ -347,7 +350,7 @@ struct AnthropicProvider: LLMProviderClient {
         }
 
         var body: [String: Any] = [
-            "model": model,
+            "model": resolvedModel,
             "max_tokens": maxTokens,
             "messages": [
                 ["role": "user", "content": contentBlocks(for: prompt)]

@@ -5,8 +5,8 @@ final class CostEstimationTests: XCTestCase {
 
     // MARK: - Text Pricing Tests
 
-    func testTextPricing_Gemini3ProPreview() {
-        let pricing = PricingCatalog.textPricing(for: "gemini-3-pro-preview")
+    func testTextPricing_Gemini31ProPreview() {
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.Google.gemini31ProPreview)
         XCTAssertNotNil(pricing)
         XCTAssertEqual(pricing?.inputPerMToken, 2.0)
         XCTAssertEqual(pricing?.outputPerMToken, 12.0)
@@ -21,16 +21,24 @@ final class CostEstimationTests: XCTestCase {
         XCTAssertEqual(pricing?.cachedInputMultiplier, PricingCatalog.cachedInputMultiplier)
     }
 
-    func testTextPricing_GPT52() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")
+    func testTextPricing_GPT54() {
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)
         XCTAssertNotNil(pricing)
-        XCTAssertEqual(pricing?.inputPerMToken, 1.75)
-        XCTAssertEqual(pricing?.outputPerMToken, 14.0)
+        XCTAssertEqual(pricing?.inputPerMToken, 2.5)
+        XCTAssertEqual(pricing?.outputPerMToken, 15.0)
         XCTAssertEqual(pricing?.cachedInputMultiplier, PricingCatalog.cachedInputMultiplier)
     }
 
     func testTextPricing_ClaudeOpus45() {
-        let pricing = PricingCatalog.textPricing(for: "claude-opus-4-5")
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.Anthropic.opus45)
+        XCTAssertNotNil(pricing)
+        XCTAssertEqual(pricing?.inputPerMToken, 5.0)
+        XCTAssertEqual(pricing?.outputPerMToken, 25.0)
+        XCTAssertEqual(pricing?.cachedInputMultiplier, PricingCatalog.cachedInputMultiplier)
+    }
+
+    func testTextPricing_ClaudeOpus46() {
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.Anthropic.opus46)
         XCTAssertNotNil(pricing)
         XCTAssertEqual(pricing?.inputPerMToken, 5.0)
         XCTAssertEqual(pricing?.outputPerMToken, 25.0)
@@ -38,7 +46,7 @@ final class CostEstimationTests: XCTestCase {
     }
 
     func testTextPricing_ClaudeSonnet45() {
-        let pricing = PricingCatalog.textPricing(for: "claude-sonnet-4-5")
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.Anthropic.sonnet45)
         XCTAssertNotNil(pricing)
         XCTAssertEqual(pricing?.inputPerMToken, 3.0)
         XCTAssertEqual(pricing?.outputPerMToken, 15.0)
@@ -46,7 +54,7 @@ final class CostEstimationTests: XCTestCase {
     }
 
     func testTextPricing_ClaudeHaiku45() {
-        let pricing = PricingCatalog.textPricing(for: "claude-haiku-4-5")
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.Anthropic.haiku45)
         XCTAssertNotNil(pricing)
         XCTAssertEqual(pricing?.inputPerMToken, 1.0)
         XCTAssertEqual(pricing?.outputPerMToken, 5.0)
@@ -77,39 +85,39 @@ final class CostEstimationTests: XCTestCase {
     // MARK: - Cost Calculation Tests
 
     func testInputCostCalculation() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let inputTokens = 1_000_000
         let expectedCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
-        XCTAssertEqual(expectedCost, 1.75)
+        XCTAssertEqual(expectedCost, 2.5)
     }
 
     func testOutputCostCalculation() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let outputTokens = 1_000_000
         let expectedCost = (Double(outputTokens) / 1_000_000) * pricing.outputPerMToken
-        XCTAssertEqual(expectedCost, 14.0)
+        XCTAssertEqual(expectedCost, 15.0)
     }
 
     func testTotalCostCalculation() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let inputTokens = 500_000
         let outputTokens = 500_000
         let inputCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
         let outputCost = (Double(outputTokens) / 1_000_000) * pricing.outputPerMToken
         let totalCost = inputCost + outputCost
-        XCTAssertEqual(inputCost, 0.875)
-        XCTAssertEqual(outputCost, 7.0)
-        XCTAssertEqual(totalCost, 7.875)
+        XCTAssertEqual(inputCost, 1.25)
+        XCTAssertEqual(outputCost, 7.5)
+        XCTAssertEqual(totalCost, 8.75)
     }
 
     func testMixedModelUsage() {
-        let gptPricing = PricingCatalog.textPricing(for: "gpt-5.2")!
-        let claudePricing = PricingCatalog.textPricing(for: "claude-opus-4-5")!
+        let gptPricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
+        let claudePricing = PricingCatalog.textPricing(for: SupportedModels.Anthropic.opus45)!
 
         let gptInputCost = (Double(1_000_000) / 1_000_000) * gptPricing.inputPerMToken
         let claudeInputCost = (Double(1_000_000) / 1_000_000) * claudePricing.inputPerMToken
 
-        XCTAssertEqual(gptInputCost, 1.75)
+        XCTAssertEqual(gptInputCost, 2.5)
         XCTAssertEqual(claudeInputCost, 5.0)
         XCTAssertGreaterThan(claudeInputCost, gptInputCost)
     }
@@ -117,7 +125,7 @@ final class CostEstimationTests: XCTestCase {
     // MARK: - Edge Case Tests
 
     func testZeroTokens() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let inputCost = (Double(0) / 1_000_000) * pricing.inputPerMToken
         let outputCost = (Double(0) / 1_000_000) * pricing.outputPerMToken
         XCTAssertEqual(inputCost, 0.0)
@@ -125,33 +133,52 @@ final class CostEstimationTests: XCTestCase {
     }
 
     func testLargeTokenCounts() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let largeTokenCount = 10_000_000
         let inputCost = (Double(largeTokenCount) / 1_000_000) * pricing.inputPerMToken
         let outputCost = (Double(largeTokenCount) / 1_000_000) * pricing.outputPerMToken
-        XCTAssertEqual(inputCost, 17.5)
-        XCTAssertEqual(outputCost, 140.0)
+        XCTAssertEqual(inputCost, 25.0)
+        XCTAssertEqual(outputCost, 150.0)
     }
 
     func testSmallTokenCounts() {
-        let pricing = PricingCatalog.textPricing(for: "gpt-5.2")!
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
         let smallTokenCount = 100
         let inputCost = (Double(smallTokenCount) / 1_000_000) * pricing.inputPerMToken
         let outputCost = (Double(smallTokenCount) / 1_000_000) * pricing.outputPerMToken
-        XCTAssertEqual(inputCost, 0.000175, accuracy: 0.000001)
-        XCTAssertEqual(outputCost, 0.0014, accuracy: 0.000001)
+        XCTAssertEqual(inputCost, 0.00025, accuracy: 0.000001)
+        XCTAssertEqual(outputCost, 0.0015, accuracy: 0.000001)
+    }
+
+    func testGPT54CachedInputCostUsesCurrentOpenAIRate() {
+        let pricing = PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)!
+        let cachedInputTokens = 1_000_000
+        let cachedInputCost = (Double(cachedInputTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cachedInputMultiplier)
+
+        XCTAssertEqual(cachedInputCost, 0.25)
     }
 
     func testModelNameVariation_CaseSensitivity() {
-        let upperCasePricing = PricingCatalog.textPricing(for: "GPT-5.2")
-        let mixedCasePricing = PricingCatalog.textPricing(for: "Gpt-5.2")
+        let upperCasePricing = PricingCatalog.textPricing(for: "GPT-5.4")
+        let mixedCasePricing = PricingCatalog.textPricing(for: "Gpt-5.4")
         XCTAssertNil(upperCasePricing)
         XCTAssertNil(mixedCasePricing)
     }
 
     func testModelNameVariation_TrailingSpaces() {
-        let pricingWithSpaces = PricingCatalog.textPricing(for: "gpt-5.2 ")
+        let pricingWithSpaces = PricingCatalog.textPricing(for: "gpt-5.4 ")
         XCTAssertNil(pricingWithSpaces)
+    }
+
+    func testLegacyModelAliasesResolveToCurrentPricing() {
+        XCTAssertEqual(
+            PricingCatalog.textPricing(for: SupportedModels.Google.legacyGemini3ProPreview)?.outputPerMToken,
+            PricingCatalog.textPricing(for: SupportedModels.Google.gemini31ProPreview)?.outputPerMToken
+        )
+        XCTAssertEqual(
+            PricingCatalog.textPricing(for: SupportedModels.OpenAI.legacyGPT52)?.outputPerMToken,
+            PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)?.outputPerMToken
+        )
     }
 
     // MARK: - Images Per Chapter Tests
@@ -180,12 +207,13 @@ final class CostEstimationTests: XCTestCase {
 
     func testCachedInputMultiplierAppliedToAllModels() {
         let models = [
-            "gemini-3-pro-preview",
-            "gemini-3-flash-preview",
-            "gpt-5.2",
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5"
+            SupportedModels.Google.gemini31ProPreview,
+            SupportedModels.Google.gemini3FlashPreview,
+            SupportedModels.OpenAI.gpt54,
+            SupportedModels.Anthropic.opus45,
+            SupportedModels.Anthropic.opus46,
+            SupportedModels.Anthropic.sonnet45,
+            SupportedModels.Anthropic.haiku45
         ]
 
         for model in models {

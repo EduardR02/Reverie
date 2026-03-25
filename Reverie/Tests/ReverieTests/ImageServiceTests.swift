@@ -380,6 +380,160 @@ final class ImageServiceTests: XCTestCase {
         }
     }
 
+    func testGenerateImageRefusalTextReturnedInError() async throws {
+        let response = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "I can't generate that image because it violates policy."
+                    }]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = response.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        do {
+            _ = try await imageService.generateImage(
+                prompt: "Prompt",
+                model: .gemini25Flash,
+                apiKey: "test-key"
+            )
+            XCTFail("Should throw refusal error")
+        } catch {
+            guard case .noImageReturned(let reason)? = error as? ImageService.ImageError else {
+                return XCTFail("Expected noImageReturned error, got: \(error)")
+            }
+            XCTAssertTrue(reason.contains("violates policy"))
+        }
+    }
+
+    func testGenerateImagePrefersFinalNonThoughtImagePart() async throws {
+        let response = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": "\(minimalPNGBase64())"
+                            },
+                            "thought": true
+                        },
+                        {
+                            "text": "Interim composition"
+                        },
+                        {
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "data": "\(minimalJPEGBase64())"
+                            }
+                        }
+                    ]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = response.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        let result = try await imageService.generateImage(
+            prompt: "Test prompt",
+            model: .gemini3Pro,
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(result, Data(base64Encoded: minimalJPEGBase64()))
+    }
+
+    func testGenerateImageFallsBackToLastThoughtImageWhenNeeded() async throws {
+        let response = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": "\(minimalPNGBase64())"
+                            },
+                            "thought": true
+                        },
+                        {
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "data": "\(minimalJPEGBase64())"
+                            },
+                            "thought": true
+                        }
+                    ]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = response.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        let result = try await imageService.generateImage(
+            prompt: "Test prompt",
+            model: .gemini3Pro,
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(result, Data(base64Encoded: minimalJPEGBase64()))
+    }
+
+    func testGenerateImageSupportsSnakeCaseInlineDataResponse() async throws {
+        let response = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": "\(minimalPNGBase64())"
+                        },
+                        "thought_signature": "sig-1"
+                    }]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = response.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        let result = try await imageService.generateImage(
+            prompt: "Test prompt",
+            model: .gemini3Pro,
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(result, Data(base64Encoded: minimalPNGBase64()))
+    }
+
     func testGenerateImageNetworkError() async throws {
         MockURLProtocol.stubError = NSError(domain: "Test", code: -1009, userInfo: nil)
 
@@ -499,10 +653,10 @@ final class ImageServiceTests: XCTestCase {
             maxConcurrent: 3
         )
 
-        XCTAssertEqual(results.count, 2)
-        let ids = Set(results.map { $0.sourceBlockId })
-        XCTAssertEqual(ids.count, 2)
-        XCTAssertTrue(ids.isSubset(of: Set([1, 2, 3])))
+        XCTAssertEqual(results.count, 3)
+        XCTAssertEqual(results.filter { $0.status == .success }.count, 2)
+        XCTAssertEqual(results.filter { $0.status == .failed }.count, 1)
+        XCTAssertEqual(results.filter { $0.imageData != nil }.count, 2)
     }
 
     func testGenerateImagesAllFailures() async throws {
@@ -519,7 +673,41 @@ final class ImageServiceTests: XCTestCase {
             apiKey: "test-key"
         )
 
-        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertTrue(results.allSatisfy { $0.status == .failed })
+        XCTAssertTrue(results.allSatisfy { $0.imageData == nil })
+    }
+
+    func testGenerateImagesClassifiesPolicyRefusalAsRefused() async throws {
+        let response = """
+        {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "This request violates safety policy."
+                    }]
+                }
+            }]
+        }
+        """
+        MockURLProtocol.stubResponseData = response.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        let results = await imageService.generateImages(
+            from: [ImageService.ImageSuggestionInput(excerpt: "E", prompt: "P", sourceBlockId: 1)],
+            model: .gemini25Flash,
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].status, .refused)
+        XCTAssertEqual(results[0].sourceBlockId, 1)
+        XCTAssertNotNil(results[0].failureReason)
     }
 
     func testGenerateImagesConcurrentLimit() async throws {
@@ -601,8 +789,16 @@ final class ImageServiceTests: XCTestCase {
 
     // MARK: - Helper Methods
 
+    private func minimalPNGBase64() -> String {
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    }
+
+    private func minimalJPEGBase64() -> String {
+        "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q=="
+    }
+
     private func createMinimalPNG() -> Data {
-        Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+        Data(base64Encoded: minimalPNGBase64())!
     }
 
     private func createPNGWithIEND() -> Data {

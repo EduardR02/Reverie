@@ -16,13 +16,19 @@ struct ReaderView: View {
 
     var body: some View {
         ZStack {
-            GeometryReader { proxy in
-                HSplitView {
-                    ReaderBookPanel(session: session)
-                        .frame(minWidth: 400, idealWidth: proxy.size.width * appState.splitRatio)
-                    ReaderAIPanel(session: session)
-                        .frame(minWidth: 280, idealWidth: proxy.size.width * (1 - appState.splitRatio))
-                }
+            ReaderProportionalSplitView(
+                splitRatio: appState.splitRatio,
+                minimumLeadingWidth: ReaderSplitLayout.readerMinimumWidth,
+                minimumTrailingWidth: ReaderSplitLayout.aiMinimumWidth,
+                onSplitRatioChange: { appState.splitRatio = $0 }
+            ) {
+                ReaderBookPanel(session: session)
+                    .environment(appState)
+                    .environment(\.theme, theme)
+            } trailing: {
+                ReaderAIPanel(session: session)
+                    .environment(appState)
+                    .environment(\.theme, theme)
             }
             Color.clear
                 .onChange(of: appState.currentChapterIndex) { _, idx in 
@@ -92,9 +98,7 @@ private struct ReaderBookPanel: View {
                         onFootnoteClick: { session.handleFootnoteClick($0) },
                         onChapterNavigationRequest: { session.handleChapterNavigation($0, $1) },
                         onImageMarkerDblClick: { id in
-                            if let img = session.images.first(where: { $0.id == id }) {
-                                withAnimation(.easeOut(duration: 0.2)) { session.expandedImage = img }
-                            }
+                            session.handleImageMarkerDoubleClick(id)
                         },
                         onScrollPositionChange: { session.handleScrollUpdate(context: $0, chapter: chapter) },
                         onMarkersUpdated: { session.autoScroll.updateMarkers($0) },
@@ -172,6 +176,12 @@ private struct ReaderAIPanel: View {
                 if let id = iId { session.currentImageId = id }
                 session.suppressContextAutoSwitch(); session.setBackAnchor()
                 session.scrollToBlockId = (bId, iId, iId != nil ? "image" : nil)
+            },
+            onRetryImage: { image in
+                await session.retryImage(image)
+            },
+            onRewriteAndRetryImage: { image in
+                await session.rewriteAndRetryImage(image)
             },
             onGenerateMoreInsights: { session.generateMoreInsights() },
             onGenerateMoreQuestions: { session.generateMoreQuestions() },
@@ -376,7 +386,7 @@ private struct ReaderImageOverlay: View {
                         VStack(spacing: 12) { Image(systemName: "exclamationmark.triangle").font(.system(size: 48)); Text("Failed to load image").font(.system(size: 16)) }.foregroundColor(.white.opacity(0.6))
                     } else { ProgressView().progressViewStyle(.circular).scaleEffect(1.5) }
                 }.padding(.horizontal, 60)
-                Text(image.prompt).font(.system(size: 14)).foregroundColor(.white.opacity(0.8)).multilineTextAlignment(.center).lineLimit(4).padding(.horizontal, 80).padding(.bottom, 30)
+                Text(image.displayExcerpt).font(.system(size: 14)).foregroundColor(.white.opacity(0.8)).multilineTextAlignment(.center).lineLimit(4).padding(.horizontal, 80).padding(.bottom, 30)
             }
         }
     }

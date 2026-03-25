@@ -22,6 +22,8 @@ struct AIPanel: View {
     let onScrollToQuote: (String) -> Void  // Scroll to quote text (for quizzes)
     let onScrollToFootnote: (String) -> Void  // Scroll to footnote reference by refId
     let onScrollToBlockId: (_ blockId: Int, _ imageId: Int64?) -> Void  // Scroll to block by ID (for images/quizzes)
+    let onRetryImage: (GeneratedImage) async -> Void
+    let onRewriteAndRetryImage: (GeneratedImage) async -> Void
     let onGenerateMoreInsights: () -> Void
     let onGenerateMoreQuestions: () -> Void
     let onForceProcess: () -> Void  // Force process garbage chapter
@@ -505,23 +507,7 @@ struct AIPanel: View {
                         )
                     } else {
                         ForEach(sortedImages) { image in
-                            ImageCard(
-                                image: image,
-                                isHighlighted: image.id == currentImageId,
-                                isAutoScroll: !isProgrammaticScroll,
-                                onScrollTo: {
-                                    if let id = image.id {
-                                        onScrollToBlockId(image.sourceBlockId, id)
-                                        externalScrollRequest = (id, .images)
-                                        scrollRequestCount += 1
-                                    }
-                                },
-                                onExpand: {
-                                    withAnimation(.easeOut(duration: 0.2)) {
-                                        expandedImage = image
-                                    }
-                                }
-                            )
+                            imageCard(for: image)
                             .id(image.id ?? Int64(image.sourceBlockId))
                         }
                     }
@@ -550,6 +536,32 @@ struct AIPanel: View {
                 }
             }
         }
+    }
+
+    private func imageCard(for image: GeneratedImage) -> some View {
+        ImageCard(
+            image: image,
+            isHighlighted: image.id == currentImageId,
+            isAutoScroll: !isProgrammaticScroll,
+            onScrollTo: {
+                if let id = image.id {
+                    onScrollToBlockId(image.sourceBlockId, id)
+                    externalScrollRequest = (id, .images)
+                    scrollRequestCount += 1
+                }
+            },
+            onExpand: {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    expandedImage = image
+                }
+            },
+            onRetry: {
+                await onRetryImage(image)
+            },
+            onRewriteAndRetry: {
+                await onRewriteAndRetryImage(image)
+            }
+        )
     }
 
     // MARK: - Quiz Tab
@@ -2448,9 +2460,13 @@ struct ImageCard: View {
     let isAutoScroll: Bool
     let onScrollTo: () -> Void
     let onExpand: () -> Void
+    let onRetry: () async -> Void
+    let onRewriteAndRetry: () async -> Void
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
+    @State private var isRetrying = false
+    @State private var isRewriting = false
 
     private var showHighlight: Bool {
         if !isHighlighted { return false }
@@ -2463,88 +2479,31 @@ struct ImageCard: View {
     }
 
     var body: some View {
-        Button {
-            onScrollTo()
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                // Image preview - full width with natural height per aspect ratio
-                AsyncImage(url: image.imageURL) { phase in
-                    switch phase {
-                    case .success(let loadedImage):
-                        loadedImage
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity)
-                            .background(theme.overlay.opacity(0.3))
-                    case .failure:
-                        VStack(spacing: 8) {
-                            Image(systemName: "photo.badge.exclamationmark")
-                                .font(.system(size: 24))
-                            Text("Failed to load")
-                                .font(.system(size: 12))
-                        }
-                        .foregroundColor(theme.muted)
-                        .frame(height: 120)
-                        .frame(maxWidth: .infinity)
-                        .background(theme.overlay)
-                    case .empty:
-                        ProgressView()
-                            .frame(height: 120)
-                            .frame(maxWidth: .infinity)
-                            .background(theme.overlay)
-                    @unknown default:
-                        EmptyView()
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                // Caption/prompt
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(image.prompt)
-                        .font(.system(size: 12))
-                        .foregroundColor(theme.text)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.right.circle")
-                            Text("Go to source")
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(theme.iris)
-
-                        Spacer()
-
-                        Button {
-                            onExpand()
-                        } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 11))
-                                .foregroundColor(theme.muted)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(showHighlight ? theme.iris.opacity(0.08) : theme.base)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(showBorder ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+        VStack(alignment: .leading, spacing: 0) {
+            if image.isSuccess {
+                successContent
+            } else {
+                failureContent
             }
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(showHighlight ? theme.iris.opacity(0.08) : theme.base)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(showBorder ? theme.iris.opacity(0.6) : theme.overlay, lineWidth: 1)
+        }
         .simultaneousGesture(TapGesture(count: 2).onEnded {
+            guard image.isSuccess else { return }
             onExpand()
         })
         .contextMenu {
-            Button {
-                onExpand()
-            } label: {
-                Label("View Full Size", systemImage: "arrow.up.left.and.arrow.down.right")
+            if image.isSuccess {
+                Button {
+                    onExpand()
+                } label: {
+                    Label("View Full Size", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
             }
 
             Button {
@@ -2553,5 +2512,167 @@ struct ImageCard: View {
                 Label("Go to Source", systemImage: "arrow.right.circle")
             }
         }
+    }
+
+    private var successContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            AsyncImage(url: image.imageURL) { phase in
+                switch phase {
+                case .success(let loadedImage):
+                    loadedImage
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .background(theme.overlay.opacity(0.3))
+                case .failure:
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 24))
+                        Text("Failed to load")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(theme.muted)
+                    .frame(height: 120)
+                    .frame(maxWidth: .infinity)
+                    .background(theme.overlay)
+                case .empty:
+                    ProgressView()
+                        .frame(height: 120)
+                        .frame(maxWidth: .infinity)
+                        .background(theme.overlay)
+                @unknown default:
+                    EmptyView()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(image.displayExcerpt)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.text)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                HStack(spacing: 8) {
+                    Button {
+                        onScrollTo()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.right.circle")
+                            Text("Go to source")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(theme.iris)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Button {
+                        onExpand()
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+        }
+    }
+
+    private var failureContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: image.status == .refused ? "hand.raised.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.love)
+                Text(image.status == .refused ? "Image request refused" : "Image generation failed")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.love)
+            }
+
+            if let reason = image.failureReason, !reason.isEmpty {
+                Text(reason)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.text)
+                    .multilineTextAlignment(.leading)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Prompt")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(theme.muted)
+                Text(image.prompt)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.text)
+                    .multilineTextAlignment(.leading)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    Task {
+                        isRetrying = true
+                        defer { isRetrying = false }
+                        await onRetry()
+                    }
+                } label: {
+                    labelWithSpinner(text: "Retry", isLoading: isRetrying)
+                }
+                .buttonStyle(.plain)
+                .disabled(isRetrying || isRewriting)
+
+                Button {
+                    Task {
+                        isRewriting = true
+                        defer { isRewriting = false }
+                        await onRewriteAndRetry()
+                    }
+                } label: {
+                    labelWithSpinner(text: "Rewrite & Retry", isLoading: isRewriting)
+                }
+                .buttonStyle(.plain)
+                .disabled(isRetrying || isRewriting)
+
+                Spacer()
+
+                Button {
+                    onScrollTo()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.right.circle")
+                        Text("Go to source")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(theme.iris)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(theme.love.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(theme.love.opacity(0.35), lineWidth: 1)
+        }
+        .padding(10)
+    }
+
+    private func labelWithSpinner(text: String, isLoading: Bool) -> some View {
+        HStack(spacing: 6) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundColor(theme.base)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(theme.love)
+        .clipShape(Capsule())
     }
 }

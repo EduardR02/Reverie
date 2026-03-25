@@ -25,9 +25,11 @@ let package = Package(
         .testTarget(
             name: "ReverieTests",
             dependencies: ["Reverie"],
-            path: "Reverie/Tests/ReverieTests",
+            path: "Reverie/Tests",
+            exclude: [".DS_Store"],
+            sources: ["ReverieTests"],
             resources: [
-                .copy("../Fixtures")
+                .copy("Fixtures")
             ]
         )
     ]
