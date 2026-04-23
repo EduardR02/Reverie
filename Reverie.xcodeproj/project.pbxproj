@@ -11,6 +11,11 @@
 		BB06EE412F0EF7C400E925E2 /* AIProcessingToggle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */; };
 		BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */; };
 		BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */; };
+		BB2270132F7410B800C0A295 /* BookContentPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270122F7410B800C0A295 /* BookContentPipeline.swift */; };
+		BB2270152F7410B800C0A295 /* AIPanelListOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270142F7410B800C0A295 /* AIPanelListOrder.swift */; };
+		BB2270312F7410B800C0A295 /* AIPanelListOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */; };
+		BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */; };
+		BB2270332F7410B800C0A295 /* RSVPEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB3A2BE22F71EB0E004A9F3E /* ReaderSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */; };
 		BB5A89A02F71BD31006494B9 /* SupportedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5A899F2F71BD31006494B9 /* SupportedModels.swift */; };
@@ -63,12 +68,28 @@
 		F035 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = S035 /* ReadingStats.swift */; };
 		F036 /* ProcessBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S036 /* ProcessBookView.swift */; };
 		F037 /* ReaderBridge.js in Resources */ = {isa = PBXBuildFile; fileRef = S037 /* ReaderBridge.js */; };
-/* End PBXBuildFile section */
+	/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB2270612F7410B800C0A295 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PROJECT /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = TARGET;
+			remoteInfo = Reverie;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AIProcessingToggle.swift; path = Reverie/Views/Home/AIProcessingToggle.swift; sourceTree = "<group>"; };
 		BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExpandedProcessingCard.swift; path = Reverie/Views/Home/ExpandedProcessingCard.swift; sourceTree = "<group>"; };
 		BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BB2270122F7410B800C0A295 /* BookContentPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BookContentPipeline.swift; path = Reverie/Views/Reader/BookContentPipeline.swift; sourceTree = "<group>"; };
+		BB2270142F7410B800C0A295 /* AIPanelListOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPanelListOrder.swift; sourceTree = "<group>"; };
+		BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPanelListOrderTests.swift; sourceTree = "<group>"; };
+		BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookContentPipelineTests.swift; sourceTree = "<group>"; };
+		BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RSVPEngineTests.swift; sourceTree = "<group>"; };
+		BB2270202F7410B800C0A295 /* ReverieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReverieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSplitView.swift; path = Reverie/Views/Reader/ReaderSplitView.swift; sourceTree = "<group>"; };
 		BB5A899F2F71BD31006494B9 /* SupportedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SupportedModels.swift; path = Reverie/Services/SupportedModels.swift; sourceTree = "<group>"; };
@@ -131,6 +152,11 @@
 				BB007F5D2F057A2000926C8E /* GRDB in Frameworks */,
 			);
 		};
+		BB2270422F7410B800C0A295 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -161,6 +187,7 @@
 			isa = PBXGroup;
 			children = (
 				PROD /* Reverie.app */,
+				BB2270202F7410B800C0A295 /* ReverieTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -198,6 +225,7 @@
 				BB5EFFFB2F11C05900A7A2E6 /* AutoScrollEngine.swift */,
 				BB06EE402F0EF7C400E925E2 /* AIProcessingToggle.swift */,
 				READER /* Reverie */,
+				BB2270212F7410B800C0A295 /* ReverieTests */,
 				PRODUCTS /* Products */,
 				BB5F438D2F0AD757004A92D8 /* ChapterProgressCalculator.swift */,
 				BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */,
@@ -209,7 +237,26 @@
 				BBC04C602F1B14A4006D17FB /* ResilientSession.swift */,
 				BB5A899F2F71BD31006494B9 /* SupportedModels.swift */,
 				BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */,
+				BB2270122F7410B800C0A295 /* BookContentPipeline.swift */,
 			);
+			sourceTree = "<group>";
+		};
+		BB2270212F7410B800C0A295 /* ReverieTests */ = {
+			isa = PBXGroup;
+			children = (
+				BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */,
+				BB2270222F7410B800C0A295 /* ViewModels */,
+			);
+			path = Reverie/Tests/ReverieTests;
+			sourceTree = "<group>";
+		};
+		BB2270222F7410B800C0A295 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */,
+				BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */,
+			);
+			path = ViewModels;
 			sourceTree = "<group>";
 		};
 		SERVICES /* Services */ = {
@@ -279,6 +326,7 @@
 				S015 /* ReaderView.swift */,
 				S016 /* BookContentView.swift */,
 				S017 /* AIPanel.swift */,
+				BB2270142F7410B800C0A295 /* AIPanelListOrder.swift */,
 				S025 /* ReaderMetrics.swift */,
 			);
 			path = Reader;
@@ -329,6 +377,24 @@
 			productReference = PROD /* Reverie.app */;
 			productType = "com.apple.product-type.application";
 		};
+		BB2270402F7410B800C0A295 /* ReverieTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB2270522F7410B800C0A295 /* Build configuration list for PBXNativeTarget "ReverieTests" */;
+			buildPhases = (
+				BB2270412F7410B800C0A295 /* Sources */,
+				BB2270422F7410B800C0A295 /* Frameworks */,
+				BB2270432F7410B800C0A295 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB2270602F7410B800C0A295 /* PBXTargetDependency */,
+			);
+			name = ReverieTests;
+			productName = ReverieTests;
+			productReference = BB2270202F7410B800C0A295 /* ReverieTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -356,6 +422,7 @@
 			projectRoot = "";
 			targets = (
 				TARGET /* Reverie */,
+				BB2270402F7410B800C0A295 /* ReverieTests */,
 			);
 		};
 /* End PBXProject section */
@@ -366,6 +433,11 @@
 			files = (
 				BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */,
 				F037 /* ReaderBridge.js in Resources */,
+			);
+		};
+		BB2270432F7410B800C0A295 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -424,12 +496,30 @@
 				F024 /* StatsView.swift in Sources */,
 				F034 /* SelectableText.swift in Sources */,
 				F025 /* ReaderMetrics.swift in Sources */,
+				BB2270152F7410B800C0A295 /* AIPanelListOrder.swift in Sources */,
+				BB2270132F7410B800C0A295 /* BookContentPipeline.swift in Sources */,
 				F026 /* LibraryPaths.swift in Sources */,
 				F031 /* ContentBlockParser.swift in Sources */,
 				F032 /* CostEstimation.swift in Sources */,
 			);
 		};
+		BB2270412F7410B800C0A295 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				BB2270312F7410B800C0A295 /* AIPanelListOrderTests.swift in Sources */,
+				BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */,
+				BB2270332F7410B800C0A295 /* RSVPEngineTests.swift in Sources */,
+			);
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB2270602F7410B800C0A295 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = TARGET /* Reverie */;
+			targetProxy = BB2270612F7410B800C0A295 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		CFG_DEBUG_PROJECT /* Debug configuration for PBXProject "Reverie" */ = {
@@ -587,6 +677,46 @@
 			};
 			name = Release;
 		};
+		BB2270502F7410B800C0A295 /* Debug configuration for PBXNativeTarget "ReverieTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.reverie.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Reverie.app/Contents/MacOS/Reverie";
+			};
+			name = Debug;
+		};
+		BB2270512F7410B800C0A295 /* Release configuration for PBXNativeTarget "ReverieTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.reverie.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Reverie.app/Contents/MacOS/Reverie";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -603,6 +733,14 @@
 			buildConfigurations = (
 				CFG_DEBUG_TARGET /* Debug configuration for PBXNativeTarget "Reverie" */,
 				CFG_RELEASE_TARGET /* Release configuration for PBXNativeTarget "Reverie" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		BB2270522F7410B800C0A295 /* Build configuration list for PBXNativeTarget "ReverieTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB2270502F7410B800C0A295 /* Debug configuration for PBXNativeTarget "ReverieTests" */,
+				BB2270512F7410B800C0A295 /* Release configuration for PBXNativeTarget "ReverieTests" */,
 			);
 			defaultConfigurationName = Release;
 		};

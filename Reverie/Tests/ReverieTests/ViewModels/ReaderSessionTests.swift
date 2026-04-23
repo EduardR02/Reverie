@@ -46,6 +46,54 @@ final class ReaderSessionTests: XCTestCase {
         XCTAssertFalse(session.autoScroll.isActive)
     }
 
+    func test_tickersDoNotRetainSessionWhenCleanupIsMissed() {
+        weak var weakSession: ReaderSession?
+
+        do {
+            let localSession = ReaderSession()
+            localSession.setup(with: appState)
+            localSession.startReadingTicker()
+            weakSession = localSession
+        }
+
+        XCTAssertNil(weakSession)
+    }
+
+    func test_aiPanelListCachesUpdateWhenAssetsChange() {
+        session.annotations = [
+            Annotation(id: 1, chapterId: 1, type: .science, title: "Later", content: "", sourceBlockId: 5),
+            Annotation(id: 2, chapterId: 1, type: .history, title: "Earlier", content: "", sourceBlockId: 2)
+        ]
+        session.quizzes = [
+            Quiz(id: 10, chapterId: 1, question: "Later?", answer: "A", sourceBlockId: 8)
+        ]
+        session.images = [
+            GeneratedImage(id: 20, chapterId: 1, prompt: "Later", imagePath: "/tmp/later.png", sourceBlockId: 9)
+        ]
+
+        XCTAssertEqual(session.orderedAnnotationItems, [
+            AIPanelIndexedItem(id: 2, index: 1),
+            AIPanelIndexedItem(id: 1, index: 0)
+        ])
+        XCTAssertEqual(session.orderedQuizItems, [AIPanelIndexedItem(id: 10, index: 0)])
+        XCTAssertEqual(session.sortedImages.map(\.id), [20])
+
+        session.annotations.append(Annotation(id: 3, chapterId: 1, type: .world, title: "First", content: "", sourceBlockId: 1))
+        session.quizzes.append(Quiz(id: 11, chapterId: 1, question: "First?", answer: "B", sourceBlockId: 1))
+        session.images.append(GeneratedImage(id: 21, chapterId: 1, prompt: "First", imagePath: "/tmp/first.png", sourceBlockId: 1))
+
+        XCTAssertEqual(session.orderedAnnotationItems, [
+            AIPanelIndexedItem(id: 3, index: 2),
+            AIPanelIndexedItem(id: 2, index: 1),
+            AIPanelIndexedItem(id: 1, index: 0)
+        ])
+        XCTAssertEqual(session.orderedQuizItems, [
+            AIPanelIndexedItem(id: 11, index: 1),
+            AIPanelIndexedItem(id: 10, index: 0)
+        ])
+        XCTAssertEqual(session.sortedImages.map(\.id), [21, 20])
+    }
+
     func test_loadChapters_skipsClassificationWhenAlreadyComplete() async {
         // Given
         var book = Book(title: "Book", author: "Author", epubPath: "")

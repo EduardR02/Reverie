@@ -24,6 +24,38 @@ final class HTMLAugmentationTests: XCTestCase {
         XCTAssertTrue(result.contains("Content<span class=\"annotation-marker\""))
     }
 
+    func testExistingEPUBIdIsPreservedAndMappedToReaderBlockId() {
+        let html = "<p id=\"epub-anchor\" class=\"original-class\">Anchored content.</p>"
+        let injections: [ContentBlockParser.Injection] = [
+            .init(kind: .annotation(id: 42), sourceBlockId: 1)
+        ]
+
+        let result = parser.augment(html: html, injections: injections)
+
+        XCTAssertTrue(result.contains("<p id=\"epub-anchor\" class=\"original-class\" data-reader-block-id=\"1\">"))
+        XCTAssertFalse(result.contains("id=\"epub-anchor\" class=\"original-class\" id=\"block-1\""))
+        XCTAssertTrue(result.contains("Anchored content.<span class=\"annotation-marker\" data-annotation-id=\"42\" data-block-id=\"1\"></span></p>"))
+    }
+
+    func testSingleQuotedEPUBIdIsPreservedAndMappedToReaderBlockId() {
+        let html = "<p id='chapter-start' class='original-class'>Anchored content.</p><p>Second paragraph.</p>"
+
+        let result = parser.augment(html: html, injections: [])
+
+        XCTAssertTrue(result.contains("<p id='chapter-start' class='original-class' data-reader-block-id=\"1\">Anchored content.</p>"))
+        XCTAssertFalse(result.contains("id=\"block-1\""))
+        XCTAssertTrue(result.contains("<p id=\"block-2\">Second paragraph.</p>"))
+    }
+
+    func testExistingIdAfterSkippedNoiseKeepsParserBlockNumber() {
+        let html = "<p>1</p><p id=\"chapter-start\">First real paragraph.</p>"
+
+        let result = parser.augment(html: html, injections: [])
+
+        XCTAssertTrue(result.contains("<p>1</p><p id=\"chapter-start\" data-reader-block-id=\"1\">First real paragraph.</p>"))
+        XCTAssertFalse(result.contains("<p id=\"block-1\">1</p>"))
+    }
+
     /// THOROUGH TEST: Verifies chronological ordering of multiple markers in one block
     func testMarkerOrdering() {
         let html = "<p>Block</p>"

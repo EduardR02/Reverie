@@ -17,6 +17,7 @@ final class RSVPEngine {
     
     private var timer: Task<Void, Never>?
     private var pausePoints: [Int: PauseContent] = [:]
+    private var blockStartWordIndices: [Int: Int] = [:]
     
     // MARK: - Computed Properties
     
@@ -49,9 +50,14 @@ final class RSVPEngine {
         footnotes: [Footnote]
     ) {
         pause()
+
+        let annotationsByBlock = Self.firstItemByBlock(annotations)
+        let imagesByBlock = Self.firstItemByBlock(images)
+        let footnotesByBlock = Self.firstItemByBlock(footnotes)
         
         var allWords: [RSVPWord] = []
         var points: [Int: PauseContent] = [:]
+        var startIndices: [Int: Int] = [:]
         
         for block in blocks {
             let blockWords = block.text.components(separatedBy: .whitespacesAndNewlines)
@@ -59,17 +65,18 @@ final class RSVPEngine {
             
             // Map the first word of each block to its pause points if any
             let startWordIndex = allWords.count
+            startIndices[block.id] = startWordIndex
             
             // For RSVP, we pause at the START of a block that has an insight/image/footnote
             // This ensures the reader sees the content related to the text they are about to read.
             // Alternatively, we could pause at the END of the block.
             // Given the requirements, we'll map sourceBlockId to the first word of that block.
             
-            if let annotation = annotations.first(where: { $0.sourceBlockId == block.id }) {
+            if let annotation = annotationsByBlock[block.id] {
                 points[startWordIndex] = .insight(annotation)
-            } else if let image = images.first(where: { $0.sourceBlockId == block.id }) {
+            } else if let image = imagesByBlock[block.id] {
                 points[startWordIndex] = .image(image)
-            } else if let footnote = footnotes.first(where: { $0.sourceBlockId == block.id }) {
+            } else if let footnote = footnotesByBlock[block.id] {
                 points[startWordIndex] = .footnote(footnote)
             }
             
@@ -86,8 +93,15 @@ final class RSVPEngine {
         
         self.words = allWords
         self.pausePoints = points
+        self.blockStartWordIndices = startIndices
         self.currentWordIndex = 0
         self.pendingPauseContent = nil
+    }
+
+    func sync(toBlockId blockId: Int) {
+        guard let index = blockStartWordIndices[blockId] else { return }
+        currentWordIndex = index
+        pendingPauseContent = nil
     }
     
     func play() {
@@ -137,6 +151,7 @@ final class RSVPEngine {
         pause()
         words = []
         pausePoints = [:]
+        blockStartWordIndices = [:]
         currentWordIndex = 0
         pendingPauseContent = nil
     }
@@ -203,6 +218,17 @@ final class RSVPEngine {
         default: return 4
         }
     }
+
+    private static func firstItemByBlock<Value>(_ values: [Value]) -> [Int: Value] where Value: RSVPBlockAddressable {
+        var result: [Int: Value] = [:]
+        result.reserveCapacity(values.count)
+
+        for value in values where result[value.sourceBlockId] == nil {
+            result[value.sourceBlockId] = value
+        }
+
+        return result
+    }
 }
 
 // MARK: - Supporting Types
@@ -232,6 +258,14 @@ struct RSVPWord: Identifiable, Equatable {
         return String(text[index...])
     }
 }
+
+private protocol RSVPBlockAddressable {
+    var sourceBlockId: Int { get }
+}
+
+extension Annotation: RSVPBlockAddressable {}
+extension GeneratedImage: RSVPBlockAddressable {}
+extension Footnote: RSVPBlockAddressable {}
 
 enum PauseContent: Equatable {
     case insight(Annotation)

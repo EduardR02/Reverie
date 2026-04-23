@@ -1,12 +1,31 @@
 import Foundation
 
-struct ContentBlock {
+struct ContentBlock: Sendable {
     let id: Int
     let text: String
     let htmlStartOffset: Int
     let contentStartOffset: Int // Position right after the opening tag
     let contentEndOffset: Int   // Position right before the closing tag
     let htmlEndOffset: Int
+    let hasExistingIdAttribute: Bool
+
+    init(
+        id: Int,
+        text: String,
+        htmlStartOffset: Int,
+        contentStartOffset: Int,
+        contentEndOffset: Int,
+        htmlEndOffset: Int,
+        hasExistingIdAttribute: Bool = false
+    ) {
+        self.id = id
+        self.text = text
+        self.htmlStartOffset = htmlStartOffset
+        self.contentStartOffset = contentStartOffset
+        self.contentEndOffset = contentEndOffset
+        self.htmlEndOffset = htmlEndOffset
+        self.hasExistingIdAttribute = hasExistingIdAttribute
+    }
 }
 
 final class ContentBlockParser {
@@ -31,7 +50,8 @@ final class ContentBlockParser {
                     htmlStartOffset: 0,
                     contentStartOffset: 0,
                     contentEndOffset: html.count,
-                    htmlEndOffset: html.count
+                    htmlEndOffset: html.count,
+                    hasExistingIdAttribute: false
                 ))
                 cleanLines.append("[1] \(stripped)")
             }
@@ -45,6 +65,10 @@ final class ContentBlockParser {
             guard let range = Range(match.range, in: html) else { continue }
 
             let blockHTML = String(html[range])
+            let attributeRange = match.range(at: 2)
+            let attributes = attributeRange.location == NSNotFound
+                ? ""
+                : Range(attributeRange, in: html).map { String(html[$0]) } ?? ""
             
             // Find the end of the opening tag (first '>')
             let startOffset = html.distance(from: html.startIndex, to: range.lowerBound)
@@ -78,7 +102,8 @@ final class ContentBlockParser {
                 htmlStartOffset: startOffset,
                 contentStartOffset: contentStartOffset,
                 contentEndOffset: contentEndOffset,
-                htmlEndOffset: endOffset
+                htmlEndOffset: endOffset,
+                hasExistingIdAttribute: hasIDAttribute(attributes)
             ))
 
             cleanLines.append("[\(blockId)] \(strippedText)")
@@ -112,7 +137,8 @@ final class ContentBlockParser {
                 htmlStartOffset: 0,
                 contentStartOffset: 0,
                 contentEndOffset: html.count,
-                htmlEndOffset: html.count
+                htmlEndOffset: html.count,
+                hasExistingIdAttribute: false
             ))
             cleanLines.append("[\(blockId)] \(para)")
         }
@@ -196,7 +222,9 @@ final class ContentBlockParser {
             
             // 3. Block ID Attribute (Opening tag)
             if block.contentStartOffset > 0 {
-                let idAttr = " id=\"block-\(bId)\""
+                let idAttr = block.hasExistingIdAttribute
+                    ? " data-reader-block-id=\"\(bId)\""
+                    : " id=\"block-\(bId)\""
                 let insertIdx = content.index(content.startIndex, offsetBy: block.contentStartOffset - 1)
                 content.insert(contentsOf: idAttr, at: insertIdx)
             }
@@ -247,6 +275,64 @@ final class ContentBlockParser {
         )
 
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func hasIDAttribute(_ attributes: String) -> Bool {
+        var index = attributes.startIndex
+
+        while index < attributes.endIndex {
+            while index < attributes.endIndex, attributes[index].isWhitespace {
+                index = attributes.index(after: index)
+            }
+            if index == attributes.endIndex { break }
+
+            let nameStart = index
+            while index < attributes.endIndex,
+                  !attributes[index].isWhitespace,
+                  attributes[index] != "=",
+                  attributes[index] != "/" {
+                index = attributes.index(after: index)
+            }
+
+            guard nameStart < index else {
+                index = attributes.index(after: index)
+                continue
+            }
+
+            let name = attributes[nameStart..<index]
+            while index < attributes.endIndex, attributes[index].isWhitespace {
+                index = attributes.index(after: index)
+            }
+
+            let hasValue = index < attributes.endIndex && attributes[index] == "="
+            if name.lowercased() == "id", hasValue {
+                return true
+            }
+
+            guard hasValue else { continue }
+            index = attributes.index(after: index)
+
+            while index < attributes.endIndex, attributes[index].isWhitespace {
+                index = attributes.index(after: index)
+            }
+
+            if index < attributes.endIndex, attributes[index] == "\"" || attributes[index] == "'" {
+                let quote = attributes[index]
+                index = attributes.index(after: index)
+                while index < attributes.endIndex, attributes[index] != quote {
+                    index = attributes.index(after: index)
+                }
+                if index < attributes.endIndex {
+                    index = attributes.index(after: index)
+                }
+            } else {
+                while index < attributes.endIndex, !attributes[index].isWhitespace {
+                    index = attributes.index(after: index)
+                }
+            }
+        }
+
+        return false
     }
 
     private func decodeHTMLEntities(_ string: String) -> String {

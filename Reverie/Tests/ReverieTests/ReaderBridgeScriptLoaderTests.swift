@@ -2,6 +2,15 @@ import XCTest
 @testable import Reverie
 
 final class ReaderBridgeScriptLoaderTests: XCTestCase {
+    func testBridgeUsesParserBlockAnchorsInsteadOfGenericIndexFallback() {
+        let source = ReaderBridgeScriptLoader.load()
+
+        XCTAssertTrue(source.contains("data-reader-block-id"))
+        XCTAssertTrue(source.contains("function getClosestBlock"))
+        XCTAssertFalse(source.contains("querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li')"))
+        XCTAssertFalse(source.contains("idBlocks.length >= blockId"))
+    }
+
     func testLoadSourceReturnsBundleResourceContents() throws {
         let bundle = try makeBundle(with: "window.__readerBridgeFixture = true;")
 

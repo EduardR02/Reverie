@@ -7,6 +7,9 @@ struct AIPanel: View {
     @Binding var quizzes: [Quiz]
     let footnotes: [Footnote]
     let images: [GeneratedImage]
+    let orderedAnnotationItems: [AIPanelIndexedItem]
+    let orderedQuizItems: [AIPanelIndexedItem]
+    let sortedImages: [GeneratedImage]
     let currentAnnotationId: Int64?
     let currentImageId: Int64?
     let currentFootnoteRefId: String?
@@ -73,10 +76,6 @@ struct AIPanel: View {
 
     private let chatScrollSpace = "chat-scroll"
     private let chatBottomId = "chat-bottom"
-
-    private var sortedImages: [GeneratedImage] {
-        images.sorted { $0.sourceBlockId < $1.sourceBlockId }
-    }
 
     enum Tab: String, CaseIterable {
         case insights = "Insights"
@@ -441,50 +440,40 @@ struct AIPanel: View {
 
     @ViewBuilder
     private var annotationList: some View {
-        let indexById: [Int64: Int] = Dictionary(uniqueKeysWithValues: annotations.indices.compactMap { index in
-            guard let id = annotations[index].id else { return nil }
-            return (id, index)
-        })
-        let orderedIds = annotations
-            .sorted { $0.sourceBlockId < $1.sourceBlockId }
-            .compactMap { $0.id }
-
-        ForEach(orderedIds, id: \.self) { annotationId in
-            if let index = indexById[annotationId] {
-                AnnotationCard(
-                    annotation: $annotations[index],
-                    isExpanded: expandedAnnotationId == annotationId,
-                    isCurrent: currentAnnotationId == annotationId,
-                    isAutoScroll: !isProgrammaticScroll,
-                    onToggle: {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            if expandedAnnotationId == annotationId {
-                                expandedAnnotationId = nil
-                            } else {
-                                expandedAnnotationId = annotationId
-                                // Auto-scroll to passage when expanding
-                                onScrollTo(annotationId)
-                                externalScrollRequest = (annotationId, .insights)
-                                scrollRequestCount += 1
-                            }
+        ForEach(orderedAnnotationItems) { item in
+            AnnotationCard(
+                annotation: $annotations[item.index],
+                isExpanded: expandedAnnotationId == item.id,
+                isCurrent: currentAnnotationId == item.id,
+                isAutoScroll: !isProgrammaticScroll,
+                onToggle: {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if expandedAnnotationId == item.id {
+                            expandedAnnotationId = nil
+                        } else {
+                            expandedAnnotationId = item.id
+                            // Auto-scroll to passage when expanding
+                            onScrollTo(item.id)
+                            externalScrollRequest = (item.id, .insights)
+                            scrollRequestCount += 1
                         }
-                    },
-                    onScrollTo: {
-                        onScrollTo(annotationId)
-                        externalScrollRequest = (annotationId, .insights)
-                        scrollRequestCount += 1
-                    },
-                    selectedTab: $selectedTab,
-                    onAsk: { reference in
-                        resetChatSession(context: reference)
-                        selectedTab = .chat
-                    },
-                    onUpdateAnnotation: { updated in
-                        appState.updateAnnotation(updated)
                     }
-                )
-                .id(annotationId)
-            }
+                },
+                onScrollTo: {
+                    onScrollTo(item.id)
+                    externalScrollRequest = (item.id, .insights)
+                    scrollRequestCount += 1
+                },
+                selectedTab: $selectedTab,
+                onAsk: { reference in
+                    resetChatSession(context: reference)
+                    selectedTab = .chat
+                },
+                onUpdateAnnotation: { updated in
+                    appState.updateAnnotation(updated)
+                }
+            )
+            .id(item.id)
         }
     }
 
@@ -617,24 +606,14 @@ struct AIPanel: View {
 
     @ViewBuilder
     private var quizList: some View {
-        let indexById: [Int64: Int] = Dictionary(uniqueKeysWithValues: quizzes.indices.compactMap { index in
-            guard let id = quizzes[index].id else { return nil }
-            return (id, index)
-        })
-        let orderedIds = quizzes
-            .sorted { $0.sourceBlockId < $1.sourceBlockId }
-            .compactMap { $0.id }
-
-        ForEach(orderedIds, id: \.self) { quizId in
-            if let index = indexById[quizId] {
-                QuizCard(
-                    quiz: $quizzes[index],
-                    onScrollTo: {
-                        onScrollToBlockId(quizzes[index].sourceBlockId, nil)
-                    }
-                )
-                .id(quizId)
-            }
+        ForEach(orderedQuizItems) { item in
+            QuizCard(
+                quiz: $quizzes[item.index],
+                onScrollTo: {
+                    onScrollToBlockId(quizzes[item.index].sourceBlockId, nil)
+                }
+            )
+            .id(item.id)
         }
     }
 

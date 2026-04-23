@@ -51,6 +51,13 @@ const focusState = {
 
 let scrollTicking = false;
 
+function postToNative(message) {
+    webkit.messageHandlers.readerBridge.postMessage({
+        ...message,
+        documentToken: window.__readerDocumentToken || null
+    });
+}
+
 /**
  * Fast binary search for sorted arrays
  */
@@ -184,14 +191,37 @@ const programmatic = (() => {
 
 // --- DOM Queries ---
 
+const BLOCK_SELECTOR = '[data-reader-block-id], [id^="block-"]';
+
+function blockIdFromElement(element) {
+    if (!element) return null;
+    const dataId = parseInt(element.dataset.readerBlockId || "0", 10);
+    if (dataId > 0) return dataId;
+
+    const match = element.id?.match(/^block-(\d+)$/);
+    if (!match) return null;
+
+    const id = parseInt(match[1], 10);
+    return id > 0 ? id : null;
+}
+
+function getClosestBlock(element) {
+    return element?.closest?.(BLOCK_SELECTOR) || null;
+}
+
 function getBlockByIdOrIndex(blockId) {
-    if (!blockId || blockId <= 0) return null;
-    const byId = document.getElementById(`block-${blockId}`);
-    if (byId) return byId;
-    const idBlocks = document.querySelectorAll('[id^="block-"]');
-    if (idBlocks.length >= blockId) return idBlocks[blockId - 1];
-    const generic = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, blockquote, li');
-    return generic[blockId - 1] || null;
+    const id = parseInt(blockId, 10);
+    if (!Number.isInteger(id) || id <= 0) return null;
+
+    const byData = document.querySelector(`[data-reader-block-id="${id}"]`);
+    if (byData) return byData;
+
+    const idMatches = Array.from(document.querySelectorAll(`[id="block-${id}"]`));
+    const explicitMatch = idMatches.find(element => element.dataset.readerBlockId === String(id));
+    if (explicitMatch) return explicitMatch;
+
+    const compatibleMatches = idMatches.filter(element => !element.dataset.readerBlockId);
+    return compatibleMatches.length === 1 ? compatibleMatches[0] : null;
 }
 
 function getMarkers() {
@@ -208,9 +238,8 @@ function getMarkers() {
         const id = element.dataset.annotationId || element.dataset.imageId || 
                    (element.getAttribute('href')?.split('#')[1]) || element.id;
 
-        const block = element.closest('[id^="block-"]');
-        const blockId = block ? parseInt(block.id.replace("block-", ""), 10) : 
-                                parseInt(element.dataset.blockId || "0", 10);
+        const block = getClosestBlock(element);
+        const blockId = blockIdFromElement(block) || parseInt(element.dataset.blockId || "0", 10);
 
         return { element, id, type, order: index, blockId, y: rect.top + scrollY + (rect.height * 0.5) };
     }).sort((a, b) => (a.y !== b.y) ? a.y - b.y : a.order - b.order);
@@ -257,7 +286,7 @@ function buildTerritoryMap() {
     focusState.mapPending = false;
 
     // Report markers to native
-    webkit.messageHandlers.readerBridge.postMessage({
+    postToNative({
         type: 'markersUpdated',
         stations: focusState.stations.map(s => ({
             id: String(s.id),
@@ -347,9 +376,10 @@ function updateFocus(forceReport = false) {
         if (Math.abs(scrollY - focusState.lastBlockCheckY) > 20 || focusState.currentBlockIndex === -1) {
             const eyeLine = focusState.eyeLineY || (vh * EYE_LINE_RATIO);
             const el = document.elementFromPoint(window.innerWidth / 2, eyeLine);
-            const block = el?.closest('[id^="block-"]');
-            if (block) {
-                activeBlockIndex = parseInt(block.id.replace("block-", ""), 10) - 1;
+            const block = getClosestBlock(el);
+            const blockId = blockIdFromElement(block);
+            if (blockId) {
+                activeBlockIndex = blockId - 1;
                 const rect = block.getBoundingClientRect();
                 if (rect.height > 0) {
                     const rawOffset = (eyeLine - rect.top) / rect.height;
@@ -430,7 +460,7 @@ function reportToNative(scrollY, scrollPercent, vh, sh, isLocked, shouldPulse, f
         if (s.y >= scrollY - VISIBILITY_BUFFER && s.y <= scrollY + vh + VISIBILITY_BUFFER) pulseMarker(s.element);
     }
 
-    webkit.messageHandlers.readerBridge.postMessage({
+    postToNative({
         type: 'scrollPosition', annotationId: aId, imageId: iId, footnoteRefId: fId,
         blockId: bId, blockOffset: bOffset, primaryType: s?.type || null, scrollY, scrollPercent: roundedP,
         viewportHeight: vh, scrollHeight: sh, isProgrammatic: programmatic.isActive()
@@ -514,6 +544,113 @@ function scrollToOffset(o) {
     programmatic.start(null, o);
 }
 
+function applyReaderStyle(style) {
+    if (!style) return;
+
+    const root = document.documentElement;
+    root.style.setProperty('--base', style.themeBase);
+    root.style.setProperty('--surface', style.themeSurface);
+    root.style.setProperty('--text', style.themeText);
+    root.style.setProperty('--muted', style.themeMuted);
+    root.style.setProperty('--rose', style.themeRose);
+    root.style.setProperty('--iris', style.themeIris);
+
+    document.body.style.fontFamily = `"${style.fontFamily}", sans-serif`;
+    document.body.style.fontSize = `${style.fontSize}px`;
+    document.body.style.lineHeight = String(style.lineSpacing);
+
+    scheduleMapRebuild();
+}
+
+function syncMarkerGroup(items, selector, datasetKey, className) {
+    const existing = new Map(
+        Array.from(document.querySelectorAll(selector)).map(el => [String(el.dataset[datasetKey]), el])
+    );
+    const markersByBlock = new Map();
+
+    for (const item of items) {
+        const id = String(item[datasetKey]);
+        const block = getBlockByIdOrIndex(item.sourceBlockId);
+        if (!block) continue;
+
+        let marker = existing.get(id);
+        if (!marker) {
+            marker = document.createElement('span');
+            marker.className = className;
+        }
+
+        marker.dataset[datasetKey] = id;
+        marker.dataset.blockId = String(item.sourceBlockId);
+        existing.delete(id);
+
+        if (!markersByBlock.has(block)) markersByBlock.set(block, []);
+        markersByBlock.get(block).push(marker);
+    }
+
+    for (const marker of existing.values()) marker.remove();
+    for (const [block, markers] of markersByBlock.entries()) {
+        for (const marker of markers) block.appendChild(marker);
+    }
+}
+
+function syncInlineImages(payload) {
+    const existingInlineImages = new Map(
+        Array.from(document.querySelectorAll('.generated-image[data-inline-image-key]')).map(el => [el.dataset.inlineImageKey, el])
+    );
+
+    if (!payload.inlineAIImagesEnabled) {
+        for (const image of existingInlineImages.values()) image.remove();
+        scheduleMapRebuild();
+        return;
+    }
+
+    const anchors = new Map();
+    for (const image of payload.inlineImages) {
+        const block = getBlockByIdOrIndex(image.sourceBlockId);
+        if (!block) continue;
+
+        let img = existingInlineImages.get(image.key);
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'generated-image';
+            img.dataset.inlineImageKey = image.key;
+        }
+
+        img.dataset.blockId = String(image.sourceBlockId);
+        if (image.imageId !== null && image.imageId !== undefined) {
+            img.dataset.imageId = String(image.imageId);
+        } else {
+            delete img.dataset.imageId;
+        }
+        if (img.src !== image.imageURL) img.src = image.imageURL;
+        img.alt = 'AI Image';
+
+        const anchor = anchors.get(image.sourceBlockId) || block;
+        if (anchor.nextElementSibling !== img) {
+            anchor.insertAdjacentElement('afterend', img);
+        }
+        anchors.set(image.sourceBlockId, img);
+        existingInlineImages.delete(image.key);
+    }
+
+    for (const image of existingInlineImages.values()) image.remove();
+    scheduleMapRebuild();
+}
+
+function syncMarkers(payload) {
+    const annotations = Array.isArray(payload?.annotations) ? payload.annotations : [];
+    const imageMarkers = Array.isArray(payload?.imageMarkers) ? payload.imageMarkers : [];
+
+    syncMarkerGroup(annotations, '.annotation-marker', 'annotationId', 'annotation-marker');
+    syncMarkerGroup(imageMarkers, '.image-marker', 'imageId', 'image-marker');
+    scheduleMapRebuild();
+}
+
+function syncDecorations(payload) {
+    syncMarkers(payload || { annotations: [], imageMarkers: [] });
+    syncInlineImages(payload || { inlineAIImagesEnabled: false, inlineImages: [] });
+}
+
 // --- Event Listeners ---
 
 window.addEventListener('scroll', () => {
@@ -540,7 +677,7 @@ window.addEventListener('scroll', () => {
             if (focusState.reachedBottom && sy > max + 5) {
                 const timeSinceArrival = Date.now() - focusState.bottomArrivalTime;
                 if (timeSinceArrival > 300) {
-                    webkit.messageHandlers.readerBridge.postMessage({ type: 'bottomTug' });
+                    postToNative({ type: 'bottomTug' });
                 }
                 focusState.reachedBottom = false;
                 focusState.bottomArrivalTime = 0;
@@ -580,12 +717,12 @@ layoutObserver.observe(document.body);
 
 document.addEventListener('click', e => {
     const t = e.target;
-    if (t.classList.contains('annotation-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'annotationClick', id: t.dataset.annotationId });
-    if (t.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'imageMarkerClick', id: t.dataset.imageId });
+    if (t.classList.contains('annotation-marker')) postToNative({ type: 'annotationClick', id: t.dataset.annotationId });
+    if (t.classList.contains('image-marker')) postToNative({ type: 'imageMarkerClick', id: t.dataset.imageId });
 });
 
 document.addEventListener('dblclick', e => {
-    if (e.target.classList.contains('image-marker')) webkit.messageHandlers.readerBridge.postMessage({ type: 'imageMarkerDblClick', id: e.target.dataset.imageId });
+    if (e.target.classList.contains('image-marker')) postToNative({ type: 'imageMarkerDblClick', id: e.target.dataset.imageId });
 });
 
 document.addEventListener('mouseup', e => {
@@ -596,8 +733,8 @@ document.addEventListener('mouseup', e => {
         if (!sel.isCollapsed && text) {
             const container = sel.getRangeAt(0).startContainer.parentElement;
             // OPTIMIZED O(1) Lookup
-            const block = container.closest('[id^="block-"]');
-            const bId = block ? parseInt(block.id.replace("block-", ""), 10) : 1;
+            const block = getClosestBlock(container);
+            const bId = blockIdFromElement(block) || 1;
             popup.style.left = e.clientX + 'px'; popup.style.top = (e.clientY + 10) + 'px'; popup.style.display = 'block';
             window.selectedWord = text; window.selectedBlockId = bId; window.selectedContext = container.textContent;
         } else if (!e.target.closest('.word-popup')) popup.style.display = 'none';
@@ -607,12 +744,12 @@ document.addEventListener('mouseup', e => {
 document.addEventListener('mousedown', e => { if (!e.target.closest('.word-popup')) document.getElementById('wordPopup').style.display = 'none'; });
 
 function handleExplain() { 
-    webkit.messageHandlers.readerBridge.postMessage({ type: 'explain', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId }); 
+    postToNative({ type: 'explain', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId });
     document.getElementById('wordPopup').style.display = 'none'; 
 }
 
 function handleGenerateImage() { 
-    webkit.messageHandlers.readerBridge.postMessage({ type: 'generateImage', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId }); 
+    postToNative({ type: 'generateImage', word: window.selectedWord, context: window.selectedContext, blockId: window.selectedBlockId });
     document.getElementById('wordPopup').style.display = 'none'; 
 }
 

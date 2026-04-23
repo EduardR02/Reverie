@@ -74,40 +74,6 @@ struct ScrollContext: Equatable {
     let isProgrammatic: Bool
 }
 
-struct BookContentRenderState: Equatable {
-    struct InlineImage: Equatable {
-        let id: Int64?
-        let sourceBlockId: Int
-        let imagePath: String
-    }
-
-    let chapterId: Int64?
-    let inlineAIImagesEnabled: Bool
-    let inlineImages: [InlineImage]
-
-    init(chapterId: Int64?, inlineAIImagesEnabled: Bool, images: [GeneratedImage]) {
-        self.chapterId = chapterId
-        self.inlineAIImagesEnabled = inlineAIImagesEnabled
-
-        guard inlineAIImagesEnabled else {
-            self.inlineImages = []
-            return
-        }
-
-        self.inlineImages = images.compactMap { image in
-            guard image.status == .success else {
-                return nil
-            }
-
-            return InlineImage(
-                id: image.id,
-                sourceBlockId: image.sourceBlockId,
-                imagePath: image.imagePath
-            )
-        }
-    }
-}
-
 enum BookContentHTMLBuilder {
     struct RenderInput: Sendable, Equatable {
         struct Injection: Sendable, Equatable {
@@ -146,6 +112,7 @@ enum BookContentHTMLBuilder {
         let fontSize: Double
         let lineSpacing: Double
         let baseHref: String
+        let documentToken: String
         let readerBridgeJS: String
     }
 
@@ -170,20 +137,20 @@ enum BookContentHTMLBuilder {
                     --rose: \(input.themeRose);
                     --iris: \(input.themeIris);
                 }
-                html, body { margin: 0; padding: 0; background: var(--base); color: var(--text); 
+                html, body { margin: 0; padding: 0; background: var(--base); color: var(--text);
                              font-family: "\(input.fontFamily)", sans-serif; font-size: \(input.fontSize)px; line-height: \(input.lineSpacing); }
                 body { padding: 40px 60px; position: relative; }
-                
+
                 #readerContent { position: relative; z-index: 1; }
-                
+
                 .selection-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 0; pointer-events: none; overflow: visible; z-index: 0; }
                 .selection-rect { position: absolute; background: var(--rose); border-radius: 2px; }
 
                 ::selection { background: transparent !important; color: var(--base) !important; }
                 ::-webkit-selection { background: transparent !important; color: var(--base) !important; }
 
-                .annotation-marker, .image-marker { 
-                    display: inline-block; width: 10px; height: 10px; border-radius: 50%; 
+                .annotation-marker, .image-marker {
+                    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
                     margin-left: 6px; cursor: pointer; vertical-align: middle; transition: transform 0.2s, background-color 0.2s;
                 }
                 .annotation-marker { background: var(--rose); }
@@ -193,21 +160,19 @@ enum BookContentHTMLBuilder {
                 .word-popup button { display: block; width: 100%; padding: 8px; background: transparent; border: none; color: var(--text); cursor: pointer; text-align: left; }
                 .footnote-ref { color: var(--rose); text-decoration: none; font-size: 0.8em; vertical-align: super; margin-left: 2px; }
 
-                /* Link styling - themed to match Rose Pine */
                 a { color: var(--rose); text-decoration: none; transition: color 0.15s ease, opacity 0.15s ease; }
                 a:hover { opacity: 0.8; text-decoration: underline; text-underline-offset: 2px; }
                 a:visited { color: var(--rose); opacity: 0.85; }
 
-                /* Highlight animations */
                 .highlight-active { border-radius: 4px; padding: 2px 4px; margin: -2px -4px; }
-                .marker-highlight { 
+                .marker-highlight {
                     transform: scale(1.6) !important;
                     background-color: var(--highlight-color) !important;
                     box-shadow: 0 0 15px 3px var(--highlight-color) !important;
                     z-index: 100 !important;
                     transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.4s !important;
                 }
-                
+
                 @keyframes marker-pulse-anim {
                     0% { background-color: var(--highlight-color); box-shadow: 0 0 0 0 rgba(0,0,0,0); }
                     30% { background-color: #ffffff; box-shadow: 0 0 8px 3px var(--highlight-color), 0 0 5px 2px rgba(255,255,255,0.9); }
@@ -227,6 +192,7 @@ enum BookContentHTMLBuilder {
                 <button onclick="handleExplain()">Explain</button>
                 <button onclick="handleGenerateImage()">Generate Image</button>
             </div>
+            <script>window.__readerDocumentToken = '\(input.documentToken.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'"))';</script>
             <script>\(input.readerBridgeJS)</script>
         </body>
         </html>
@@ -235,13 +201,13 @@ enum BookContentHTMLBuilder {
 }
 
 struct BookContentView: NSViewRepresentable {
-    typealias BindingMutationScheduler = (@escaping () -> Void) -> Void
+    typealias BindingMutationScheduler = (@MainActor @Sendable @escaping () -> Void) -> Void
 
     let chapter: Chapter
     let annotations: [Annotation]
     let images: [GeneratedImage]
     let selectedTab: AIPanel.Tab
-    let onWordClick: (String, String, Int, WordAction) -> Void 
+    let onWordClick: (String, String, Int, WordAction) -> Void
     let onAnnotationClick: (Annotation) -> Void
     let onImageMarkerClick: (Int64) -> Void
     let onFootnoteClick: (String) -> Void
@@ -253,7 +219,7 @@ struct BookContentView: NSViewRepresentable {
     @Binding var scrollToAnnotationId: Int64?
     @Binding var scrollToPercent: Double?
     @Binding var scrollToOffset: Double?
-    @Binding var scrollToBlockId: (Int, Int64?, String?)? // blockId, markerId, type
+    @Binding var scrollToBlockId: (Int, Int64?, String?)?
     @Binding var scrollToQuote: String?
     @Binding var pendingMarkerInjections: [MarkerInjection]
     @Binding var pendingImageMarkerInjections: [ImageMarkerInjection]
@@ -274,81 +240,61 @@ struct BookContentView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.parent = self
-        
-        let inlineSetting = appState.settings.inlineAIImages
-        let renderState = BookContentRenderState(
-            chapterId: chapter.id,
-            inlineAIImagesEnabled: inlineSetting,
-            images: images
-        )
-        let hasContentNavigationRequest = scrollToAnnotationId != nil || scrollToQuote != nil || scrollToBlockId != nil
+        let coordinator = context.coordinator
+        coordinator.parent = self
 
-        if context.coordinator.renderState != renderState {
-            context.coordinator.renderState = renderState
-            context.coordinator.isContentLoaded = false
-            context.coordinator.preserveScrollPositionIfNeeded(
+        let state = makeViewState()
+        coordinator.setDesiredState(state)
+
+        let hasContentNavigationRequest = scrollToAnnotationId != nil || scrollToQuote != nil || scrollToBlockId != nil
+        if coordinator.needsDocumentLoad(for: state.document) {
+            coordinator.prepareForDocumentLoad(
+                state: state,
                 requestedScrollOffset: scrollToOffset,
                 requestedScrollPercent: scrollToPercent,
                 hasContentNavigationRequest: hasContentNavigationRequest
             )
-            loadHTML(on: webView, coordinator: context.coordinator)
+            loadHTML(on: webView, coordinator: coordinator, state: state)
         }
 
-        if let navigationRequest = context.coordinator.consumeContentNavigationRequest(
+        if let navigationRequest = coordinator.consumeContentNavigationRequest(
             annotationId: scrollToAnnotationId,
             quote: scrollToQuote,
             block: scrollToBlockId
         ) {
-            if context.coordinator.isContentLoaded {
-                context.coordinator.applyContentNavigationRequest(navigationRequest, on: webView) {
-                    DispatchQueue.main.async { clearContentNavigationRequest(navigationRequest) }
+            if coordinator.isContentLoaded {
+                coordinator.pendingContentNavigationClearAction = {
+                    DispatchQueue.main.async {
+                        clearContentNavigationRequest(navigationRequest)
+                    }
                 }
-                context.coordinator.clearPendingContentNavigationRequest()
             } else {
-                DispatchQueue.main.async { clearContentNavigationRequest(navigationRequest) }
+                DispatchQueue.main.async {
+                    clearContentNavigationRequest(navigationRequest)
+                }
             }
         }
-        if discardBlockedExplicitScrollIfNeeded(using: context.coordinator) == nil,
-           let requestedScroll = context.coordinator.consumeExplicitScrollRequest(
-            requestedScrollOffset: scrollToOffset,
-            requestedScrollPercent: scrollToPercent
-        ) {
-            if context.coordinator.isContentLoaded {
-                context.coordinator.applyScrollRequest(requestedScroll, on: webView) {
+
+        if discardBlockedExplicitScrollIfNeeded(using: coordinator) == nil,
+           let requestedScroll = coordinator.consumeExplicitScrollRequest(
+                requestedScrollOffset: scrollToOffset,
+                requestedScrollPercent: scrollToPercent
+           ) {
+            if coordinator.isContentLoaded {
+                coordinator.pendingScrollClearAction = {
                     scheduleRequestedScrollClear(requestedScroll)
                 }
-                context.coordinator.clearPendingScroll()
             } else {
                 scheduleRequestedScrollClear(requestedScroll)
             }
         }
 
-        if !pendingMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            let snapshots = pendingMarkerInjections
-            let injectionsToApply = context.coordinator.markerInjectionsNeedingJavaScript(snapshots)
-            context.coordinator.recordRenderedMarkers(snapshots)
-            for inj in injectionsToApply {
-                webView.evaluateJavaScript("injectMarkerAtBlock(\(inj.annotationId), \(inj.sourceBlockId));") { _, _ in }
-            }
-            DispatchQueue.main.async {
-                self.pendingMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
-            }
-        }
-        if !pendingImageMarkerInjections.isEmpty && context.coordinator.isContentLoaded {
-            let snapshots = pendingImageMarkerInjections
-            let injectionsToApply = context.coordinator.imageMarkerInjectionsNeedingJavaScript(snapshots)
-            context.coordinator.recordRenderedImageMarkers(snapshots)
-            for inj in injectionsToApply {
-                webView.evaluateJavaScript("injectImageMarker(\(inj.imageId), \(inj.sourceBlockId));") { _, _ in }
-            }
-            DispatchQueue.main.async {
-                self.pendingImageMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
-            }
+        if coordinator.isContentLoaded {
+            coordinator.flush(on: webView)
         }
 
         if let amount = scrollByAmount {
-            webView.evaluateJavaScript("window.scrollBy({top: \(amount), behavior: 'smooth'});") { _, _ in 
+            webView.evaluateJavaScript("window.scrollBy({top: \(amount), behavior: 'smooth'});") { _, _ in
                 DispatchQueue.main.async {
                     if self.scrollByAmount == amount {
                         self.scrollByAmount = nil
@@ -360,24 +306,28 @@ struct BookContentView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    func makeHTMLRenderInput() -> BookContentHTMLBuilder.RenderInput {
+    func makeHTMLRenderInput(for state: BookContentViewState) -> BookContentHTMLBuilder.RenderInput {
+        BookContentHTMLBuilder.RenderInput(
+            contentHTML: state.document.contentHTML,
+            injections: [],
+            themeBase: state.style.themeBase,
+            themeSurface: state.style.themeSurface,
+            themeText: state.style.themeText,
+            themeMuted: state.style.themeMuted,
+            themeRose: state.style.themeRose,
+            themeIris: state.style.themeIris,
+            fontFamily: state.style.fontFamily,
+            fontSize: state.style.fontSize,
+            lineSpacing: state.style.lineSpacing,
+            baseHref: state.document.baseHref,
+            documentToken: state.document.bridgeToken,
+            readerBridgeJS: Self.readerBridgeJS
+        )
+    }
+
+    func makeViewState() -> BookContentViewState {
         let settings = appState.settings
-        var injections: [BookContentHTMLBuilder.RenderInput.Injection] = []
-
-        for ann in annotations {
-            injections.append(.init(kind: .annotation(id: ann.id ?? 0), sourceBlockId: ann.sourceBlockId))
-        }
-
-        for img in images {
-            injections.append(.init(kind: .imageMarker(id: img.id ?? 0), sourceBlockId: img.sourceBlockId))
-            if settings.inlineAIImages && img.status == .success {
-                injections.append(.init(kind: .inlineImage(url: img.imageURL), sourceBlockId: img.sourceBlockId))
-            }
-        }
-
-        return BookContentHTMLBuilder.RenderInput(
-            contentHTML: chapter.contentHTML,
-            injections: injections,
+        let style = BookContentStyleState(
             themeBase: theme.base.hexString,
             themeSurface: theme.surface.hexString,
             themeText: theme.text.hexString,
@@ -385,65 +335,110 @@ struct BookContentView: NSViewRepresentable {
             themeRose: theme.rose.hexString,
             themeIris: theme.iris.hexString,
             fontFamily: settings.fontFamily,
-            fontSize: settings.fontSize,
-            lineSpacing: settings.lineSpacing,
-            baseHref: chapterDirectoryURL().absoluteString,
-            readerBridgeJS: Self.readerBridgeJS
+            fontSize: Double(settings.fontSize),
+            lineSpacing: Double(settings.lineSpacing)
         )
+        let document = BookContentDocumentState(
+            chapterId: chapter.id,
+            chapterIndex: chapter.index,
+            contentHTML: chapter.contentHTML,
+            baseHref: chapterDirectoryURL().absoluteString
+        )
+        let decorations = BookContentDecorationState(
+            annotations: annotations,
+            images: images,
+            inlineAIImagesEnabled: settings.inlineAIImages,
+            pendingMarkers: pendingMarkerInjections,
+            pendingImageMarkers: pendingImageMarkerInjections
+        )
+
+        return BookContentViewState(document: document, style: style, decorations: decorations)
     }
 
-    /// Cached JavaScript bridge content
     private static let readerBridgeJS = ReaderBridgeScriptLoader.load()
 
     private func chapterDirectoryURL() -> URL {
         let root = LibraryPaths.publicationDirectory(for: chapter.bookId)
-        if let path = chapter.resourcePath, !path.isEmpty { return root.appendingPathComponent(path).deletingLastPathComponent() }
+        if let path = chapter.resourcePath, !path.isEmpty {
+            return root.appendingPathComponent(path).deletingLastPathComponent()
+        }
         return root
     }
+
     private func readerRootDirectoryURL() -> URL { LibraryPaths.readerRoot }
 
-    private func loadHTML(on webView: WKWebView, coordinator: Coordinator) {
-        let renderInput = makeHTMLRenderInput()
+    @MainActor
+    private func loadHTML(on webView: WKWebView, coordinator: Coordinator, state: BookContentViewState) {
+        let renderInput = makeHTMLRenderInput(for: state)
         let fileURL = renderedChapterURL()
         let readerRootURL = readerRootDirectoryURL()
+        let documentGeneration = coordinator.currentDocumentGenerationForTesting
 
-        coordinator.recordRenderedContent(
-            annotationIDs: Set(annotations.compactMap(\.id)),
-            imageIDs: Set(images.compactMap(\.id))
-        )
-        
         coordinator.loadTask?.cancel()
         coordinator.loadTask = Task { @MainActor in
-            let success = await Task.detached(priority: .userInitiated) {
+            let shouldReuseRenderedHTML = coordinator.shouldReuseRenderedHTML(at: fileURL, for: state.document)
+            let persistenceResult = await Task.detached(priority: .userInitiated) {
                 do {
-                    let html = BookContentHTMLBuilder.buildHTML(from: renderInput)
                     try LibraryPaths.ensureDirectory(fileURL.deletingLastPathComponent())
+
+                    if shouldReuseRenderedHTML {
+                        return RenderedHTMLPersistenceResult.reused
+                    }
+
+                    let html = BookContentHTMLBuilder.buildHTML(from: renderInput)
                     try html.write(to: fileURL, atomically: true, encoding: .utf8)
-                    return true
+                    return RenderedHTMLPersistenceResult.wroteFile
                 } catch {
-                    return false
+                    return RenderedHTMLPersistenceResult.failed
                 }
             }.value
 
-            if Task.isCancelled { return }
-            
-            if success {
-                webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
-            } else {
-                let html = await Task.detached(priority: .userInitiated) {
-                    BookContentHTMLBuilder.buildHTML(from: renderInput)
-                }.value
-
-                if Task.isCancelled { return }
-                webView.loadHTMLString(html, baseURL: readerRootURL)
+            if Task.isCancelled {
+                return
             }
+
+            guard coordinator.isCurrentDocumentGeneration(documentGeneration) else {
+                return
+            }
+
+            if persistenceResult == .wroteFile {
+                coordinator.recordRenderedHTMLPersistenceSuccess(at: fileURL, for: state.document)
+            }
+
+            if persistenceResult != .failed {
+                let navigation = webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
+                coordinator.registerNavigation(navigation, documentGeneration: documentGeneration)
+                return
+            }
+
+            let html = await Task.detached(priority: .userInitiated) {
+                BookContentHTMLBuilder.buildHTML(from: renderInput)
+            }.value
+
+            if Task.isCancelled {
+                return
+            }
+
+            guard coordinator.isCurrentDocumentGeneration(documentGeneration) else {
+                return
+            }
+
+            let navigation = webView.loadHTMLString(html, baseURL: readerRootURL)
+            coordinator.registerNavigation(navigation, documentGeneration: documentGeneration)
         }
     }
 
     private func renderedChapterURL() -> URL {
-        let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId).appendingPathComponent("_reader", isDirectory: true)
+        let renderDir = LibraryPaths.publicationDirectory(for: chapter.bookId)
+            .appendingPathComponent("_reader", isDirectory: true)
         let idComponent = chapter.id.map(String.init) ?? "index-\(chapter.index)"
         return renderDir.appendingPathComponent("chapter-\(idComponent).html")
+    }
+
+    private enum RenderedHTMLPersistenceResult {
+        case reused
+        case wroteFile
+        case failed
     }
 
     private func clearRequestedScroll(_ request: Coordinator.ScrollRequest) {
@@ -578,21 +573,167 @@ struct BookContentView: NSViewRepresentable {
             case preserved
         }
 
+        struct PendingRequest<Request: Equatable> {
+            private(set) var request: Request?
+            private(set) var requestID: Int?
+            var clearAction: (() -> Void)?
+
+            mutating func replace(with request: Request, id: Int) {
+                self.request = request
+                self.requestID = id
+                self.clearAction = nil
+            }
+
+            mutating func clear() {
+                request = nil
+                requestID = nil
+                clearAction = nil
+            }
+
+            func matches(id: Int) -> Bool {
+                requestID == id
+            }
+        }
+
         var parent: BookContentView
-        var renderState: BookContentRenderState?
         var isContentLoaded = false
-        var pendingScroll: ScrollRequest?
+        var pendingScroll: ScrollRequest? { pendingScrollState.request }
         var pendingScrollSource: PendingScrollSource?
         var lastScrollPercent: Double?
         var lastScrollOffset: Double?
         var loadTask: Task<Void, Never>?
-        var pendingContentNavigationRequest: ContentNavigationRequest?
-        private var renderedAnnotationIDs = Set<Int64>()
-        private var renderedImageIDs = Set<Int64>()
+        var pendingContentNavigationRequest: ContentNavigationRequest? { pendingContentNavigationState.request }
+        var pendingScrollClearAction: (() -> Void)? {
+            get { pendingScrollState.clearAction }
+            set { pendingScrollState.clearAction = newValue }
+        }
+        var pendingContentNavigationClearAction: (() -> Void)? {
+            get { pendingContentNavigationState.clearAction }
+            set { pendingContentNavigationState.clearAction = newValue }
+        }
+
+        private var desiredState: BookContentViewState?
+        private var currentDocumentState: BookContentDocumentState?
+        private var appliedStyle: BookContentStyleState?
+        private var appliedMarkerPayload: BookContentDecorationState.MarkerPayload = .empty
+        private var appliedInlineImagePayload: BookContentDecorationState.InlineImagePayload = .empty
+        private var isFlushing = false
+        private var needsFlushAfterCurrent = false
+        private var renderedHTMLCache: [String: Int] = [:]
+        private var pendingScrollState = PendingRequest<ScrollRequest>()
+        private var pendingContentNavigationState = PendingRequest<ContentNavigationRequest>()
+        private var nextPendingRequestID = 1
+        private var currentDocumentGeneration = 0
+        private var currentDocumentTokenStorage = ""
+        private var nextNavigationLoadID = 1
+        private var activeNavigationLoadID: Int?
+        private var activeNavigationDocumentGeneration: Int?
+        private var acceptedBridgeDocumentToken: String?
+        private var navigationLoadIDsByObjectIdentifier: [ObjectIdentifier: Int] = [:]
         private var consumedExplicitScroll: ScrollRequest?
         private var consumedContentNavigationRequest: ContentNavigationRequest?
 
-        init(parent: BookContentView) { self.parent = parent }
+        var appliedStyleForTesting: BookContentStyleState? {
+            appliedStyle
+        }
+
+        var appliedDecorationsForTesting: BookContentDecorationState {
+            .init(
+                annotationMarkers: appliedMarkerPayload.annotations,
+                imageMarkers: appliedMarkerPayload.imageMarkers,
+                inlineAIImagesEnabled: appliedInlineImagePayload.inlineAIImagesEnabled,
+                inlineImages: appliedInlineImagePayload.inlineImages
+            )
+        }
+
+        var pendingScrollRequestIDForTesting: Int? {
+            pendingScrollState.requestID
+        }
+
+        var pendingContentNavigationRequestIDForTesting: Int? {
+            pendingContentNavigationState.requestID
+        }
+
+        var currentDocumentGenerationForTesting: Int {
+            currentDocumentGeneration
+        }
+
+        var currentDocumentToken: String {
+            currentDocumentTokenStorage
+        }
+
+        var currentDocumentTokenForTesting: String {
+            currentDocumentTokenStorage
+        }
+
+        var acceptedBridgeDocumentTokenForTesting: String? {
+            acceptedBridgeDocumentToken
+        }
+
+        init(parent: BookContentView) {
+            self.parent = parent
+        }
+
+        func setDesiredState(_ state: BookContentViewState) {
+            desiredState = state
+        }
+
+        func needsDocumentLoad(for document: BookContentDocumentState) -> Bool {
+            currentDocumentState != document
+        }
+
+        func prepareForDocumentLoad(
+            state: BookContentViewState,
+            requestedScrollOffset: Double?,
+            requestedScrollPercent: Double?,
+            hasContentNavigationRequest: Bool
+        ) {
+            currentDocumentGeneration += 1
+            currentDocumentTokenStorage = state.document.bridgeToken
+            currentDocumentState = state.document
+            appliedStyle = nil
+            appliedMarkerPayload = .empty
+            appliedInlineImagePayload = .empty
+            isContentLoaded = false
+            isFlushing = false
+            needsFlushAfterCurrent = false
+            activeNavigationLoadID = nil
+            activeNavigationDocumentGeneration = nil
+            acceptedBridgeDocumentToken = nil
+            preserveScrollPositionIfNeeded(
+                requestedScrollOffset: requestedScrollOffset,
+                requestedScrollPercent: requestedScrollPercent,
+                hasContentNavigationRequest: hasContentNavigationRequest
+            )
+        }
+
+        func isCurrentDocumentGeneration(_ documentGeneration: Int) -> Bool {
+            currentDocumentGeneration == documentGeneration
+        }
+
+        @discardableResult
+        func registerNavigationLoadForTesting(documentGeneration: Int? = nil) -> Int {
+            let navigationLoadID = makeNavigationLoadID()
+            activeNavigationLoadID = navigationLoadID
+            activeNavigationDocumentGeneration = documentGeneration ?? currentDocumentGeneration
+            return navigationLoadID
+        }
+
+        func registerNavigation(_ navigation: WKNavigation?, documentGeneration: Int) {
+            let navigationLoadID = registerNavigationLoadForTesting(documentGeneration: documentGeneration)
+            if let navigation {
+                navigationLoadIDsByObjectIdentifier[ObjectIdentifier(navigation)] = navigationLoadID
+            }
+        }
+
+        func shouldReuseRenderedHTML(at fileURL: URL, for document: BookContentDocumentState) -> Bool {
+            renderedHTMLCache[fileURL.path] == document.renderSignature &&
+            FileManager.default.fileExists(atPath: fileURL.path)
+        }
+
+        func recordRenderedHTMLPersistenceSuccess(at fileURL: URL, for document: BookContentDocumentState) {
+            renderedHTMLCache[fileURL.path] = document.renderSignature
+        }
 
         @discardableResult
         func consumeContentNavigationRequest(annotationId: Int64?, quote: String?, block: (Int, Int64?, String?)?) -> ContentNavigationRequest? {
@@ -606,7 +747,7 @@ struct BookContentView: NSViewRepresentable {
             }
 
             consumedContentNavigationRequest = request
-            pendingContentNavigationRequest = request
+            assignPendingContentNavigationRequest(request)
             clearPendingScroll()
             return request
         }
@@ -627,8 +768,7 @@ struct BookContentView: NSViewRepresentable {
             }
 
             consumedExplicitScroll = request
-            pendingScroll = request
-            pendingScrollSource = .explicit
+            assignPendingScroll(request, source: .explicit)
             return request
         }
 
@@ -661,182 +801,479 @@ struct BookContentView: NSViewRepresentable {
             }
 
             if let lastScrollOffset, lastScrollOffset > 0 {
-                pendingScroll = .offset(lastScrollOffset)
-                pendingScrollSource = .preserved
+                assignPendingScroll(.offset(lastScrollOffset), source: .preserved)
                 return
             }
 
             if let lastScrollPercent {
-                pendingScroll = .percent(lastScrollPercent)
-                pendingScrollSource = .preserved
+                assignPendingScroll(.percent(lastScrollPercent), source: .preserved)
             }
         }
 
         func clearPendingScroll() {
-            pendingScroll = nil
+            pendingScrollState.clear()
             pendingScrollSource = nil
         }
 
         func clearPendingContentNavigationRequest() {
-            pendingContentNavigationRequest = nil
+            pendingContentNavigationState.clear()
         }
 
-        func recordRenderedContent(annotationIDs: Set<Int64>, imageIDs: Set<Int64>) {
-            renderedAnnotationIDs = annotationIDs
-            renderedImageIDs = imageIDs
+        func flush(on webView: WKWebView, triggerInitialScrollReport: Bool = false) {
+            guard isContentLoaded else {
+                return
+            }
+
+            guard !isFlushing else {
+                needsFlushAfterCurrent = true
+                return
+            }
+
+            isFlushing = true
+            flushNext(on: webView, triggerInitialScrollReport: triggerInitialScrollReport)
         }
 
-        func markerInjectionsNeedingJavaScript(_ injections: [MarkerInjection]) -> [MarkerInjection] {
-            injections.filter { !renderedAnnotationIDs.contains($0.annotationId) }
-        }
+        private func flushNext(on webView: WKWebView, triggerInitialScrollReport: Bool) {
+            guard isContentLoaded else {
+                finishFlush(on: webView)
+                return
+            }
 
-        func imageMarkerInjectionsNeedingJavaScript(_ injections: [ImageMarkerInjection]) -> [ImageMarkerInjection] {
-            injections.filter { !renderedImageIDs.contains($0.imageId) }
-        }
+            if let style = desiredState?.style,
+               appliedStyle != style,
+               let javaScript = javaScriptInvocation(function: "applyReaderStyle", payload: style) {
+                let documentGeneration = currentDocumentGeneration
+                webView.evaluateJavaScript(javaScript) { _, error in
+                    _ = self.completeStyleSync(style, documentGeneration: documentGeneration, error: error)
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: documentGeneration,
+                        error: error,
+                        on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
 
-        func recordRenderedMarkers(_ injections: [MarkerInjection]) {
-            for injection in injections {
-                renderedAnnotationIDs.insert(injection.annotationId)
+            if let decorations = desiredState?.decorations {
+                let decorationPlan = BookContentDecorationUpdatePlan(
+                    previous: appliedDecorationsForTesting,
+                    desired: decorations
+                )
+                if decorationPlan.needsMarkerSync,
+                   let javaScript = javaScriptInvocation(function: "syncMarkers", payload: decorations.markerPayload) {
+                    let documentGeneration = currentDocumentGeneration
+                    let markerSnapshot = parent.pendingMarkerInjections
+                    let imageMarkerSnapshot = parent.pendingImageMarkerInjections
+                    webView.evaluateJavaScript(javaScript) { _, error in
+                        _ = self.completeMarkerSync(
+                            decorations.markerPayload,
+                            markerSnapshot: markerSnapshot,
+                            imageMarkerSnapshot: imageMarkerSnapshot,
+                            documentGeneration: documentGeneration,
+                            error: error
+                        )
+                        self.continueFlushAfterJavaScriptEvaluation(
+                            documentGeneration: documentGeneration,
+                            error: error,
+                            on: webView,
+                            triggerInitialScrollReport: triggerInitialScrollReport
+                        )
+                    }
+                    return
+                }
+
+                if decorationPlan.needsInlineImageSync,
+                   let javaScript = javaScriptInvocation(function: "syncInlineImages", payload: decorations.inlineImagePayload) {
+                    let documentGeneration = currentDocumentGeneration
+                    webView.evaluateJavaScript(javaScript) { _, error in
+                        _ = self.completeInlineImageSync(
+                            decorations.inlineImagePayload,
+                            documentGeneration: documentGeneration,
+                            error: error
+                        )
+                        self.continueFlushAfterJavaScriptEvaluation(
+                            documentGeneration: documentGeneration,
+                            error: error,
+                            on: webView,
+                            triggerInitialScrollReport: triggerInitialScrollReport
+                        )
+                    }
+                    return
+                }
+            }
+
+            if let request = pendingContentNavigationRequest,
+               let requestID = pendingContentNavigationState.requestID {
+                let documentGeneration = currentDocumentGeneration
+                applyContentNavigationRequest(request, on: webView) { error in
+                    _ = self.completeContentNavigationSync(
+                        requestID: requestID,
+                        documentGeneration: documentGeneration,
+                        error: error
+                    )
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: documentGeneration,
+                        error: error,
+                        on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
+
+            if let request = pendingScroll,
+               let requestID = pendingScrollState.requestID {
+                let documentGeneration = currentDocumentGeneration
+                applyScrollRequest(request, on: webView) { error in
+                    _ = self.completeScrollSync(
+                        requestID: requestID,
+                        documentGeneration: documentGeneration,
+                        error: error
+                    )
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: documentGeneration,
+                        error: error,
+                        on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
+
+            guard triggerInitialScrollReport else {
+                finishFlush(on: webView)
+                return
+            }
+
+            webView.evaluateJavaScript("window.dispatchEvent(new Event('scroll'));") { _, _ in
+                self.finishFlush(on: webView)
             }
         }
 
-        func recordRenderedImageMarkers(_ injections: [ImageMarkerInjection]) {
-            for injection in injections {
-                renderedImageIDs.insert(injection.imageId)
+        private func finishFlush(on webView: WKWebView) {
+            isFlushing = false
+            guard needsFlushAfterCurrent else {
+                return
+            }
+
+            needsFlushAfterCurrent = false
+            flush(on: webView)
+        }
+
+        private func continueFlushAfterJavaScriptEvaluation(
+            documentGeneration: Int,
+            error: Error?,
+            on webView: WKWebView,
+            triggerInitialScrollReport: Bool
+        ) {
+            guard currentDocumentGeneration == documentGeneration else {
+                return
+            }
+
+            guard error == nil else {
+                stopFlushAfterJavaScriptFailure()
+                return
+            }
+
+            flushNext(on: webView, triggerInitialScrollReport: triggerInitialScrollReport)
+        }
+
+        private func stopFlushAfterJavaScriptFailure() {
+            isFlushing = false
+            needsFlushAfterCurrent = false
+        }
+
+        @discardableResult
+        func completeStyleSync(_ style: BookContentStyleState, documentGeneration: Int, error: Error?) -> Bool {
+            guard error == nil, currentDocumentGeneration == documentGeneration else {
+                return false
+            }
+
+            appliedStyle = style
+            return true
+        }
+
+        @discardableResult
+        func completeDecorationSync(
+            _ decorations: BookContentDecorationState,
+            markerSnapshot: [MarkerInjection],
+            imageMarkerSnapshot: [ImageMarkerInjection],
+            documentGeneration: Int,
+            error: Error?
+        ) -> Bool {
+            let markerDidSync = completeMarkerSync(
+                decorations.markerPayload,
+                markerSnapshot: markerSnapshot,
+                imageMarkerSnapshot: imageMarkerSnapshot,
+                documentGeneration: documentGeneration,
+                error: error
+            )
+            let inlineImagesDidSync = completeInlineImageSync(
+                decorations.inlineImagePayload,
+                documentGeneration: documentGeneration,
+                error: error
+            )
+            return markerDidSync && inlineImagesDidSync
+        }
+
+        @discardableResult
+        func completeMarkerSync(
+            _ markerPayload: BookContentDecorationState.MarkerPayload,
+            markerSnapshot: [MarkerInjection],
+            imageMarkerSnapshot: [ImageMarkerInjection],
+            documentGeneration: Int,
+            error: Error?
+        ) -> Bool {
+            guard error == nil, currentDocumentGeneration == documentGeneration else {
+                return false
+            }
+
+            appliedMarkerPayload = markerPayload
+            clearPendingInjections(
+                markerSnapshot: markerSnapshot,
+                imageMarkerSnapshot: imageMarkerSnapshot
+            )
+            return true
+        }
+
+        @discardableResult
+        func completeInlineImageSync(
+            _ inlineImagePayload: BookContentDecorationState.InlineImagePayload,
+            documentGeneration: Int,
+            error: Error?
+        ) -> Bool {
+            guard error == nil, currentDocumentGeneration == documentGeneration else {
+                return false
+            }
+
+            appliedInlineImagePayload = inlineImagePayload
+            return true
+        }
+
+        @discardableResult
+        func completeContentNavigationSync(requestID: Int, documentGeneration: Int, error: Error?) -> Bool {
+            guard error == nil,
+                  currentDocumentGeneration == documentGeneration,
+                  pendingContentNavigationState.matches(id: requestID) else {
+                return false
+            }
+
+            pendingContentNavigationState.clearAction?()
+            clearPendingContentNavigationRequest()
+            clearPendingScroll()
+            return true
+        }
+
+        @discardableResult
+        func completeScrollSync(requestID: Int, documentGeneration: Int, error: Error?) -> Bool {
+            guard error == nil,
+                  currentDocumentGeneration == documentGeneration,
+                  pendingScrollState.matches(id: requestID) else {
+                return false
+            }
+
+            pendingScrollState.clearAction?()
+            clearPendingScroll()
+            return true
+        }
+
+        private func assignPendingScroll(_ request: ScrollRequest, source: PendingScrollSource) {
+            pendingScrollState.replace(with: request, id: makePendingRequestID())
+            pendingScrollSource = source
+        }
+
+        private func assignPendingContentNavigationRequest(_ request: ContentNavigationRequest) {
+            pendingContentNavigationState.replace(with: request, id: makePendingRequestID())
+        }
+
+        private func makePendingRequestID() -> Int {
+            let requestID = nextPendingRequestID
+            nextPendingRequestID += 1
+            return requestID
+        }
+
+        private func makeNavigationLoadID() -> Int {
+            let navigationLoadID = nextNavigationLoadID
+            nextNavigationLoadID += 1
+            return navigationLoadID
+        }
+
+        @discardableResult
+        func completeDocumentLoadIfCurrent(navigationLoadID: Int, documentGeneration: Int) -> Bool {
+            guard currentDocumentGeneration == documentGeneration,
+                  activeNavigationLoadID == navigationLoadID,
+                  activeNavigationDocumentGeneration == documentGeneration else {
+                return false
+            }
+
+            acceptedBridgeDocumentToken = currentDocumentTokenStorage
+            isContentLoaded = true
+            return true
+        }
+
+        func shouldAcceptBridgeMessage(documentToken: String?) -> Bool {
+            isContentLoaded && documentToken == acceptedBridgeDocumentToken
+        }
+
+        private func clearPendingInjections(
+            markerSnapshot: [MarkerInjection],
+            imageMarkerSnapshot: [ImageMarkerInjection]
+        ) {
+            guard !markerSnapshot.isEmpty || !imageMarkerSnapshot.isEmpty else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                if !markerSnapshot.isEmpty {
+                    self.parent.pendingMarkerInjections.removeAll { item in
+                        markerSnapshot.contains(where: { $0 == item })
+                    }
+                }
+
+                if !imageMarkerSnapshot.isEmpty {
+                    self.parent.pendingImageMarkerInjections.removeAll { item in
+                        imageMarkerSnapshot.contains(where: { $0 == item })
+                    }
+                }
             }
         }
 
-        func applyScrollRequest(_ request: ScrollRequest, on webView: WKWebView, completion: (() -> Void)? = nil) {
-            webView.evaluateJavaScript(request.javaScript) { _, _ in
-                completion?()
+        private func javaScriptInvocation<Payload: Encodable>(function: String, payload: Payload) -> String? {
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(payload),
+                  let json = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return "\(function)(\(json));"
+        }
+
+        func applyScrollRequest(_ request: ScrollRequest, on webView: WKWebView, completion: ((Error?) -> Void)? = nil) {
+            webView.evaluateJavaScript(request.javaScript) { _, error in
+                completion?(error)
             }
         }
 
-        func applyContentNavigationRequest(_ request: ContentNavigationRequest, on webView: WKWebView, completion: (() -> Void)? = nil) {
-            webView.evaluateJavaScript(request.javaScript) { _, _ in
-                completion?()
+        func applyContentNavigationRequest(_ request: ContentNavigationRequest, on webView: WKWebView, completion: ((Error?) -> Void)? = nil) {
+            webView.evaluateJavaScript(request.javaScript) { _, error in
+                completion?(error)
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            isContentLoaded = true
-            if let pendingContentNavigationRequest {
-                applyContentNavigationRequest(pendingContentNavigationRequest, on: webView)
-                clearPendingContentNavigationRequest()
-                clearPendingScroll()
-            } else if let pendingScroll {
-                applyScrollRequest(pendingScroll, on: webView)
-                clearPendingScroll()
+            guard let navigation,
+                  let navigationLoadID = navigationLoadIDsByObjectIdentifier.removeValue(forKey: ObjectIdentifier(navigation)),
+                  let documentGeneration = activeNavigationDocumentGeneration,
+                  completeDocumentLoadIfCurrent(
+                    navigationLoadID: navigationLoadID,
+                    documentGeneration: documentGeneration
+                  ) else {
+                return
             }
 
-            if !parent.pendingMarkerInjections.isEmpty {
-                let snapshots = parent.pendingMarkerInjections
-                let injectionsToApply = markerInjectionsNeedingJavaScript(snapshots)
-                recordRenderedMarkers(snapshots)
-                for inj in injectionsToApply {
-                    webView.evaluateJavaScript("injectMarkerAtBlock(\(inj.annotationId), \(inj.sourceBlockId));") { _, _ in }
-                }
-                DispatchQueue.main.async { 
-                    self.parent.pendingMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
-                }
-            }
-            if !parent.pendingImageMarkerInjections.isEmpty {
-                let snapshots = parent.pendingImageMarkerInjections
-                let injectionsToApply = imageMarkerInjectionsNeedingJavaScript(snapshots)
-                recordRenderedImageMarkers(snapshots)
-                for inj in injectionsToApply {
-                    webView.evaluateJavaScript("injectImageMarker(\(inj.imageId), \(inj.sourceBlockId));") { _, _ in }
-                }
-                DispatchQueue.main.async { 
-                    self.parent.pendingImageMarkerInjections.removeAll { item in snapshots.contains(where: { $0 == item }) }
-                }
-            }
-            
-            // Trigger initial scroll report to ensure dimensions are known immediately
-            webView.evaluateJavaScript("window.dispatchEvent(new Event('scroll'));")
+            flush(on: webView, triggerInitialScrollReport: true)
         }
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+            guard let body = message.body as? [String: Any],
+                  let type = body["type"] as? String else {
+                return
+            }
+
+            guard shouldAcceptBridgeMessage(documentToken: body["documentToken"] as? String) else {
+                return
+            }
+
             switch type {
-            case "annotationClick": 
-                if let id = (body["id"] as? String).flatMap(Int64.init), let a = parent.annotations.first(where: { $0.id == id }) { 
-                    parent.onAnnotationClick(a) 
+            case "annotationClick":
+                if let id = (body["id"] as? String).flatMap(Int64.init),
+                   let annotation = parent.annotations.first(where: { $0.id == id }) {
+                    parent.onAnnotationClick(annotation)
                 }
-            case "imageMarkerClick": 
-                if let id = (body["id"] as? String).flatMap(Int64.init) { 
-                    parent.onImageMarkerClick(id) 
+            case "imageMarkerClick":
+                if let id = (body["id"] as? String).flatMap(Int64.init) {
+                    parent.onImageMarkerClick(id)
                 }
             case "imageMarkerDblClick":
                 if let id = (body["id"] as? String).flatMap(Int64.init) {
                     parent.onImageMarkerDblClick(id)
                 }
             case "explain":
-                if let word = body["word"] as? String, let context = body["context"] as? String, let bId = body["blockId"] as? Int {
-                    parent.onWordClick(word, context, bId, .explain)
+                if let word = body["word"] as? String,
+                   let context = body["context"] as? String,
+                   let blockId = body["blockId"] as? Int {
+                    parent.onWordClick(word, context, blockId, .explain)
                 }
             case "generateImage":
-                if let word = body["word"] as? String, let context = body["context"] as? String, let bId = body["blockId" ] as? Int {
-                    parent.onWordClick(word, context, bId, .generateImage)
+                if let word = body["word"] as? String,
+                   let context = body["context"] as? String,
+                   let blockId = body["blockId"] as? Int {
+                    parent.onWordClick(word, context, blockId, .generateImage)
                 }
-            case "bottomTug": parent.onBottomTug()
+            case "bottomTug":
+                parent.onBottomTug()
             case "markersUpdated":
                 if let stationsData = body["stations"] as? [[String: Any]] {
-                    let markers = stationsData.compactMap { d -> MarkerInfo? in
-                        guard let id = d["id"] as? String,
-                              let type = d["type"] as? String,
-                              let y = d["y"] as? Double,
-                              let blockId = d["blockId"] as? Int else { return nil }
+                    let markers = stationsData.compactMap { data -> MarkerInfo? in
+                        guard let id = data["id"] as? String,
+                              let type = data["type"] as? String,
+                              let y = data["y"] as? Double,
+                              let blockId = data["blockId"] as? Int else {
+                            return nil
+                        }
+
                         return MarkerInfo(id: id, type: type, y: y, blockId: blockId)
                     }
                     parent.onMarkersUpdated(markers)
                 }
             case "chapterNavigation":
                 if let path = body["path"] as? String {
-                    let anchor = body["anchor"] as? String
-                    parent.onChapterNavigationRequest?(path, anchor)
+                    parent.onChapterNavigationRequest?(path, body["anchor"] as? String)
                 }
             case "scrollPosition":
-                let aId = (body["annotationId"] as? String).flatMap(Int64.init)
-                let iId = (body["imageId"] as? String).flatMap(Int64.init)
-                let fId = body["footnoteRefId"] as? String
-                let bId = body["blockId"] as? Int
-                let bOffset = (body["blockOffset"] as? Double) ?? (body["blockOffset"] as? Int).map(Double.init)
-                let pT = body["primaryType"] as? String
-                let sY = (body["scrollY"] as? Double) ?? 0
-                let sP = (body["scrollPercent"] as? Double) ?? 0
-                let vH = (body["viewportHeight"] as? Double) ?? 0
-                let sH = (body["scrollHeight"] as? Double) ?? 0
-                let isP = (body["isProgrammatic"] as? Bool) ?? false
+                let annotationId = (body["annotationId"] as? String).flatMap(Int64.init)
+                let imageId = (body["imageId"] as? String).flatMap(Int64.init)
+                let footnoteRefId = body["footnoteRefId"] as? String
+                let blockId = body["blockId"] as? Int
+                let blockOffset = (body["blockOffset"] as? Double) ?? (body["blockOffset"] as? Int).map(Double.init)
+                let primaryType = body["primaryType"] as? String
+                let scrollOffset = (body["scrollY"] as? Double) ?? 0
+                let scrollPercent = (body["scrollPercent"] as? Double) ?? 0
+                let viewportHeight = (body["viewportHeight"] as? Double) ?? 0
+                let scrollHeight = (body["scrollHeight"] as? Double) ?? 0
+                let isProgrammatic = (body["isProgrammatic"] as? Bool) ?? false
 
-                lastScrollOffset = sY
-                lastScrollPercent = sP
-                
-                let context = ScrollContext(
-                    annotationId: aId,
-                    imageId: iId,
-                    footnoteRefId: fId,
-                    blockId: bId,
-                    blockOffset: bOffset,
-                    primaryType: pT,
-                    scrollPercent: sP,
-                    scrollOffset: sY,
-                    viewportHeight: vH,
-                    scrollHeight: sH,
-                    isProgrammatic: isP
-                )
-                parent.onScrollPositionChange(context)
-            default: break
+                lastScrollOffset = scrollOffset
+                lastScrollPercent = scrollPercent
+
+                parent.onScrollPositionChange(.init(
+                    annotationId: annotationId,
+                    imageId: imageId,
+                    footnoteRefId: footnoteRefId,
+                    blockId: blockId,
+                    blockOffset: blockOffset,
+                    primaryType: primaryType,
+                    scrollPercent: scrollPercent,
+                    scrollOffset: scrollOffset,
+                    viewportHeight: viewportHeight,
+                    scrollHeight: scrollHeight,
+                    isProgrammatic: isProgrammatic
+                ))
+            default:
+                break
             }
         }
 
-        // Intercept link navigation
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        ) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow)
                 return
             }
 
-            // Intercept internal EPUB links (they will be file:// URLs pointing to the publication directory)
             if url.isFileURL {
                 let publicationRoot = LibraryPaths.publicationDirectory(for: parent.chapter.bookId)
                 let standardizedURL = url.standardizedFileURL.resolvingSymlinksInPath()
@@ -846,58 +1283,49 @@ struct BookContentView: NSViewRepresentable {
                 let urlPath = standardizedURL.path
                 let rootPath = standardizedRoot.path
                 let renderedPath = standardizedRendered.path
-
-                // Security check: ensure the URL is within the publication directory
                 let rootPathWithSlash = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+
                 guard urlPath.hasPrefix(rootPathWithSlash) || urlPath == rootPath else {
                     decisionHandler(.cancel)
                     return
                 }
 
-                // If it's the RENDERED HTML file, allow it (same-document anchor)
                 if urlPath == renderedPath {
                     decisionHandler(.allow)
                     return
                 }
 
-                // If it's a link activation, it's an internal chapter link
                 if navigationAction.navigationType == .linkActivated {
                     var relativePath = String(urlPath.dropFirst(rootPath.count))
-                    if relativePath.hasPrefix("/") { relativePath.removeFirst() }
-                    
-                    // Decode URL-encoded path
+                    if relativePath.hasPrefix("/") {
+                        relativePath.removeFirst()
+                    }
+
                     relativePath = relativePath.removingPercentEncoding ?? relativePath
-                    
-                    // Security check: ensure no path traversal components remain
                     if relativePath.components(separatedBy: "/").contains("..") {
                         decisionHandler(.cancel)
                         return
                     }
 
-                    let anchor = url.fragment
-                    parent.onChapterNavigationRequest?(relativePath, anchor)
+                    parent.onChapterNavigationRequest?(relativePath, url.fragment)
                     decisionHandler(.cancel)
                     return
                 }
-                
-                // Allow other file URLs (images, styles, or non-link navigations like initial load)
+
                 decisionHandler(.allow)
                 return
             }
 
-            // Allow same-document anchor navigation (handled by browser)
             if url.scheme == nil || url.scheme == "about" {
                 decisionHandler(.allow)
                 return
             }
 
-            // Block external http/https URLs - don't navigate away from reader
             if url.scheme == "http" || url.scheme == "https" {
                 decisionHandler(.cancel)
                 return
             }
 
-            // Allow other navigation (e.g., javascript:)
             decisionHandler(.allow)
         }
     }
@@ -907,6 +1335,11 @@ extension Color {
     var hexString: String {
         let nsColor = NSColor(self)
         guard let rgbColor = nsColor.usingColorSpace(.sRGB) else { return "#000000" }
-        return String(format: "#%02X%02X%02X", Int(rgbColor.redComponent * 255), Int(rgbColor.greenComponent * 255), Int(rgbColor.blueComponent * 255))
+        return String(
+            format: "#%02X%02X%02X",
+            Int(rgbColor.redComponent * 255),
+            Int(rgbColor.greenComponent * 255),
+            Int(rgbColor.blueComponent * 255)
+        )
     }
 }

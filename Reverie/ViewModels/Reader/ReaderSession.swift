@@ -4,6 +4,26 @@ import AppKit
 
 @Observable @MainActor
 final class ReaderSession {
+    private struct ChapterBaseContent: Sendable {
+        let blocks: [ContentBlock]
+        let wordCounts: [Int]
+        let normalizedBlockTexts: [String]
+
+        static func build(contentText: String?, html: String) -> ChapterBaseContent {
+            let blocks = ReaderSession.logicalBlocks(contentText: contentText, html: html)
+            return ChapterBaseContent(
+                blocks: blocks,
+                wordCounts: blocks.map { ReaderSession.wordCount(in: $0.text) },
+                normalizedBlockTexts: blocks.map { ReaderSession.normalizedText($0.text) }
+            )
+        }
+    }
+
+    private struct ChapterBaseContentTask {
+        let id = UUID()
+        let task: Task<ChapterBaseContent, Never>
+    }
+
     private(set) var autoScroll = AutoScrollEngine()
     private(set) var rsvpEngine = RSVPEngine()
     private(set) var analyzer: ChapterAnalyzer?
@@ -11,10 +31,19 @@ final class ReaderSession {
     
     var chapters: [Chapter] = []
     var currentChapter: Chapter?
-    var annotations: [Annotation] = []
-    var quizzes: [Quiz] = []
+    var annotations: [Annotation] = [] {
+        didSet { orderedAnnotationItems = AIPanelListOrder.orderedAnnotationItems(annotations) }
+    }
+    var quizzes: [Quiz] = [] {
+        didSet { orderedQuizItems = AIPanelListOrder.orderedQuizItems(quizzes) }
+    }
     var footnotes: [Footnote] = []
-    var images: [GeneratedImage] = []
+    var images: [GeneratedImage] = [] {
+        didSet { sortedImages = AIPanelListOrder.sortedImages(images) }
+    }
+    private(set) var orderedAnnotationItems: [AIPanelIndexedItem] = []
+    private(set) var orderedQuizItems: [AIPanelIndexedItem] = []
+    private(set) var sortedImages: [GeneratedImage] = []
     
     var currentAnnotationId: Int64?
     var currentImageId: Int64?
@@ -49,8 +78,7 @@ final class ReaderSession {
     var suppressContextAutoSwitchUntil: TimeInterval = 0
     
     var calculatorCache = ProgressCalculatorCache()
-    private var baseWordCountsByChapter: [Int64: [Int]] = [:]
-    private var baseBlockTextsByChapter: [Int64: [String]] = [:]
+    private var baseContentByChapter: [Int64: ChapterBaseContent] = [:]
     private var didLoadChapterAssets = false
     var currentLocation: BlockLocation?
     var furthestLocation: BlockLocation?
@@ -61,6 +89,7 @@ final class ReaderSession {
     private var autoScrollTickTask: Task<Void, Never>?
     private var chapterLoadTask: Task<Void, Never>?
     private var rsvpLoadTask: Task<Void, Never>?
+    private var baseContentTasks: [Int64: ChapterBaseContentTask] = [:]
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
     private var backgroundTasks: [Task<Void, Never>] = []
     private var isCleaningUp = false
@@ -85,13 +114,13 @@ final class ReaderSession {
     
     func startAutoScrollTicker() {
         autoScrollTickTask?.cancel()
-        autoScrollTickTask = Task { @MainActor in
+        autoScrollTickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                guard !isCleaningUp else { break }
-                guard autoScroll.isActive else { continue }
-                guard let chapterId = currentChapter?.id, let calculator = calculatorCache.get(for: chapterId) else { continue }
-                if let amount = autoScroll.calculateScrollAmount(currentOffset: lastScrollOffset, currentLocation: currentLocation, calculator: calculator) {
+                guard let self, !self.isCleaningUp else { break }
+                guard self.autoScroll.isActive else { continue }
+                guard let chapterId = self.currentChapter?.id, let calculator = self.calculatorCache.get(for: chapterId) else { continue }
+                if let amount = self.autoScroll.calculateScrollAmount(currentOffset: self.lastScrollOffset, currentLocation: self.currentLocation, calculator: calculator) {
                     self.scrollByAmount = amount
                 }
             }
@@ -103,7 +132,11 @@ final class ReaderSession {
         scrollByAmount = nil
         readingTickTask?.cancel()
         autoScrollTickTask?.cancel()
+        readingTickTask = nil
+        autoScrollTickTask = nil
         rsvpLoadTask?.cancel()
+        for task in baseContentTasks.values { task.task.cancel() }
+        baseContentTasks.removeAll()
         for task in analysisTasks.values { task.cancel() }
         analysisTasks.removeAll()
         for task in backgroundTasks { task.cancel() }
@@ -307,22 +340,16 @@ final class ReaderSession {
     }
 
     func ensureProgressCalculator(for chapter: Chapter) {
-        guard let id = chapter.id else { return }
-        if baseWordCountsByChapter[id] != nil {
+        if let chapterId = chapter.id,
+           baseContentByChapter[chapterId] != nil {
             refreshProgressCalculator(for: chapter)
             return
         }
-        let contentText = chapter.contentText
-        let html = chapter.contentHTML
-        let task = Task.detached(priority: .utility) {
-            let blocks = Self.logicalBlocks(contentText: contentText, html: html)
-            let wordCounts = blocks.map { ReaderSession.wordCount(in: $0.text) }
-            let blockTexts = blocks.map { $0.text }
-            await MainActor.run {
-                self.baseWordCountsByChapter[id] = wordCounts
-                self.baseBlockTextsByChapter[id] = blockTexts
-                self.refreshProgressCalculator(for: chapter)
-            }
+
+        let task = Task { @MainActor in
+            _ = await self.baseContent(for: chapter)
+            guard !Task.isCancelled else { return }
+            self.refreshProgressCalculator(for: chapter)
         }
         backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
         backgroundTasks.append(task)
@@ -330,13 +357,12 @@ final class ReaderSession {
 
     private func refreshProgressCalculator(for chapter: Chapter) {
         guard let id = chapter.id,
-              let baseCounts = baseWordCountsByChapter[id],
-              let baseTexts = baseBlockTextsByChapter[id],
-              !baseCounts.isEmpty else { return }
+              let baseContent = baseContentByChapter[id],
+              !baseContent.wordCounts.isEmpty else { return }
 
         let combinedCounts = Self.combinedWordCounts(
-            baseCounts: baseCounts,
-            baseTexts: baseTexts,
+            baseCounts: baseContent.wordCounts,
+            normalizedBaseTexts: baseContent.normalizedBlockTexts,
             annotations: annotations,
             footnotes: footnotes,
             chapterWordCount: chapter.wordCount
@@ -366,6 +392,47 @@ final class ReaderSession {
         }
     }
 
+    private func baseContent(for chapter: Chapter) async -> ChapterBaseContent {
+        guard let chapterId = chapter.id else {
+            return Self.buildBaseContent(contentText: chapter.contentText, html: chapter.contentHTML)
+        }
+
+        if let cached = baseContentByChapter[chapterId] {
+            return cached
+        }
+
+        if let loading = baseContentTasks[chapterId] {
+            let content = await loading.task.value
+            if !Task.isCancelled {
+                baseContentByChapter[chapterId] = content
+                if baseContentTasks[chapterId]?.id == loading.id {
+                    baseContentTasks.removeValue(forKey: chapterId)
+                }
+            }
+            return content
+        }
+
+        let contentText = chapter.contentText
+        let html = chapter.contentHTML
+        let loading = ChapterBaseContentTask(task: Task.detached(priority: .utility) {
+            Self.buildBaseContent(contentText: contentText, html: html)
+        })
+        baseContentTasks[chapterId] = loading
+
+        let content = await loading.task.value
+        if !Task.isCancelled {
+            baseContentByChapter[chapterId] = content
+            if baseContentTasks[chapterId]?.id == loading.id {
+                baseContentTasks.removeValue(forKey: chapterId)
+            }
+        }
+        return content
+    }
+
+    nonisolated private static func buildBaseContent(contentText: String?, html: String) -> ChapterBaseContent {
+        ChapterBaseContent.build(contentText: contentText, html: html)
+    }
+
     nonisolated static func combinedWordCounts(
         baseCounts: [Int],
         baseTexts: [String],
@@ -373,10 +440,25 @@ final class ReaderSession {
         footnotes: [Footnote],
         chapterWordCount: Int
     ) -> [Int] {
+        combinedWordCounts(
+            baseCounts: baseCounts,
+            normalizedBaseTexts: baseTexts.map(normalizedText),
+            annotations: annotations,
+            footnotes: footnotes,
+            chapterWordCount: chapterWordCount
+        )
+    }
+
+    nonisolated private static func combinedWordCounts(
+        baseCounts: [Int],
+        normalizedBaseTexts: [String],
+        annotations: [Annotation],
+        footnotes: [Footnote],
+        chapterWordCount: Int
+    ) -> [Int] {
         guard !baseCounts.isEmpty else { return baseCounts }
 
         var counts = baseCounts
-        let normalizedBlocks = baseTexts.map { normalizedText($0) }
         var extraFootnoteWords = 0
 
         for annotation in annotations {
@@ -389,7 +471,7 @@ final class ReaderSession {
         for footnote in footnotes {
             let normalizedFootnote = normalizedText(footnote.content)
             guard !normalizedFootnote.isEmpty else { continue }
-            let isEmbedded = normalizedBlocks.contains { $0.contains(normalizedFootnote) }
+            let isEmbedded = normalizedBaseTexts.contains { $0.contains(normalizedFootnote) }
             guard !isEmbedded else { continue }
             let words = wordCount(in: footnote.content)
             guard words > 0 else { continue }
@@ -496,10 +578,11 @@ final class ReaderSession {
 
     func startReadingTicker() {
         readingTickTask?.cancel()
-        readingTickTask = Task { @MainActor in
+        readingTickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
-                appState?.readingSpeedTracker.tick()
+                guard let self, !self.isCleaningUp else { break }
+                self.appState?.readingSpeedTracker.tick()
             }
         }
     }
@@ -640,13 +723,9 @@ final class ReaderSession {
         rsvpLoadTask?.cancel()
 
         let chapterId = chapter.id
-        let contentText = chapter.contentText
-        let html = chapter.contentHTML
 
         rsvpLoadTask = Task { @MainActor in
-            let blocks = await Task.detached(priority: .userInitiated) {
-                Self.logicalBlocks(contentText: contentText, html: html)
-            }.value
+            let baseContent = await self.baseContent(for: chapter)
 
             guard !Task.isCancelled,
                   isRSVPMode,
@@ -655,7 +734,7 @@ final class ReaderSession {
             }
 
             rsvpEngine.loadChapter(
-                blocks: blocks,
+                blocks: baseContent.blocks,
                 annotations: annotations,
                 images: images,
                 footnotes: footnotes
@@ -667,13 +746,8 @@ final class ReaderSession {
     
     /// Synchronizes the RSVP engine's current word index to the user's current scroll position.
     func syncRSVPToCurrentPosition() {
-        guard let location = currentLocation, !rsvpEngine.words.isEmpty else { return }
-        
-        // Find the first word that belongs to the current block
-        if let index = rsvpEngine.words.firstIndex(where: { $0.sourceBlockId == location.blockId }) {
-            rsvpEngine.currentWordIndex = index
-            rsvpEngine.pendingPauseContent = nil
-        }
+        guard let blockId = currentLocation?.blockId, !rsvpEngine.words.isEmpty else { return }
+        rsvpEngine.sync(toBlockId: blockId)
     }
     
     func handleRSVPPauseContentChange(_ content: PauseContent?) {
@@ -805,7 +879,6 @@ final class ReaderSession {
                     case .annotation(let ann):
                         if isCurrent {
                             annotations.append(ann)
-                            pendingMarkerInjections.append(MarkerInjection(annotationId: ann.id!, sourceBlockId: ann.sourceBlockId))
                             refreshProgressCalculator(for: chapter)
                         }
                     case .quiz(let q):
@@ -819,9 +892,6 @@ final class ReaderSession {
                                     if Task.isCancelled { break }
                                     if self.currentChapter?.id == chapterId {
                                         images.append(img)
-                                        if let imageId = img.id {
-                                            pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: imageId, sourceBlockId: img.sourceBlockId))
-                                        }
                                         if img.status == .success {
                                             appState.readingStats.recordImage()
                                         }
@@ -870,9 +940,6 @@ final class ReaderSession {
                     for try await img in analyzer.generateImages(suggestions: [.init(excerpt: context, sourceBlockId: blockId)], book: book, chapter: chapter) {
                         if currentChapter?.id == chapter.id {
                             images.append(img)
-                            if let imageId = img.id {
-                                pendingImageMarkerInjections.append(ImageMarkerInjection(imageId: imageId, sourceBlockId: img.sourceBlockId))
-                            }
                             if img.status == .success {
                                 appState.readingStats.recordImage()
                             }
@@ -960,7 +1027,6 @@ final class ReaderSession {
         let task = Task {
             guard let analyzer = self.analyzer, let new = try? await analyzer.generateMoreInsights(for: chapter) else { return }
             annotations.append(contentsOf: new)
-            pendingMarkerInjections.append(contentsOf: new.compactMap { ann in ann.id.map { MarkerInjection(annotationId: $0, sourceBlockId: ann.sourceBlockId) } })
         }
         backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
         backgroundTasks.append(task)
