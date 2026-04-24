@@ -21,6 +21,9 @@
 		BBD000032F75000000ABCDEF /* LLMPromptsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */; };
 		BBD000042F75000000ABCDEF /* ChapterAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */; };
 		BBD000092F75000000ABCDEF /* BookProcessorCostAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */; };
+		BBF000012F75000000ABC001 /* ChatMessageMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */; };
+		BBF000032F75000000ABC003 /* SelectableTextMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */; };
+		BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000062F75000000ABC004 /* ModelUpdateTests.swift */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB3A2BE22F71EB0E004A9F3E /* ReaderSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */; };
 		BB5A89A02F71BD31006494B9 /* SupportedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5A899F2F71BD31006494B9 /* SupportedModels.swift */; };
@@ -100,6 +103,9 @@
 		BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMPromptsTests.swift; sourceTree = "<group>"; };
 		BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalyzerTests.swift; sourceTree = "<group>"; };
 		BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessorCostAccountingTests.swift; sourceTree = "<group>"; };
+		BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageMarkdownTests.swift; sourceTree = "<group>"; };
+		BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableTextMarkdownTests.swift; sourceTree = "<group>"; };
+		BBF000062F75000000ABC004 /* ModelUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelUpdateTests.swift; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSplitView.swift; path = Reverie/Views/Reader/ReaderSplitView.swift; sourceTree = "<group>"; };
 		BB5A899F2F71BD31006494B9 /* SupportedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SupportedModels.swift; path = Reverie/Services/SupportedModels.swift; sourceTree = "<group>"; };
@@ -259,6 +265,9 @@
 				BBD000052F75000000ABCDEF /* DatabaseServiceTests.swift */,
 				BBD000062F75000000ABCDEF /* LLMServiceTests.swift */,
 				BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */,
+				BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */,
+				BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */,
+				BBF000062F75000000ABC004 /* ModelUpdateTests.swift */,
 				BB2270222F7410B800C0A295 /* ViewModels */,
 			);
 			path = Reverie/Tests/ReverieTests;
@@ -529,6 +538,9 @@
 				BBD000092F75000000ABCDEF /* BookProcessorCostAccountingTests.swift in Sources */,
 				BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */,
 				BB2270332F7410B800C0A295 /* RSVPEngineTests.swift in Sources */,
+				BBF000012F75000000ABC001 /* ChatMessageMarkdownTests.swift in Sources */,
+				BBF000032F75000000ABC003 /* SelectableTextMarkdownTests.swift in Sources */,
+				BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */

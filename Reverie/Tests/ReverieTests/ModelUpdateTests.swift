@@ -19,12 +19,49 @@ final class ModelUpdateTests: XCTestCase {
         XCTAssertEqual(
             LLMProvider.anthropic.models.map(\.id),
             [
-                SupportedModels.Anthropic.haiku45,
-                SupportedModels.Anthropic.sonnet45,
+                SupportedModels.Anthropic.opus46,
                 SupportedModels.Anthropic.opus45,
-                SupportedModels.Anthropic.opus46
+                SupportedModels.Anthropic.sonnet45,
+                SupportedModels.Anthropic.haiku45
             ]
         )
+    }
+
+    func testProviderModelDefaultIsStrongest() {
+        // When switching provider, .models.first is used as default.
+        // The first model in the list should be the strongest/best.
+        // Anthropic default should be Opus 4.6
+        XCTAssertEqual(
+            LLMProvider.anthropic.models.first?.id,
+            SupportedModels.Anthropic.opus46,
+            "Anthropic default should be strongest (Opus 4.6)"
+        )
+        XCTAssertEqual(
+            LLMProvider.anthropic.models.first?.name,
+            "Claude 4.6 Opus"
+        )
+
+        // OpenAI has only one model, it's always the default
+        XCTAssertEqual(
+            LLMProvider.openai.models.first?.id,
+            SupportedModels.OpenAI.gpt54
+        )
+
+        // Verify Anthropic ordering: strongest -> weakest
+        XCTAssertGreaterThan(
+            LLMProvider.anthropic.models.count,
+            1,
+            "Anthropic should have multiple models for ordering verification"
+        )
+
+        // Anthropic strong-to-weak: Opus 4.6 > Opus 4.5 > Sonnet 4.5 > Haiku 4.5
+        let anthropicIDs = LLMProvider.anthropic.models.map(\.id)
+        XCTAssertEqual(anthropicIDs, [
+            SupportedModels.Anthropic.opus46,
+            SupportedModels.Anthropic.opus45,
+            SupportedModels.Anthropic.sonnet45,
+            SupportedModels.Anthropic.haiku45
+        ])
     }
 
     func testLegacyModelIDsNormalizeWithoutMutatingStoredSettings() throws {

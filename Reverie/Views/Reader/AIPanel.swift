@@ -679,7 +679,7 @@ struct AIPanel: View {
             VStack(spacing: 0) {
                 // Messages
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 12) {
                         let contextReference = appState.chatContextReference
                         if chatMessages.isEmpty && contextReference == nil {
                             emptyState(
@@ -1306,7 +1306,7 @@ struct AIPanel: View {
             chatInput = ""
         }
 
-        let assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil)
+        let assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil, isStreaming: true)
         chatMessages.append(assistantMessage)
         chatScrollTick += 1
         let messageIndex = chatMessages.count - 1
@@ -1354,13 +1354,14 @@ struct AIPanel: View {
                     }
                 }
 
-                // Finalize message
+                // Finalize message — mark streaming as complete in all cases
                 if sessionToken != chatSessionToken { return }
                 if contentBuffer.isEmpty && !thinkingBuffer.isEmpty {
                     await MainActor.run {
                         guard sessionToken == chatSessionToken,
                               chatMessages.indices.contains(messageIndex) else { return }
                         chatMessages[messageIndex].content = "(Reasoning only - no response)"
+                        chatMessages[messageIndex].isStreaming = false
                         chatScrollTick += 1
                     }
                 } else if contentBuffer.isEmpty && thinkingBuffer.isEmpty {
@@ -1368,6 +1369,15 @@ struct AIPanel: View {
                         guard sessionToken == chatSessionToken,
                               chatMessages.indices.contains(messageIndex) else { return }
                         chatMessages[messageIndex].content = "No response returned. Try again."
+                        chatMessages[messageIndex].isStreaming = false
+                        chatScrollTick += 1
+                    }
+                } else {
+                    // Normal case: content was streamed incrementally, just mark done
+                    await MainActor.run {
+                        guard sessionToken == chatSessionToken,
+                              chatMessages.indices.contains(messageIndex) else { return }
+                        chatMessages[messageIndex].isStreaming = false
                         chatScrollTick += 1
                     }
                 }
@@ -1377,6 +1387,7 @@ struct AIPanel: View {
                     guard sessionToken == chatSessionToken,
                           chatMessages.indices.contains(messageIndex) else { return }
                     chatMessages[messageIndex].content = message
+                    chatMessages[messageIndex].isStreaming = false
                     chatScrollTick += 1
                 }
             }
@@ -1421,6 +1432,7 @@ struct ChatMessage: Identifiable {
     var content: String
     var thinking: String?
     var reference: AppState.ChatReference?
+    var isStreaming: Bool = false
 
     enum Role {
         case user
@@ -1428,11 +1440,16 @@ struct ChatMessage: Identifiable {
         case reference
     }
 
-    init(role: Role, content: String, thinking: String? = nil, reference: AppState.ChatReference? = nil) {
+    var shouldRenderMarkdown: Bool {
+        role == .assistant && !isStreaming
+    }
+
+    init(role: Role, content: String, thinking: String? = nil, reference: AppState.ChatReference? = nil, isStreaming: Bool = false) {
         self.role = role
         self.content = content
         self.thinking = thinking
         self.reference = reference
+        self.isStreaming = isStreaming
     }
 }
 
@@ -1540,7 +1557,8 @@ struct ChatBubble: View {
                     SelectableText(
                         message.content,
                         fontSize: 14,
-                        color: message.role == .user ? theme.base : theme.text
+                        color: message.role == .user ? theme.base : theme.text,
+                        rendersMarkdown: message.shouldRenderMarkdown
                     )
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)

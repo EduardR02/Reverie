@@ -745,10 +745,10 @@ enum LLMProvider: String, Codable, CaseIterable, CustomStringConvertible {
             ]
         case .anthropic:
             return [
-                LLMModel(id: SupportedModels.Anthropic.haiku45, name: "Claude 4.5 Haiku"),
-                LLMModel(id: SupportedModels.Anthropic.sonnet45, name: "Claude 4.5 Sonnet"),
+                LLMModel(id: SupportedModels.Anthropic.opus46, name: "Claude 4.6 Opus"),
                 LLMModel(id: SupportedModels.Anthropic.opus45, name: "Claude 4.5 Opus"),
-                LLMModel(id: SupportedModels.Anthropic.opus46, name: "Claude 4.6 Opus")
+                LLMModel(id: SupportedModels.Anthropic.sonnet45, name: "Claude 4.5 Sonnet"),
+                LLMModel(id: SupportedModels.Anthropic.haiku45, name: "Claude 4.5 Haiku")
             ]
         }
     }
