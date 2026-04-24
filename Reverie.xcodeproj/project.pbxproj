@@ -80,7 +80,14 @@
 		F035 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = S035 /* ReadingStats.swift */; };
 		F036 /* ProcessBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S036 /* ProcessBookView.swift */; };
 		F037 /* ReaderBridge.js in Resources */ = {isa = PBXBuildFile; fileRef = S037 /* ReaderBridge.js */; };
-	/* End PBXBuildFile section */
+		BBF2000A2F999999000000AA /* DensityLevel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000A2F999999000000AA /* DensityLevel.swift */; };
+		BBF2000B2F999999000000BB /* ReasoningLevel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000B2F999999000000BB /* ReasoningLevel.swift */; };
+		BBF2000C2F999999000000CC /* UserSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000C2F999999000000CC /* UserSettings.swift */; };
+		BBF2000D2F999999000000DD /* LLMModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000D2F999999000000DD /* LLMModel.swift */; };
+		BBF2000E2F999999000000EE /* LLMProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000E2F999999000000EE /* LLMProvider.swift */; };
+		BBF2000F2F999999000000FF /* ImageModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000F2F999999000000FF /* ImageModel.swift */; };
+		BBF200102F99999900000110 /* AppScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF100102F99999900000110 /* AppScreen.swift */; };
+/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		BB2270612F7410B800C0A295 /* PBXContainerItemProxy */ = {
@@ -167,6 +174,13 @@
 		S035 /* ReadingStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStats.swift; sourceTree = "<group>"; };
 		S036 /* ProcessBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessBookView.swift; sourceTree = "<group>"; };
 		S037 /* ReaderBridge.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ReaderBridge.js; sourceTree = "<group>"; };
+		BBF1000A2F999999000000AA /* DensityLevel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DensityLevel.swift; sourceTree = "<group>"; };
+		BBF1000B2F999999000000BB /* ReasoningLevel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningLevel.swift; sourceTree = "<group>"; };
+		BBF1000C2F999999000000CC /* UserSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettings.swift; sourceTree = "<group>"; };
+		BBF1000D2F999999000000DD /* LLMModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMModel.swift; sourceTree = "<group>"; };
+		BBF1000E2F999999000000EE /* LLMProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProvider.swift; sourceTree = "<group>"; };
+		BBF1000F2F999999000000FF /* ImageModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageModel.swift; sourceTree = "<group>"; };
+		BBF100102F99999900000110 /* AppScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppScreen.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -203,6 +217,13 @@
 				S006 /* Quiz.swift */,
 				S007 /* GeneratedImage.swift */,
 				S022 /* Footnote.swift */,
+				BBF1000A2F999999000000AA /* DensityLevel.swift */,
+				BBF1000B2F999999000000BB /* ReasoningLevel.swift */,
+				BBF1000C2F999999000000CC /* UserSettings.swift */,
+				BBF1000D2F999999000000DD /* LLMModel.swift */,
+				BBF1000E2F999999000000EE /* LLMProvider.swift */,
+				BBF1000F2F999999000000FF /* ImageModel.swift */,
+				BBF100102F99999900000110 /* AppScreen.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -539,6 +560,13 @@
 				F026 /* LibraryPaths.swift in Sources */,
 				F031 /* ContentBlockParser.swift in Sources */,
 				F032 /* CostEstimation.swift in Sources */,
+				BBF2000A2F999999000000AA /* DensityLevel.swift in Sources */,
+				BBF2000B2F999999000000BB /* ReasoningLevel.swift in Sources */,
+				BBF2000C2F999999000000CC /* UserSettings.swift in Sources */,
+				BBF2000D2F999999000000DD /* LLMModel.swift in Sources */,
+				BBF2000E2F999999000000EE /* LLMProvider.swift in Sources */,
+				BBF2000F2F999999000000FF /* ImageModel.swift in Sources */,
+				BBF200102F99999900000110 /* AppScreen.swift in Sources */,
 			);
 		};
 		BB2270412F7410B800C0A295 /* Sources */ = {

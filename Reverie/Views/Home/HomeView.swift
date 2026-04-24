@@ -6,7 +6,6 @@ struct HomeView: View {
     @Environment(\.theme) private var theme
 
     @State private var books: [Book] = []
-    @State private var showImportSheet = false
     @State private var dragOver = false
 
     // Process full book
@@ -69,7 +68,10 @@ struct HomeView: View {
             handleDrop(providers)
             return true
         }
-        .sheet(isPresented: $showImportSheet) {
+        .sheet(isPresented: Binding(
+            get: { appState.showImportSheet },
+            set: { appState.showImportSheet = $0 }
+        )) {
             ImportSheet(onImport: { url in
                 Task { await importBook(url) }
             })
@@ -168,7 +170,7 @@ struct HomeView: View {
                 .buttonStyle(.plain)
 
                 // Import button
-                Button(action: { showImportSheet = true }) {
+                Button(action: { appState.showImportSheet = true }) {
                     HStack(spacing: 8) {
                         Image(systemName: "plus")
                         Text("Add Book")
@@ -306,7 +308,7 @@ struct HomeView: View {
                     .foregroundColor(theme.muted)
             }
 
-            Button(action: { showImportSheet = true }) {
+            Button(action: { appState.showImportSheet = true }) {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
                     Text("Add Book")
