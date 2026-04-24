@@ -51,7 +51,6 @@ final class AppState {
 
     // Services
     nonisolated let database: DatabaseService
-    var databaseError: Error?
     var llmService: LLMService
     var imageService: ImageService
     let readingSpeedTracker: ReadingSpeedTracker

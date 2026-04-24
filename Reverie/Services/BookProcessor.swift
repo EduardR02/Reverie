@@ -18,7 +18,6 @@ final class BookProcessor {
     var onWordsPerInsightUpdate: ((Int) -> Void)?
     var onUsageUpdate: ((Int, Int) -> Void)? // input, output
     var onPhaseUpdate: ((String, String) -> Void)? // summaryPhase, insightPhase
-    var onCostUpdate: ((Double) -> Void)?
     
     private var liveSummaryCount = 0
     private var liveInsightCount = 0
@@ -494,7 +493,6 @@ final class BookProcessor {
     private func updateCost(_ delta: Double) {
         costEstimate = appState.processingCostEstimate + delta
         appState.processingCostEstimate = costEstimate
-        onCostUpdate?(costEstimate)
     }
     
     private func updateWordsPerInsight() {

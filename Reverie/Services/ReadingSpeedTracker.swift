@@ -62,6 +62,15 @@ final class ReadingSpeedTracker {
             case .wasDistracted: return 0.7      // Significant reduction
             }
         }
+
+        var adjustmentDescription: String {
+            switch self {
+            case .readingSlowly: return "-15%"
+            case .skippedInsights: return "+15%"
+            case .readInsights: return "-10%"
+            case .wasDistracted: return "-30%"
+            }
+        }
     }
 
     // MARK: - State

@@ -409,7 +409,6 @@ struct HomeView: View {
             summaryPhase = summary
             insightPhase = insight
         }
-        processor.onCostUpdate = { _ in } // appState.processingCostEstimate is updated by processor
         
         processingStartTime = Date()
         

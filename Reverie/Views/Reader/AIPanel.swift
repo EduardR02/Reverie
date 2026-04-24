@@ -2209,7 +2209,7 @@ struct ReadingSpeedPrompt: View {
 
                                 Spacer()
 
-                                Text(adjustmentDescription(adjustment))
+                                Text(adjustment.adjustmentDescription)
                                     .font(.system(size: 11))
                                     .foregroundColor(theme.muted)
                             }
@@ -2229,15 +2229,6 @@ struct ReadingSpeedPrompt: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(theme.iris.opacity(0.3), lineWidth: 1)
-        }
-    }
-
-    private func adjustmentDescription(_ type: ReadingSpeedTracker.AdjustmentType) -> String {
-        switch type {
-        case .readingSlowly: return "-15%"
-        case .skippedInsights: return "+15%"
-        case .readInsights: return "-10%"
-        case .wasDistracted: return "-30%"
         }
     }
 
@@ -2404,7 +2395,7 @@ struct CompactReadingSpeedPrompt: View {
 
                                     Spacer()
 
-                                    Text(adjustmentDescription(adjustment))
+                                    Text(adjustment.adjustmentDescription)
                                         .font(.system(size: 9))
                                         .foregroundColor(theme.muted)
                                 }
@@ -2449,14 +2440,6 @@ struct CompactReadingSpeedPrompt: View {
         isLive ? "Live estimate: \(wpm) WPM" : "\(wpm) WPM"
     }
 
-    private func adjustmentDescription(_ type: ReadingSpeedTracker.AdjustmentType) -> String {
-        switch type {
-        case .readingSlowly: return "-15%"
-        case .skippedInsights: return "+15%"
-        case .readInsights: return "-10%"
-        case .wasDistracted: return "-30%"
-        }
-    }
 }
 
 // MARK: - Image Card

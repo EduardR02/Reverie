@@ -1,4 +1,3 @@
-import Foundation
 
 struct BookProcessingStatus: Equatable {
     let progress: Double
