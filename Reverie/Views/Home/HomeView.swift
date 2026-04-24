@@ -483,6 +483,7 @@ struct HomeView: View {
                 // Copy to temp location (the provided URL is only valid during callback)
                 let tempURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent(url.lastPathComponent)
+                try? FileManager.default.removeItem(at: tempURL)
                 try? FileManager.default.copyItem(at: url, to: tempURL)
 
                 Task { @MainActor in

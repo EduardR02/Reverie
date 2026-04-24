@@ -28,7 +28,6 @@ final class BookProcessor {
     private var liveTotalWords = 0
     private var summaryPhase = ""
     private var insightPhase = ""
-    private var costEstimate: Double = 0
     
     private var runningInsightCount = 0
     private var lastInsightTitle: String?
@@ -491,8 +490,7 @@ final class BookProcessor {
     }
     
     private func updateCost(_ delta: Double) {
-        costEstimate = appState.processingCostEstimate + delta
-        appState.processingCostEstimate = costEstimate
+        appState.processingCostEstimate += delta
     }
     
     private func updateWordsPerInsight() {
