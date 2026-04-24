@@ -274,14 +274,15 @@ final class AppState {
         saveStats()
     }
 
-    func updateProcessingCost(inputTokens: Int, outputTokens: Int, reasoningTokens: Int = 0, cachedTokens: Int = 0, model: String) {
+    func updateProcessingCost(inputTokens: Int, outputTokens: Int, reasoningTokens: Int = 0, cachedTokens: Int = 0, cacheWriteTokens: Int = 0, model: String) {
         guard let pricing = PricingCatalog.textPricing(for: model) else { return }
         
-        let uncachedTokens = max(0, inputTokens - cachedTokens)
+        let uncachedTokens = max(0, inputTokens - cachedTokens - cacheWriteTokens)
         let uncachedCost = (Double(uncachedTokens) / 1_000_000) * pricing.inputPerMToken
         let cachedCost = (Double(cachedTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cachedInputMultiplier)
+        let cacheWriteCost = (Double(cacheWriteTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cacheWriteInputMultiplier)
         
-        let inputCost = uncachedCost + cachedCost
+        let inputCost = uncachedCost + cachedCost + cacheWriteCost
         
         // Reasoning tokens are billed as output for Gemini
         let totalOutput = outputTokens + reasoningTokens
@@ -757,6 +758,10 @@ enum ImageModel: String, Codable, CaseIterable, CustomStringConvertible {
     case gemini3Pro = "Gemini 3 Pro"
     case gemini31Flash = "Gemini 3.1 Flash"
     case gemini25Flash = "Gemini 2.5 Flash"
+
+    static func fromAPIModel(_ apiModel: String) -> ImageModel? {
+        allCases.first { $0.apiModel == apiModel }
+    }
 
     var description: String {
         switch self {

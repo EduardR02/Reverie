@@ -138,11 +138,10 @@ final class LLMGoldenTests: XCTestCase {
         let provider = AnthropicProvider()
         let (text, usage) = try provider.parseResponseText(from: data)
 
-        // Anthropic: input_tokens (411) already INCLUDES cache_read (50)
-        // cache_creation (100) is additional tokens written to cache
-        // Total input = input_tokens + cache_creation = 411 + 100 = 511
+        // Anthropic reports base input, cache writes, and cache reads separately.
+        // TokenUsage.input stores total input so cached-token subtraction pricing stays correct.
         XCTAssertEqual(text, "Claude response")
-        XCTAssertEqual(usage?.input, 511)
+        XCTAssertEqual(usage?.input, 561)
         XCTAssertEqual(usage?.visibleOutput, 79)
         XCTAssertEqual(usage?.cached, 50)
     }
@@ -442,12 +441,13 @@ final class LLMGoldenTests: XCTestCase {
             }
         }
 
-        // Should only have ONE usage event (from message_delta, not message_start)
-        XCTAssertEqual(usageEvents.count, 1, "Should only yield usage once (from message_delta)")
+        XCTAssertEqual(usageEvents.count, 2, "Should yield input usage at message_start and output usage at message_delta")
 
-        let usage = usageEvents.first!
-        XCTAssertEqual(usage.input, 7572, "Input tokens")
-        XCTAssertEqual(usage.visibleOutput, 6395, "Output tokens (not 6398 from double-counting)")
+        XCTAssertEqual(usageEvents[0].input, 7572, "Input tokens")
+        XCTAssertEqual(usageEvents[0].visibleOutput, 0, "message_start should not emit cumulative output tokens")
+        XCTAssertEqual(usageEvents[1].input, 0, "message_delta should not re-emit input tokens")
+        XCTAssertEqual(usageEvents[1].visibleOutput, 6395, "Output tokens (not 6398 from double-counting)")
+        XCTAssertEqual(usageEvents.reduce(0) { $0 + $1.visibleOutput }, 6395, "Additive consumers should not double-count output")
 
         // Verify content and thinking
         XCTAssertGreaterThan(contentChunks.count, 0, "Should have content")

@@ -8,7 +8,17 @@ final class LLMService {
     enum RequestKind {
         case summary
         case insight
+        case chat
         case other
+
+        var ledgerTask: String {
+            switch self {
+            case .summary: return "summary"
+            case .insight: return "insight"
+            case .chat: return "chat"
+            case .other: return "other"
+            }
+        }
     }
 
     private actor ConcurrencyLimiter {
@@ -70,10 +80,29 @@ final class LLMService {
         /// Output tokens excluding reasoning (visible text only)
         var visibleOutput: Int = 0
         var cached: Int?
+        var cacheWrite: Int?
         var reasoning: Int?
 
         /// Total tokens including reasoning
         var total: Int { input + visibleOutput + (reasoning ?? 0) }
+
+        mutating func mergeStreamingUsage(_ next: TokenUsage) {
+            if next.input > 0 { input = next.input }
+            if next.visibleOutput > 0 { visibleOutput = max(visibleOutput, next.visibleOutput) }
+            if let cached = next.cached { self.cached = max(self.cached ?? 0, cached) }
+            if let cacheWrite = next.cacheWrite { self.cacheWrite = max(self.cacheWrite ?? 0, cacheWrite) }
+            if let reasoning = next.reasoning { self.reasoning = max(self.reasoning ?? 0, reasoning) }
+        }
+    }
+
+    struct ChatTurn: Equatable {
+        enum Role: String {
+            case user
+            case assistant
+        }
+
+        let role: Role
+        let content: String
     }
 
     struct ChapterAnalysis: Codable {
@@ -360,12 +389,18 @@ final class LLMService {
 
     func chatStreaming(
         message: String,
+        previousTurns: [ChatTurn] = [],
+        referenceTitle: String? = nil,
+        referenceContent: String? = nil,
         contentWithBlocks: String,
         rollingSummary: String?,
         settings: UserSettings
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         let prompt = PromptLibrary.chatPrompt(
             message: message,
+            previousTurns: previousTurns,
+            referenceTitle: referenceTitle,
+            referenceContent: referenceContent,
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary
         )
@@ -379,7 +414,7 @@ final class LLMService {
             reasoning: settings.chatReasoningLevel,
             webSearch: false, // Explicitly false
             nameHint: "chat_stream",
-            kind: .other
+            kind: .chat
         )
     }
 
@@ -578,7 +613,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "text_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: resolvedModel) }
+        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
         return text
     }
 
@@ -626,7 +661,7 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
         
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: resolvedModel) }
+        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
         return try decodeStructured(T.self, from: text)
     }
 
@@ -674,27 +709,42 @@ final class LLMService {
         if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
 
         let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, model: resolvedModel) }
+        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
         let result: T = try decodeStructured(T.self, from: text)
         return (result, usage)
     }
 
-    private func recordUsage(_ usage: TokenUsage, model: String) {
+    private func recordUsage(_ usage: TokenUsage, provider: LLMProvider, model: String, kind: RequestKind) {
         guard let appState = self.appState else { return }
-        Task { @MainActor in
-            appState.addTokens(
-                input: usage.input,
-                reasoning: usage.reasoning ?? 0,
-                output: usage.visibleOutput,
-                cached: usage.cached ?? 0
-            )
-            appState.updateProcessingCost(
-                inputTokens: usage.input,
-                outputTokens: usage.visibleOutput,
-                reasoningTokens: usage.reasoning ?? 0,
-                cachedTokens: usage.cached ?? 0,
-                model: model
-            )
+        appState.addTokens(
+            input: usage.input,
+            reasoning: usage.reasoning ?? 0,
+            output: usage.visibleOutput,
+            cached: usage.cached ?? 0
+        )
+        appState.updateProcessingCost(
+            inputTokens: usage.input,
+            outputTokens: usage.visibleOutput,
+            reasoningTokens: usage.reasoning ?? 0,
+            cachedTokens: usage.cached ?? 0,
+            cacheWriteTokens: usage.cacheWrite ?? 0,
+            model: model
+        )
+
+        var callUsage = LLMCallUsage(
+            provider: provider.rawValue,
+            model: model,
+            task: kind.ledgerTask,
+            inputTokens: usage.input,
+            outputTokens: usage.visibleOutput,
+            reasoningTokens: usage.reasoning,
+            cachedTokens: usage.cached,
+            cost: LLMCallUsage.calculatedCost(for: usage, model: model)
+        )
+        do {
+            try appState.database.saveLLMCallUsage(&callUsage)
+        } catch {
+            print("Failed to save LLM usage: \(error)")
         }
     }
 
@@ -923,6 +973,7 @@ final class LLMService {
                     var lineParser = SSELineParser()
                     var rawData = Data()
                     var sawPayload = false
+                    var streamingUsage: TokenUsage?
 
                     func handleLine(_ line: String) throws {
                         guard let payload = ssePayload(from: line) else { return }
@@ -937,6 +988,13 @@ final class LLMService {
                             return
                         }
 
+                        if let usage = client.usage(fromStreamEvent: json) {
+                            if streamingUsage == nil {
+                                streamingUsage = usage
+                            } else {
+                                streamingUsage?.mergeStreamingUsage(usage)
+                            }
+                        }
                         try client.handleStreamEvent(json, continuation: continuation)
                     }
 
@@ -951,10 +1009,12 @@ final class LLMService {
                     if !sawPayload {
                         let (text, usage) = try client.parseResponseText(from: rawData)
                         if let usage {
-                            self.recordUsage(usage, model: resolvedModel)
+                            self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
                             continuation.yield(.usage(usage))
                         }
                         continuation.yield(.content(text))
+                    } else if let usage = streamingUsage {
+                        self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
                     }
                     streamRecorder?.save()
                     
@@ -974,7 +1034,7 @@ final class LLMService {
             switch kind {
             case .summary: appState.processingInFlightSummaries += 1
             case .insight: appState.processingInFlightInsights += 1
-            case .other: break
+            case .chat, .other: break
             }
         }
     }
@@ -986,7 +1046,7 @@ final class LLMService {
             switch kind {
             case .summary: appState.processingInFlightSummaries = max(0, appState.processingInFlightSummaries - 1)
             case .insight: appState.processingInFlightInsights = max(0, appState.processingInFlightInsights - 1)
-            case .other: break
+            case .chat, .other: break
             }
         }
     }

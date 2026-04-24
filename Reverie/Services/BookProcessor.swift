@@ -434,12 +434,13 @@ final class BookProcessor {
                     liveImageCount += 1
                     onImageCountUpdate?(liveImageCount)
 
-                    let pricing = PricingCatalog.imagePricing(for: appState.settings.imageModel)
-                    if let perImage = pricing.outputPerImage {
-                        updateCost(perImage)
-                    } else if let outputPerM = pricing.outputPerMToken {
-                        let tokens = CostEstimates.imageOutputTokensPerImage
-                        updateCost((Double(tokens) / 1_000_000) * outputPerM)
+                    if let imageCost = LLMCallUsage.calculatedImageCost(for: appState.settings.imageModel) {
+                        updateCost(imageCost)
+                    }
+                    do {
+                        try appState.database.saveImageGenerationUsage(model: appState.settings.imageModel)
+                    } catch {
+                        print("Failed to save image usage: \(error)")
                     }
                 }
 
@@ -491,7 +492,7 @@ final class BookProcessor {
     }
     
     private func updateCost(_ delta: Double) {
-        costEstimate += delta
+        costEstimate = appState.processingCostEstimate + delta
         appState.processingCostEstimate = costEstimate
         onCostUpdate?(costEstimate)
     }

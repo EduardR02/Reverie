@@ -153,4 +153,80 @@ final class DatabaseServiceTests: XCTestCase {
         XCTAssertNil(image.failureReason)
         XCTAssertEqual(image.excerpt, "Prompt")
     }
+
+    func testLLMCallUsageLedgerPersists() throws {
+        var usage = LLMCallUsage(
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provider: LLMProvider.google.rawValue,
+            model: SupportedModels.Google.gemini3FlashPreview,
+            task: "chat",
+            inputTokens: 1_000,
+            outputTokens: 200,
+            reasoningTokens: 50,
+            cachedTokens: 100,
+            cost: 0.001
+        )
+
+        try db.saveLLMCallUsage(&usage)
+
+        let rows = try db.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNotNil(rows[0].id)
+        XCTAssertEqual(rows[0].dateKey, ReadingStats.dateKey(for: Date(timeIntervalSince1970: 1_700_000_000)))
+        XCTAssertEqual(rows[0].provider, LLMProvider.google.rawValue)
+        XCTAssertEqual(rows[0].model, SupportedModels.Google.gemini3FlashPreview)
+        XCTAssertEqual(rows[0].task, "chat")
+        XCTAssertEqual(rows[0].inputTokens, 1_000)
+        XCTAssertEqual(rows[0].outputTokens, 200)
+        XCTAssertEqual(rows[0].reasoningTokens, 50)
+        XCTAssertEqual(rows[0].cachedTokens, 100)
+        XCTAssertEqual(rows[0].cost ?? 0, 0.001, accuracy: 0.000001)
+    }
+
+    func testImageCallUsageCostUsesEstimatedPromptInputAndImagePricing() throws {
+        try db.saveImageGenerationUsage(model: .gemini25Flash)
+
+        let rows = try db.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].provider, LLMProvider.google.rawValue)
+        XCTAssertEqual(rows[0].model, ImageModel.gemini25Flash.apiModel)
+        XCTAssertEqual(rows[0].task, "image")
+        XCTAssertEqual(rows[0].inputTokens, CostEstimates.imagePromptTokensPerImage)
+        XCTAssertEqual(rows[0].outputTokens, 0)
+        XCTAssertEqual(rows[0].cost ?? 0, 0.03906, accuracy: 0.000001)
+    }
+
+    func testMigrationToLLMCallUsagePreservesExistingData() throws {
+        let queue = try DatabaseQueue()
+        var migrator = DatabaseService.makeMigrator()
+        try migrator.migrate(queue, upTo: "v4_image_aspect_ratio")
+
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO books (
+                    title, author, epubPath, progressPercent, currentChapter,
+                    currentScrollPercent, currentScrollOffset, chapterCount, importStatus,
+                    processedFully, createdAt, classificationStatus, isFinished
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "Legacy Book", "Author", "/tmp/book.epub", 0.25, 2,
+                    0.5, 128.0, 10, "complete", true, createdAt,
+                    ClassificationStatus.completed.rawValue, false
+                ]
+            )
+        }
+
+        _ = try DatabaseService(dbQueue: queue)
+
+        try queue.read { db in
+            XCTAssertTrue(try db.tableExists("llm_call_usage"))
+            let bookCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM books WHERE title = ?", arguments: ["Legacy Book"])
+            XCTAssertEqual(bookCount, 1)
+            let statsCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM lifetime_stats WHERE id = 1")
+            XCTAssertEqual(statsCount, 1)
+        }
+    }
 }

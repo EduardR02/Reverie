@@ -57,9 +57,10 @@ final class ChapterAnalyzer {
                 
                 do {
                     let (contentWithBlocks, blockCount) = chapter.getContentText()
+                    let rollingSummary = rollingSummaryForAnalysis(chapter)
                     let stream = llm.analyzeChapterStreaming(
                         contentWithBlocks: contentWithBlocks,
-                        rollingSummary: chapter.rollingSummary,
+                        rollingSummary: rollingSummary,
                         bookTitle: book.title,
                         author: book.author,
                         settings: settings
@@ -114,6 +115,7 @@ final class ChapterAnalyzer {
                     var updatedChapter = chapter
                     updatedChapter.processed = true
                     updatedChapter.summary = analysis.summary
+                    updatedChapter.rollingSummary = rollingSummary
                     updatedChapter.contentText = contentWithBlocks
                     updatedChapter.blockCount = blockCount
                     do {
@@ -313,6 +315,11 @@ final class ChapterAnalyzer {
         if status == .success {
             if let data = result.imageData {
                 imagePath = try imageService.saveImage(data, for: bookId, chapterId: chapterId)
+                do {
+                    try database.saveImageGenerationUsage(model: settings.imageModel)
+                } catch {
+                    print("ChapterAnalyzer: Failed to save image usage: \(error)")
+                }
             } else {
                 status = .failed
                 failureReason = "Image generation returned no image data."
@@ -405,5 +412,17 @@ final class ChapterAnalyzer {
         var state = processingStates[chapterId] ?? ProcessingState()
         transform(&state)
         processingStates[chapterId] = state
+    }
+
+    func rollingSummaryForAnalysis(_ chapter: Chapter) -> String? {
+        let summaries = (try? database.fetchSummariesBeforeChapter(bookId: chapter.bookId, chapterIndex: chapter.index)) ?? []
+        let combined = summaries.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !combined.isEmpty { return combined }
+
+        if let rollingSummary = chapter.rollingSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rollingSummary.isEmpty {
+            return rollingSummary
+        }
+        return nil
     }
 }

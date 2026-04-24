@@ -60,4 +60,27 @@ final class LLMPromptsTests: XCTestCase {
 
         XCTAssertTrue(prompt.text.contains("aspectRatio: choose exactly one of 16:9, 1:1, or 9:16"))
     }
+
+    func testChatPromptIncludesPreviousTurnsRoleAware() {
+        let prompt = PromptLibrary.chatPrompt(
+            message: "How does that change the scene?",
+            previousTurns: [
+                LLMService.ChatTurn(role: .user, content: "Who is speaking?"),
+                LLMService.ChatTurn(role: .assistant, content: "The captain is speaking.")
+            ],
+            referenceTitle: "Navigation insight",
+            referenceContent: "The star chart implies a prior expedition.",
+            contentWithBlocks: "[1] Chapter text",
+            rollingSummary: "Earlier summary"
+        )
+
+        XCTAssertTrue(prompt.text.contains("Story so far: Earlier summary"))
+        XCTAssertTrue(prompt.text.contains("[User]\nWho is speaking?"))
+        XCTAssertTrue(prompt.text.contains("[Assistant]\nThe captain is speaking."))
+        XCTAssertTrue(prompt.text.contains("Insight the reader is asking from:"))
+        XCTAssertTrue(prompt.text.contains("Title: Navigation insight"))
+        XCTAssertTrue(prompt.text.contains("Current reader question:"))
+        XCTAssertTrue(prompt.text.contains("[User]\nHow does that change the scene?"))
+        XCTAssertTrue(prompt.text.contains("No spoilers beyond this chapter."))
+    }
 }

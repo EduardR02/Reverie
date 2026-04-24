@@ -230,6 +230,56 @@ final class ChapterAnalyzerTests: XCTestCase {
         XCTAssertFalse(check(autoAI: true, hasKey: true, isGarbage: false, processed: false, status: .pending))
     }
 
+    func test_rollingSummaryForAnalysis_usesPersistedPrecedingSummariesWhenChapterSummaryMissing() throws {
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+
+        var chapter0 = Chapter(bookId: book.id!, index: 0, title: "C0", contentHTML: "", summary: "First summary")
+        var chapter1 = Chapter(bookId: book.id!, index: 1, title: "C1", contentHTML: "", summary: "  Second summary  ")
+        var chapter2 = Chapter(bookId: book.id!, index: 2, title: "C2", contentHTML: "", summary: nil, rollingSummary: nil)
+        try database.saveChapter(&chapter0)
+        try database.saveChapter(&chapter1)
+        try database.saveChapter(&chapter2)
+
+        let context = analyzer.rollingSummaryForAnalysis(chapter2)
+
+        XCTAssertEqual(context, "First summary\n\nSecond summary")
+    }
+
+    func test_rollingSummaryForAnalysis_degradesWhenPrecedingSummariesMissing() throws {
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+
+        var chapter0 = Chapter(bookId: book.id!, index: 0, title: "C0", contentHTML: "", summary: "   ")
+        var chapter1 = Chapter(bookId: book.id!, index: 1, title: "C1", contentHTML: "", summary: nil, rollingSummary: nil)
+        try database.saveChapter(&chapter0)
+        try database.saveChapter(&chapter1)
+
+        XCTAssertNil(analyzer.rollingSummaryForAnalysis(chapter1))
+    }
+
+    func test_rollingSummaryForAnalysis_prefersPersistedPrecedingSummariesOverStaleRollingSummary() throws {
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+
+        var previous = Chapter(bookId: book.id!, index: 0, title: "C0", contentHTML: "", summary: "Persisted summary")
+        var current = Chapter(bookId: book.id!, index: 1, title: "C1", contentHTML: "", rollingSummary: " Existing rolling ")
+        try database.saveChapter(&previous)
+        try database.saveChapter(&current)
+
+        XCTAssertEqual(analyzer.rollingSummaryForAnalysis(current), "Persisted summary")
+    }
+
+    func test_rollingSummaryForAnalysis_usesStoredRollingSummaryWhenNoPrecedingSummariesExist() throws {
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+
+        var current = Chapter(bookId: book.id!, index: 0, title: "C0", contentHTML: "", rollingSummary: " Existing rolling ")
+        try database.saveChapter(&current)
+
+        XCTAssertEqual(analyzer.rollingSummaryForAnalysis(current), "Existing rolling")
+    }
+
     func test_generateImages_persistsWrappedPromptInsteadOfExcerpt() async throws {
         var book = Book(title: "Book 1", author: "Author 1", epubPath: "")
         try database.saveBook(&book)
@@ -264,6 +314,43 @@ final class ChapterAnalyzerTests: XCTestCase {
         XCTAssertEqual(persisted.count, 1)
         XCTAssertEqual(persisted[0].excerpt, excerpt)
         XCTAssertEqual(persisted[0].prompt, expectedPrompt)
+    }
+
+    func test_generateImages_recordsSuccessfulImageUsageInLedger() async throws {
+        var book = Book(title: "Book 1", author: "Author 1", epubPath: "")
+        try database.saveBook(&book)
+
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "Chapter 1", contentHTML: "<p>Content</p>")
+        try database.saveChapter(&chapter)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = #"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"aW1hZ2U="}}]}}]}"#.data(using: .utf8)!
+            return (response, data)
+        }
+
+        let stream = analyzer.generateImages(
+            suggestions: [.init(excerpt: "A river at dawn", sourceBlockId: 1)],
+            book: book,
+            chapter: chapter
+        )
+
+        var generated: [GeneratedImage] = []
+        for try await image in stream {
+            generated.append(image)
+        }
+
+        XCTAssertEqual(generated.count, 1)
+        XCTAssertEqual(generated[0].status, .success)
+
+        let rows = try database.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].provider, LLMProvider.google.rawValue)
+        XCTAssertEqual(rows[0].model, settings.imageModel.apiModel)
+        XCTAssertEqual(rows[0].task, "image")
+        XCTAssertEqual(rows[0].inputTokens, CostEstimates.imagePromptTokensPerImage)
+        XCTAssertEqual(rows[0].outputTokens, LLMCallUsage.estimatedImageOutputTokens(for: settings.imageModel))
+        XCTAssertEqual(rows[0].cost ?? 0, LLMCallUsage.calculatedImageCost(for: settings.imageModel) ?? -1, accuracy: 0.000001)
     }
 
     func test_retryImage_usesStoredPromptForGenerationRequest() async throws {

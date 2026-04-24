@@ -1284,6 +1284,18 @@ struct AIPanel: View {
         let sessionToken = chatSessionToken
 
         let referenceContext = appState.chatContextReference
+        let previousTurns = chatMessages.compactMap { message -> LLMService.ChatTurn? in
+            let trimmedContent = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedContent.isEmpty else { return nil }
+            switch message.role {
+            case .user:
+                return LLMService.ChatTurn(role: .user, content: trimmedContent)
+            case .assistant:
+                return LLMService.ChatTurn(role: .assistant, content: trimmedContent)
+            case .reference:
+                return nil
+            }
+        }
 
         let userMessage = ChatMessage(role: .user, content: trimmed)
         chatMessages.append(userMessage)
@@ -1308,16 +1320,11 @@ struct AIPanel: View {
 
                 let (contentWithBlocks, _) = chapter.getContentText()
 
-                // If we have context, prepend it to the message or use a specialized prompt
-                let finalQuery: String
-                if let ref = referenceContext {
-                    finalQuery = "Regarding the insight \"\(ref.title)\" (\(ref.content)): \(query)"
-                } else {
-                    finalQuery = query
-                }
-
                 let stream = appState.llmService.chatStreaming(
-                    message: finalQuery,
+                    message: query,
+                    previousTurns: previousTurns,
+                    referenceTitle: referenceContext?.title,
+                    referenceContent: referenceContext?.content,
                     contentWithBlocks: contentWithBlocks,
                     rollingSummary: chapter.rollingSummary,
                     settings: appState.settings
@@ -1325,7 +1332,10 @@ struct AIPanel: View {
 
                 for try await chunk in stream {
                     if sessionToken != chatSessionToken { return }
-                    if chunk.isThinking {
+                    switch chunk {
+                    case .usage:
+                        continue
+                    case .thinking:
                         thinkingBuffer += chunk.text
                         await MainActor.run {
                             guard sessionToken == chatSessionToken,
@@ -1333,7 +1343,7 @@ struct AIPanel: View {
                             chatMessages[messageIndex].thinking = thinkingBuffer
                             chatScrollTick += 1
                         }
-                    } else {
+                    case .content:
                         contentBuffer += chunk.text
                         await MainActor.run {
                             guard sessionToken == chatSessionToken,

@@ -18,6 +18,8 @@ protocol LLMProviderClient: Sendable {
         _ json: [String: Any],
         continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     ) throws
+
+    func usage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage?
 }
 
 struct OpenAIProvider: LLMProviderClient {
@@ -150,6 +152,23 @@ struct OpenAIProvider: LLMProviderClient {
                   let message = error["message"] as? String {
             throw LLMService.LLMError.apiError(message)
         }
+    }
+
+    func usage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage? {
+        guard (json["type"] as? String) == "response.completed",
+              let response = json["response"] as? [String: Any],
+              let usageData = response["usage"] as? [String: Any] else { return nil }
+
+        let inputDetails = usageData["input_tokens_details"] as? [String: Any]
+        let outputDetails = usageData["output_tokens_details"] as? [String: Any]
+        let totalOutput = usageData["output_tokens"] as? Int ?? 0
+        let reasoning = outputDetails?["reasoning_tokens"] as? Int ?? 0
+        return LLMService.TokenUsage(
+            input: usageData["input_tokens"] as? Int ?? 0,
+            visibleOutput: totalOutput - reasoning,
+            cached: inputDetails?["cached_tokens"] as? Int,
+            reasoning: reasoning
+        )
     }
 }
 
@@ -309,6 +328,19 @@ struct GeminiProvider: LLMProviderClient {
         }
     }
 
+    func usage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage? {
+        let candidates = json["candidates"] as? [[String: Any]]
+        let isFinalChunk = candidates?.first?["finishReason"] as? String != nil
+        guard isFinalChunk, let usageData = json["usageMetadata"] as? [String: Any] else { return nil }
+
+        return LLMService.TokenUsage(
+            input: usageData["promptTokenCount"] as? Int ?? 0,
+            visibleOutput: usageData["candidatesTokenCount"] as? Int ?? 0,
+            cached: nil,
+            reasoning: usageData["thoughtsTokenCount"] as? Int
+        )
+    }
+
     private func geminiMaxTokens(for model: String) -> Int {
         if model.contains("image") {
             return 32768
@@ -423,22 +455,12 @@ struct AnthropicProvider: LLMProviderClient {
             throw LLMService.LLMError.invalidResponse
         }
 
-        var usage: LLMService.TokenUsage?
+        var parsedUsage: LLMService.TokenUsage?
         if let usageData = json["usage"] as? [String: Any] {
-            // Anthropic: input_tokens is total billable input (includes cache_read as subset)
-            // cache_creation_input_tokens is additional tokens written to cache
-            let input = usageData["input_tokens"] as? Int ?? 0
-            let cacheCreation = usageData["cache_creation_input_tokens"] as? Int ?? 0
-            let cacheRead = usageData["cache_read_input_tokens"] as? Int ?? 0
-            usage = LLMService.TokenUsage(
-                input: input + cacheCreation,
-                visibleOutput: usageData["output_tokens"] as? Int ?? 0,
-                cached: cacheRead,
-                reasoning: nil
-            )
+            parsedUsage = usage(fromAnthropicUsageData: usageData)
         }
 
-        return (text, usage)
+        return (text, parsedUsage)
     }
 
     func handleStreamEvent(
@@ -459,23 +481,52 @@ struct AnthropicProvider: LLMProviderClient {
             } else if let thinking = delta["thinking"] as? String {
                 continuation.yield(.thinking(thinking))
             }
+        } else if type == "message_start",
+                  let message = json["message"] as? [String: Any],
+                  let usageData = message["usage"] as? [String: Any] {
+            var usage = usage(fromAnthropicUsageData: usageData)
+            usage.visibleOutput = 0
+            continuation.yield(.usage(usage))
         } else if type == "message_delta", let usageData = json["usage"] as? [String: Any] {
-            // Anthropic: input_tokens includes cache_read (subset), cache_creation is additional
-            let input = usageData["input_tokens"] as? Int ?? 0
-            let cacheCreation = usageData["cache_creation_input_tokens"] as? Int ?? 0
-            let cacheRead = usageData["cache_read_input_tokens"] as? Int ?? 0
-            let usage = LLMService.TokenUsage(
-                input: input + cacheCreation,
-                visibleOutput: usageData["output_tokens"] as? Int ?? 0,
-                cached: cacheRead,
-                reasoning: nil
-            )
+            var usage = usage(fromAnthropicUsageData: usageData)
+            usage.input = 0
+            usage.cached = nil
+            usage.cacheWrite = nil
             continuation.yield(.usage(usage))
         } else if type == "error",
                   let error = json["error"] as? [String: Any],
                   let message = error["message"] as? String {
             throw LLMService.LLMError.apiError(message)
         }
+    }
+
+    func usage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage? {
+        let type = json["type"] as? String
+        if type == "message_start",
+           let message = json["message"] as? [String: Any],
+           let usageData = message["usage"] as? [String: Any] {
+            var usage = usage(fromAnthropicUsageData: usageData)
+            usage.visibleOutput = 0
+            return usage
+        }
+        if type == "message_delta",
+           let usageData = json["usage"] as? [String: Any] {
+            return usage(fromAnthropicUsageData: usageData)
+        }
+        return nil
+    }
+
+    private func usage(fromAnthropicUsageData usageData: [String: Any]) -> LLMService.TokenUsage {
+        let input = usageData["input_tokens"] as? Int ?? 0
+        let cacheCreation = usageData["cache_creation_input_tokens"] as? Int ?? 0
+        let cacheRead = usageData["cache_read_input_tokens"] as? Int ?? 0
+        return LLMService.TokenUsage(
+            input: input + cacheCreation + cacheRead,
+            visibleOutput: usageData["output_tokens"] as? Int ?? 0,
+            cached: cacheRead,
+            cacheWrite: cacheCreation,
+            reasoning: usageData["thinking_tokens"] as? Int ?? usageData["reasoning_tokens"] as? Int
+        )
     }
 
     private func contentBlocks(for prompt: LLMRequestPrompt) -> [[String: Any]] {

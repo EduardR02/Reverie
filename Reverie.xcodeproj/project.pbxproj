@@ -16,6 +16,11 @@
 		BB2270312F7410B800C0A295 /* AIPanelListOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */; };
 		BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */; };
 		BB2270332F7410B800C0A295 /* RSVPEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */; };
+		BBD000012F75000000ABCDEF /* DatabaseServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000052F75000000ABCDEF /* DatabaseServiceTests.swift */; };
+		BBD000022F75000000ABCDEF /* LLMServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000062F75000000ABCDEF /* LLMServiceTests.swift */; };
+		BBD000032F75000000ABCDEF /* LLMPromptsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */; };
+		BBD000042F75000000ABCDEF /* ChapterAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */; };
+		BBD000092F75000000ABCDEF /* BookProcessorCostAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB3A2BE22F71EB0E004A9F3E /* ReaderSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */; };
 		BB5A89A02F71BD31006494B9 /* SupportedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5A899F2F71BD31006494B9 /* SupportedModels.swift */; };
@@ -90,6 +95,11 @@
 		BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookContentPipelineTests.swift; sourceTree = "<group>"; };
 		BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RSVPEngineTests.swift; sourceTree = "<group>"; };
 		BB2270202F7410B800C0A295 /* ReverieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReverieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BBD000052F75000000ABCDEF /* DatabaseServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseServiceTests.swift; sourceTree = "<group>"; };
+		BBD000062F75000000ABCDEF /* LLMServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMServiceTests.swift; sourceTree = "<group>"; };
+		BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMPromptsTests.swift; sourceTree = "<group>"; };
+		BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalyzerTests.swift; sourceTree = "<group>"; };
+		BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessorCostAccountingTests.swift; sourceTree = "<group>"; };
 		BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchQueryBuilder.swift; sourceTree = "<group>"; };
 		BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderSplitView.swift; path = Reverie/Views/Reader/ReaderSplitView.swift; sourceTree = "<group>"; };
 		BB5A899F2F71BD31006494B9 /* SupportedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SupportedModels.swift; path = Reverie/Services/SupportedModels.swift; sourceTree = "<group>"; };
@@ -245,6 +255,10 @@
 			isa = PBXGroup;
 			children = (
 				BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */,
+				BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */,
+				BBD000052F75000000ABCDEF /* DatabaseServiceTests.swift */,
+				BBD000062F75000000ABCDEF /* LLMServiceTests.swift */,
+				BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */,
 				BB2270222F7410B800C0A295 /* ViewModels */,
 			);
 			path = Reverie/Tests/ReverieTests;
@@ -253,6 +267,7 @@
 		BB2270222F7410B800C0A295 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */,
 				BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */,
 				BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */,
 			);
@@ -507,6 +522,11 @@
 			isa = PBXSourcesBuildPhase;
 			files = (
 				BB2270312F7410B800C0A295 /* AIPanelListOrderTests.swift in Sources */,
+				BBD000012F75000000ABCDEF /* DatabaseServiceTests.swift in Sources */,
+				BBD000022F75000000ABCDEF /* LLMServiceTests.swift in Sources */,
+				BBD000032F75000000ABCDEF /* LLMPromptsTests.swift in Sources */,
+				BBD000042F75000000ABCDEF /* ChapterAnalyzerTests.swift in Sources */,
+				BBD000092F75000000ABCDEF /* BookProcessorCostAccountingTests.swift in Sources */,
 				BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */,
 				BB2270332F7410B800C0A295 /* RSVPEngineTests.swift in Sources */,
 			);

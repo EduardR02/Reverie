@@ -7,6 +7,87 @@ enum DatabaseError: Error {
     case statsNotFound
 }
 
+struct LLMCallUsage: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, Equatable {
+    var id: Int64?
+    var createdAt: Date
+    var dateKey: String
+    var provider: String
+    var model: String
+    var task: String
+    var inputTokens: Int
+    var outputTokens: Int
+    var reasoningTokens: Int?
+    var cachedTokens: Int?
+    var cost: Double?
+
+    static let databaseTableName = "llm_call_usage"
+
+    init(
+        id: Int64? = nil,
+        createdAt: Date = Date(),
+        provider: String,
+        model: String,
+        task: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        reasoningTokens: Int? = nil,
+        cachedTokens: Int? = nil,
+        cost: Double? = nil
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.dateKey = ReadingStats.dateKey(for: createdAt)
+        self.provider = provider
+        self.model = model
+        self.task = task
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.reasoningTokens = reasoningTokens
+        self.cachedTokens = cachedTokens
+        self.cost = cost
+    }
+
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+
+    static func calculatedCost(for usage: LLMService.TokenUsage, model: String) -> Double? {
+        guard let pricing = PricingCatalog.textPricing(for: model) else {
+            guard let imageModel = ImageModel.fromAPIModel(model) else { return nil }
+            return calculatedImageCost(for: imageModel)
+        }
+        let cachedTokens = usage.cached ?? 0
+        let cacheWriteTokens = usage.cacheWrite ?? 0
+        let uncachedTokens = max(0, usage.input - cachedTokens - cacheWriteTokens)
+        let inputCost = (Double(uncachedTokens) / 1_000_000) * pricing.inputPerMToken
+            + (Double(cachedTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cachedInputMultiplier)
+            + (Double(cacheWriteTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cacheWriteInputMultiplier)
+        let outputTokens = usage.visibleOutput + (usage.reasoning ?? 0)
+        let outputCost = (Double(outputTokens) / 1_000_000) * pricing.outputPerMToken
+        return inputCost + outputCost
+    }
+
+    static func calculatedImageCost(for model: ImageModel, imageCount: Int = 1) -> Double? {
+        let pricing = PricingCatalog.imagePricing(for: model)
+        let inputTokens = estimatedImageInputTokens(imageCount: imageCount)
+        let inputCost = (Double(inputTokens) / 1_000_000) * pricing.inputPerMToken
+        if let perImage = pricing.outputPerImage {
+            return inputCost + perImage * Double(imageCount)
+        }
+        guard let outputPerMToken = pricing.outputPerMToken else { return nil }
+        let outputTokens = estimatedImageOutputTokens(for: model, imageCount: imageCount)
+        return inputCost + (Double(outputTokens) / 1_000_000) * outputPerMToken
+    }
+
+    static func estimatedImageInputTokens(imageCount: Int = 1) -> Int {
+        CostEstimates.imagePromptTokensPerImage * imageCount
+    }
+
+    static func estimatedImageOutputTokens(for model: ImageModel, imageCount: Int = 1) -> Int {
+        PricingCatalog.imagePricing(for: model).outputPerMToken == nil ? 0 : CostEstimates.imageOutputTokensPerImage * imageCount
+    }
+}
+
 final class DatabaseService: @unchecked Sendable {
     // The default instance for the app
     @MainActor static let shared = try! DatabaseService()
@@ -40,7 +121,7 @@ final class DatabaseService: @unchecked Sendable {
         try setupDatabase()
     }
 
-    private func setupDatabase() throws {
+    static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         
         #if DEBUG
@@ -181,6 +262,31 @@ final class DatabaseService: @unchecked Sendable {
             }
         }
 
+        migrator.registerMigration("v5_llm_call_usage") { db in
+            try db.create(table: "llm_call_usage") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("createdAt", .datetime).notNull()
+                t.column("dateKey", .text).notNull()
+                t.column("provider", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("task", .text).notNull()
+                t.column("inputTokens", .integer).notNull().defaults(to: 0)
+                t.column("outputTokens", .integer).notNull().defaults(to: 0)
+                t.column("reasoningTokens", .integer)
+                t.column("cachedTokens", .integer)
+                t.column("cost", .double)
+            }
+            try db.create(index: "idx_llm_call_usage_createdAt", on: "llm_call_usage", columns: ["createdAt"])
+            try db.create(index: "idx_llm_call_usage_dateKey", on: "llm_call_usage", columns: ["dateKey"])
+            try db.create(index: "idx_llm_call_usage_task", on: "llm_call_usage", columns: ["task"])
+        }
+
+        return migrator
+    }
+
+    private func setupDatabase() throws {
+        let migrator = Self.makeMigrator()
+
         do {
             try migrator.migrate(dbQueue)
         } catch {
@@ -245,6 +351,49 @@ final class DatabaseService: @unchecked Sendable {
                     arguments: [dateKey, seconds]
                 )
             }
+        }
+    }
+
+    // MARK: - LLM Usage Ledger
+
+    func saveLLMCallUsage(_ usage: inout LLMCallUsage) throws {
+        try dbQueue.write { db in
+            try usage.save(db)
+        }
+    }
+
+    func fetchLLMCallUsage() throws -> [LLMCallUsage] {
+        try dbQueue.read { db in
+            try LLMCallUsage.order(Column("createdAt").asc).fetchAll(db)
+        }
+    }
+
+    func saveImageGenerationUsage(model: ImageModel) throws {
+        var usage = LLMCallUsage(
+            provider: LLMProvider.google.rawValue,
+            model: model.apiModel,
+            task: "image",
+            inputTokens: LLMCallUsage.estimatedImageInputTokens(),
+            outputTokens: LLMCallUsage.estimatedImageOutputTokens(for: model),
+            cost: LLMCallUsage.calculatedImageCost(for: model)
+        )
+        try saveLLMCallUsage(&usage)
+    }
+
+    func fetchSummariesBeforeChapter(bookId: Int64, chapterIndex: Int) throws -> [String] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT summary FROM chapters
+                WHERE bookId = ? AND "index" < ? AND TRIM(COALESCE(summary, '')) != ''
+                ORDER BY "index" ASC
+                """,
+                arguments: [bookId, chapterIndex]
+            )
+            return rows.compactMap { row in
+                (row["summary"] as String?)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }
         }
     }
 

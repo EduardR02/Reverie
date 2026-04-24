@@ -277,9 +277,37 @@ Each: question, answer, sourceBlockId.
 
     static func chatPrompt(
         message: String,
+        previousTurns: [LLMService.ChatTurn] = [],
+        referenceTitle: String? = nil,
+        referenceContent: String? = nil,
         contentWithBlocks: String,
         rollingSummary: String?
     ) -> LLMRequestPrompt {
+        let history: String
+        if previousTurns.isEmpty {
+            history = "No previous chat turns."
+        } else {
+            history = previousTurns.map { turn in
+                let label = turn.role == .user ? "User" : "Assistant"
+                return "[\(label)]\n\(turn.content)"
+            }.joined(separator: "\n\n")
+        }
+
+        let referenceSection: String
+        if let referenceTitle,
+           let referenceContent,
+           !referenceTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !referenceContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            referenceSection = """
+
+Insight the reader is asking from:
+Title: \(referenceTitle)
+Content: \(referenceContent)
+"""
+        } else {
+            referenceSection = ""
+        }
+
         let prefix = """
 Discussing this chapter with a reader.
 
@@ -288,10 +316,14 @@ Story so far: \(rollingSummary ?? "Beginning of book.")
 Chapter:
 \(contentWithBlocks)
 
-Question:
+Previous conversation (oldest first):
+\(history)\(referenceSection)
+
+Current reader question:
 """
         let suffix = """
-"\(message)"
+[User]
+\(message)
 
 Be substantive:
 - Science/history: give real information

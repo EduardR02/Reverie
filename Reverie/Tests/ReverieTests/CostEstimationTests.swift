@@ -122,6 +122,22 @@ final class CostEstimationTests: XCTestCase {
         XCTAssertGreaterThan(claudeInputCost, gptInputCost)
     }
 
+    func testImageLedgerCostIncludesEstimatedPromptInputForFixedPriceImages() {
+        let cost = LLMCallUsage.calculatedImageCost(for: .gemini25Flash)
+
+        XCTAssertEqual(LLMCallUsage.estimatedImageInputTokens(), CostEstimates.imagePromptTokensPerImage)
+        XCTAssertEqual(LLMCallUsage.estimatedImageOutputTokens(for: .gemini25Flash), 0)
+        XCTAssertEqual(cost ?? 0, 0.03906, accuracy: 0.000001)
+    }
+
+    func testImageLedgerCostIncludesEstimatedPromptInputAndOutputTokensWhenTokenPriced() {
+        let cost = LLMCallUsage.calculatedImageCost(for: .gemini3Pro)
+
+        XCTAssertEqual(LLMCallUsage.estimatedImageInputTokens(), CostEstimates.imagePromptTokensPerImage)
+        XCTAssertEqual(LLMCallUsage.estimatedImageOutputTokens(for: .gemini3Pro), CostEstimates.imageOutputTokensPerImage)
+        XCTAssertEqual(cost ?? 0, 0.0148, accuracy: 0.000001)
+    }
+
     // MARK: - Edge Case Tests
 
     func testZeroTokens() {
@@ -156,6 +172,20 @@ final class CostEstimationTests: XCTestCase {
         let cachedInputCost = (Double(cachedInputTokens) / 1_000_000) * (pricing.inputPerMToken * pricing.cachedInputMultiplier)
 
         XCTAssertEqual(cachedInputCost, 0.25)
+    }
+
+    func testAnthropicCacheWriteCostUsesCacheCreationMultiplier() {
+        let usage = LLMService.TokenUsage(
+            input: 1_900,
+            visibleOutput: 80,
+            cached: 400,
+            cacheWrite: 300,
+            reasoning: 7
+        )
+
+        let cost = LLMCallUsage.calculatedCost(for: usage, model: SupportedModels.Anthropic.sonnet45)
+
+        XCTAssertEqual(cost ?? 0, 0.00615, accuracy: 0.000001)
     }
 
     func testModelNameVariation_CaseSensitivity() {
