@@ -974,6 +974,7 @@ final class LLMService {
                     var rawData = Data()
                     var sawPayload = false
                     var streamingUsage: TokenUsage?
+                    var lastObservedUsage: TokenUsage?
 
                     func handleLine(_ line: String) throws {
                         guard let payload = ssePayload(from: line) else { return }
@@ -986,6 +987,10 @@ final class LLMService {
                         guard let data = payload.data(using: .utf8),
                                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                             return
+                        }
+
+                        if provider == .google, let usage = client.observedUsage(fromStreamEvent: json) {
+                            lastObservedUsage = usage
                         }
 
                         if let usage = client.usage(fromStreamEvent: json) {
@@ -1013,8 +1018,14 @@ final class LLMService {
                             continuation.yield(.usage(usage))
                         }
                         continuation.yield(.content(text))
-                    } else if let usage = streamingUsage {
-                        self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
+                    } else {
+                        let usage = streamingUsage ?? lastObservedUsage
+                        if let usage {
+                            if streamingUsage == nil {
+                                continuation.yield(.usage(usage))
+                            }
+                            self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
+                        }
                     }
                     streamRecorder?.save()
                     

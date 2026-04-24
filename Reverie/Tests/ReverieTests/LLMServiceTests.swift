@@ -352,6 +352,63 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testGeminiStreamingUsageWithoutFinishReasonUsesFinalObservedCumulativeUsage() async throws {
+        let queue = try DatabaseQueue()
+        let database = try DatabaseService(dbQueue: queue)
+        let appState = AppState(database: database)
+        llmService.setAppState(appState)
+
+        let streamResponse = """
+        data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":4,"thoughtsTokenCount":10}}
+
+        data: {"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":8,"thoughtsTokenCount":20}}
+
+        """
+        MockURLProtocol.stubResponseData = streamResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "text/event-stream"]
+        )
+
+        var settings = UserSettings()
+        settings.llmProvider = .google
+        settings.googleAPIKey = "mock-key"
+
+        let stream = llmService.chatStreaming(
+            message: "What happened?",
+            contentWithBlocks: "[1] Chapter text",
+            rollingSummary: nil,
+            settings: settings
+        )
+
+        var text = ""
+        var emittedUsages: [LLMService.TokenUsage] = []
+        for try await chunk in stream {
+            switch chunk {
+            case .content(let part): text += part
+            case .usage(let usage): emittedUsages.append(usage)
+            case .thinking: break
+            }
+        }
+
+        XCTAssertEqual(text, "Hello")
+        XCTAssertEqual(emittedUsages.count, 1)
+        XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.input }, 1000)
+        XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.visibleOutput }, 8)
+        XCTAssertEqual(emittedUsages.reduce(0) { $0 + ($1.reasoning ?? 0) }, 20)
+
+        let rows = try database.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        guard rows.count == 1 else { return }
+        XCTAssertEqual(rows[0].inputTokens, 1000)
+        XCTAssertEqual(rows[0].outputTokens, 8)
+        XCTAssertEqual(rows[0].reasoningTokens, 20)
+        XCTAssertEqual(rows[0].task, "chat")
+    }
+
+    @MainActor
     func testAnthropicStreamingUsageMergesMessageStartAndMessageDelta() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)

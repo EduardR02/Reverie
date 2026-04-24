@@ -20,6 +20,14 @@ protocol LLMProviderClient: Sendable {
     ) throws
 
     func usage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage?
+
+    func observedUsage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage?
+}
+
+extension LLMProviderClient {
+    func observedUsage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage? {
+        usage(fromStreamEvent: json)
+    }
 }
 
 struct OpenAIProvider: LLMProviderClient {
@@ -333,6 +341,15 @@ struct GeminiProvider: LLMProviderClient {
         let isFinalChunk = candidates?.first?["finishReason"] as? String != nil
         guard isFinalChunk, let usageData = json["usageMetadata"] as? [String: Any] else { return nil }
 
+        return tokenUsage(fromGeminiUsageData: usageData)
+    }
+
+    func observedUsage(fromStreamEvent json: [String: Any]) -> LLMService.TokenUsage? {
+        guard let usageData = json["usageMetadata"] as? [String: Any] else { return nil }
+        return tokenUsage(fromGeminiUsageData: usageData)
+    }
+
+    private func tokenUsage(fromGeminiUsageData usageData: [String: Any]) -> LLMService.TokenUsage {
         return LLMService.TokenUsage(
             input: usageData["promptTokenCount"] as? Int ?? 0,
             visibleOutput: usageData["candidatesTokenCount"] as? Int ?? 0,
