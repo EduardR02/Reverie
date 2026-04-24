@@ -24,6 +24,10 @@
 		BBF000012F75000000ABC001 /* ChatMessageMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */; };
 		BBF000032F75000000ABC003 /* SelectableTextMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */; };
 		BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000062F75000000ABC004 /* ModelUpdateTests.swift */; };
+		BBF00008A2F75000000A0001 /* ProgressTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF00008B2F75000000A0002 /* ProgressTracker.swift */; };
+		BBF00008C2F75000000A0003 /* ProgressTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF00008D2F75000000A0004 /* ProgressTrackerTests.swift */; };
+		BBF00009A2F75000000B0001 /* ProcessingCostTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF00009B2F75000000B0002 /* ProcessingCostTracker.swift */; };
+		BBF00009C2F75000000B0003 /* ProcessingCostTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF00009D2F75000000B0004 /* ProcessingCostTrackerTests.swift */; };
 		BB2F0ACF2F06DFDB001C1E4C /* SearchQueryBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */; };
 		BB3A2BE22F71EB0E004A9F3E /* ReaderSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */; };
 		BB5A89A02F71BD31006494B9 /* SupportedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5A899F2F71BD31006494B9 /* SupportedModels.swift */; };
@@ -122,6 +126,10 @@
 		BBC04C5C2F1B021D006D17FB /* ImageFormatDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImageFormatDetector.swift; path = Reverie/Utilities/ImageFormatDetector.swift; sourceTree = "<group>"; };
 		BBC04C602F1B14A4006D17FB /* ResilientSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResilientSession.swift; path = Reverie/Services/ResilientSession.swift; sourceTree = "<group>"; };
 		BBF6ECBC2F118B9F00258A92 /* ProgressCalculatorCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProgressCalculatorCache.swift; path = Reverie/Services/ProgressCalculatorCache.swift; sourceTree = "<group>"; };
+		BBF00008B2F75000000A0002 /* ProgressTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressTracker.swift; sourceTree = "<group>"; };
+		BBF00008D2F75000000A0004 /* ProgressTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressTrackerTests.swift; sourceTree = "<group>"; };
+		BBF00009B2F75000000B0002 /* ProcessingCostTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingCostTracker.swift; sourceTree = "<group>"; };
+		BBF00009D2F75000000B0004 /* ProcessingCostTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingCostTrackerTests.swift; sourceTree = "<group>"; };
 		PROD /* Reverie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Reverie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		S001 /* ReverieApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReverieApp.swift; sourceTree = "<group>"; };
 		S002 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -268,6 +276,8 @@
 				BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */,
 				BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */,
 				BBF000062F75000000ABC004 /* ModelUpdateTests.swift */,
+				BBF00008D2F75000000A0004 /* ProgressTrackerTests.swift */,
+				BBF00009D2F75000000B0004 /* ProcessingCostTrackerTests.swift */,
 				BB2270222F7410B800C0A295 /* ViewModels */,
 			);
 			path = Reverie/Tests/ReverieTests;
@@ -294,6 +304,8 @@
 				S011 /* ImageService.swift */,
 				S026 /* LibraryPaths.swift */,
 				S023 /* ReadingSpeedTracker.swift */,
+				BBF00008B2F75000000A0002 /* ProgressTracker.swift */,
+				BBF00009B2F75000000B0002 /* ProcessingCostTracker.swift */,
 				S031 /* ContentBlockParser.swift */,
 				S032 /* CostEstimation.swift */,
 			);
@@ -516,6 +528,8 @@
 				BBBA135C2F146975008FC6ED /* ThemedControls.swift in Sources */,
 				F022 /* Footnote.swift in Sources */,
 				F023 /* ReadingSpeedTracker.swift in Sources */,
+				BBF00008A2F75000000A0001 /* ProgressTracker.swift in Sources */,
+				BBF00009A2F75000000B0001 /* ProcessingCostTracker.swift in Sources */,
 				BB5E00002F11C1FB00A7A2E6 /* ReaderSession.swift in Sources */,
 				F024 /* StatsView.swift in Sources */,
 				F034 /* SelectableText.swift in Sources */,
@@ -541,6 +555,8 @@
 				BBF000012F75000000ABC001 /* ChatMessageMarkdownTests.swift in Sources */,
 				BBF000032F75000000ABC003 /* SelectableTextMarkdownTests.swift in Sources */,
 				BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */,
+				BBF00008C2F75000000A0003 /* ProgressTrackerTests.swift in Sources */,
+				BBF00009C2F75000000B0003 /* ProcessingCostTrackerTests.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
