@@ -251,6 +251,48 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testGeminiNonStreamingUsageIncludesCachedContentTokenCount() async throws {
+        let queue = try DatabaseQueue()
+        let database = try DatabaseService(dbQueue: queue)
+        let appState = AppState(database: database)
+        llmService.setAppState(appState)
+
+        let jsonResponse = """
+        {
+            "candidates": [{
+                "content": { "parts": [{ "text": "query text" }] }
+            }],
+            "usageMetadata": { "promptTokenCount": 1000, "candidatesTokenCount": 100, "thoughtsTokenCount": 25, "cachedContentTokenCount": 300 }
+        }
+        """
+        MockURLProtocol.stubResponseData = jsonResponse.data(using: .utf8)
+        MockURLProtocol.stubResponse = HTTPURLResponse(
+            url: URL(string: "https://google.com")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )
+
+        var settings = UserSettings()
+        settings.googleAPIKey = "mock-key"
+
+        _ = try await llmService.distillSearchQuery(
+            insightTitle: "Title",
+            insightContent: "Content",
+            bookTitle: "Book",
+            author: "Author",
+            settings: settings
+        )
+
+        let rows = try database.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].inputTokens, 1000)
+        XCTAssertEqual(rows[0].outputTokens, 100)
+        XCTAssertEqual(rows[0].reasoningTokens, 25)
+        XCTAssertEqual(rows[0].cachedTokens, 300)
+    }
+
+    @MainActor
     func testAnthropicNonStreamingUsageIncludesCacheReadInTotalInput() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
@@ -359,9 +401,9 @@ final class LLMServiceTests: XCTestCase {
         llmService.setAppState(appState)
 
         let streamResponse = """
-        data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":4,"thoughtsTokenCount":10}}
+        data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":4,"thoughtsTokenCount":10,"cachedContentTokenCount":200}}
 
-        data: {"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":8,"thoughtsTokenCount":20}}
+        data: {"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":8,"thoughtsTokenCount":20,"cachedContentTokenCount":200}}
 
         """
         MockURLProtocol.stubResponseData = streamResponse.data(using: .utf8)
@@ -405,6 +447,7 @@ final class LLMServiceTests: XCTestCase {
         XCTAssertEqual(rows[0].inputTokens, 1000)
         XCTAssertEqual(rows[0].outputTokens, 8)
         XCTAssertEqual(rows[0].reasoningTokens, 20)
+        XCTAssertEqual(rows[0].cachedTokens, 200)
         XCTAssertEqual(rows[0].task, "chat")
     }
 

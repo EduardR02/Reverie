@@ -101,7 +101,7 @@ final class RSVPEngine {
     func sync(toBlockId blockId: Int) {
         guard let index = blockStartWordIndices[blockId] else { return }
         currentWordIndex = index
-        pendingPauseContent = nil
+        handlePauseAtCurrentIndex()
     }
     
     func play() {
@@ -134,11 +134,7 @@ final class RSVPEngine {
     func skip(words count: Int) {
         let newIndex = currentWordIndex + count
         currentWordIndex = max(0, min(words.count - 1, newIndex))
-        
-        // When skipping, if we hit a pause point exactly, we might want to show it,
-        // but usually manual skip should just move the cursor.
-        // For now, we clear any pending content.
-        pendingPauseContent = nil
+        handlePauseAtCurrentIndex()
     }
     
     func reset() {
@@ -190,16 +186,23 @@ final class RSVPEngine {
             return
         }
         
-        // Check for pause points at the upcoming index
-        if let content = pausePoints[nextIndex] {
-            pause()
-            currentWordIndex = nextIndex
-            pendingPauseContent = content
-            return
-        }
-        
         currentWordIndex = nextIndex
-        scheduleNextWord()
+        handlePauseAtCurrentIndex()
+        
+        if pendingPauseContent == nil {
+            scheduleNextWord()
+        }
+    }
+    
+    /// If the current word index has a pause point, pauses RSVP and shows the content.
+    /// Otherwise clears any stale pause content. Call after any cursor movement.
+    private func handlePauseAtCurrentIndex() {
+        if let content = pausePoints[currentWordIndex] {
+            pause()
+            pendingPauseContent = content
+        } else {
+            pendingPauseContent = nil
+        }
     }
     
     /// Spritz ORP Algorithm:

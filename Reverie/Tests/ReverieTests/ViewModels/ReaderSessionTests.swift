@@ -418,6 +418,45 @@ final class ReaderSessionTests: XCTestCase {
         session.handleImageMarkerDoubleClick(2)
         XCTAssertEqual(session.expandedImage?.id, 2)
     }
+    
+    // MARK: - Background Task Retention
+    
+    func test_completed_background_task_removes_itself_from_registry() async {
+        session.setup(with: appState)
+        XCTAssertEqual(session.backgroundTaskCount, 0)
+        
+        let task = Task { @MainActor in
+            // immediately completes — nothing to await
+        }
+        session.trackBackgroundTask(task)
+        XCTAssertEqual(session.backgroundTaskCount, 1)
+        
+        // Wait for the task to complete and auto-remove
+        _ = await task.value
+        // Give the removal task a moment to execute
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        
+        XCTAssertEqual(session.backgroundTaskCount, 0)
+    }
+    
+    func test_cleanup_cancels_and_removes_active_background_tasks() async {
+        session.setup(with: appState)
+        
+        // Create a long-running task that won't complete on its own
+        let task = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        session.trackBackgroundTask(task)
+        XCTAssertEqual(session.backgroundTaskCount, 1)
+        
+        session.cleanup()
+        
+        // After cleanup, tasks are cancelled and removed
+        XCTAssertEqual(session.backgroundTaskCount, 0)
+        XCTAssertTrue(task.isCancelled)
+    }
 
     private func waitForRSVPWords(count: Int, timeoutNanoseconds: UInt64 = 1_000_000_000) async {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds

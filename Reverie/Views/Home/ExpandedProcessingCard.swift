@@ -19,6 +19,7 @@ struct ExpandedProcessingCard: View {
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
+    @State private var coverImage: NSImage?
 
     var body: some View {
         HStack(spacing: 20) {
@@ -287,27 +288,41 @@ struct ExpandedProcessingCard: View {
 
     @ViewBuilder
     private var coverView: some View {
-        if let coverURL = book.coverURL,
-           let image = NSImage(contentsOf: coverURL) {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
+        ZStack {
             theme.overlay
-                .overlay {
-                    VStack(spacing: 8) {
-                        Image(systemName: "book.closed")
-                            .font(.system(size: 32, weight: .light))
-                            .foregroundColor(theme.muted)
 
-                        Text(book.title)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(theme.subtle)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                            .padding(.horizontal, 12)
-                    }
+            if let coverImage {
+                GeometryReader { geo in
+                    Image(nsImage: coverImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
                 }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "book.closed")
+                        .font(.system(size: 32, weight: .light))
+                        .foregroundColor(theme.muted)
+
+                    Text(book.title)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(theme.subtle)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .padding(.horizontal, 12)
+                }
+            }
+        }
+        .task(id: book.coverURL) {
+            guard let url = book.coverURL else { return }
+            if let loaded = await Task.detached(priority: .userInitiated, operation: {
+                NSImage(contentsOf: url)
+            }).value {
+                await MainActor.run {
+                    coverImage = loaded
+                }
+            }
         }
     }
 

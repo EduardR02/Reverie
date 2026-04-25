@@ -39,7 +39,6 @@ struct StatsView: View {
             }
         }
         .onAppear {
-            appState.refreshReadingStats()
             withAnimation(.easeOut(duration: 0.8).delay(0.1)) {
                 animateStats = true
             }
@@ -715,13 +714,6 @@ struct TokenBar: View {
         }
     }
 
-    private func formatTokens(_ num: Int) -> String {
-        if num < 1000 {
-            return "\(num)"
-        } else {
-            return String(format: "%.1fK", Double(num) / 1000.0)
-        }
-    }
 }
 
 // MARK: - Mini Stat Badge

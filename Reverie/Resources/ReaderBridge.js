@@ -109,13 +109,14 @@ const programmatic = (() => {
     const complete = () => {
         if (state.raf) cancelAnimationFrame(state.raf);
         state.raf = null;
-        state.active = false;
-        // Note: sticky stays true until next scroll or explicit cancel
-        // This allows the focus to remain locked on the target after animation
+        // Note: active stays true until after updateFocus so reportToNative sees isProgrammatic
         state.expectedY = state.targetY; 
         if (state.timeout) clearTimeout(state.timeout);
         state.timeout = null;
         updateFocus(true);
+        state.active = false;
+        // Note: sticky stays true until next scroll or explicit cancel
+        // This allows the focus to remain locked on the target after animation
     };
 
     const start = (targetId, targetY) => {

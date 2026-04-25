@@ -91,7 +91,12 @@ final class ReaderSession {
     private var rsvpLoadTask: Task<Void, Never>?
     private var baseContentTasks: [Int64: ChapterBaseContentTask] = [:]
     private var analysisTasks: [Int64: Task<Void, Never>] = [:]
-    private var backgroundTasks: [Task<Void, Never>] = []
+    private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
+    
+    #if DEBUG
+    /// Number of tracked background tasks. For test inspection only.
+    var backgroundTaskCount: Int { backgroundTasks.count }
+    #endif
     private var isCleaningUp = false
     var showChapterList = false
     var expandedImage: GeneratedImage?
@@ -127,6 +132,19 @@ final class ReaderSession {
         }
     }
     
+    /// Registers a background task that auto-removes from the registry on completion.
+    /// Cancelled tasks are filtered out before adding the new task.
+    func trackBackgroundTask(_ task: Task<Void, Never>) {
+        backgroundTasks = backgroundTasks.filter { !$0.value.isCancelled }
+        let id = UUID()
+        backgroundTasks[id] = task
+        // Schedule removal when the task completes
+        Task { @MainActor [weak self, id] in
+            _ = await task.value
+            self?.backgroundTasks.removeValue(forKey: id)
+        }
+    }
+    
     func cleanup() {
         isCleaningUp = true
         scrollByAmount = nil
@@ -139,7 +157,7 @@ final class ReaderSession {
         baseContentTasks.removeAll()
         for task in analysisTasks.values { task.cancel() }
         analysisTasks.removeAll()
-        for task in backgroundTasks { task.cancel() }
+        for task in backgroundTasks.values { task.cancel() }
         backgroundTasks.removeAll()
         autoScroll.stop()
         persistCurrentProgress()
@@ -226,8 +244,7 @@ final class ReaderSession {
                 // Classification failed - don't update status, leave as pending/failed
             }
         }
-        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-        backgroundTasks.append(classificationTask)
+        trackBackgroundTask(classificationTask)
     } catch {
         loadError = error.localizedDescription
         isLoadingChapters = false
@@ -351,8 +368,7 @@ final class ReaderSession {
             guard !Task.isCancelled else { return }
             self.refreshProgressCalculator(for: chapter)
         }
-        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-        backgroundTasks.append(task)
+        trackBackgroundTask(task)
     }
 
     private func refreshProgressCalculator(for chapter: Chapter) {
@@ -901,8 +917,7 @@ final class ReaderSession {
                                 print("ReaderSession: Error generating images: \(error)")
                             }
                         }
-                        self.backgroundTasks = self.backgroundTasks.filter { !$0.isCancelled }
-                        self.backgroundTasks.append(imgTask)
+                        trackBackgroundTask(imgTask)
                     case .complete(let summary):
                         if isCurrent { self.currentChapter?.processed = true }
                         if let idx = self.chapters.firstIndex(where: { $0.id == chapterId }) { self.chapters[idx].processed = true }
@@ -949,8 +964,7 @@ final class ReaderSession {
                     print("ReaderSession: Error generating single image: \(error)")
                 }
             }
-            backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-            backgroundTasks.append(task)
+            trackBackgroundTask(task)
         }
     }
 
@@ -1028,8 +1042,7 @@ final class ReaderSession {
             guard let analyzer = self.analyzer, let new = try? await analyzer.generateMoreInsights(for: chapter) else { return }
             annotations.append(contentsOf: new)
         }
-        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-        backgroundTasks.append(task)
+        trackBackgroundTask(task)
     }
 
     func generateMoreQuestions() {
@@ -1038,8 +1051,7 @@ final class ReaderSession {
             guard let analyzer = self.analyzer, let new = try? await analyzer.generateMoreQuestions(for: chapter) else { return }
             quizzes.append(contentsOf: new)
         }
-        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-        backgroundTasks.append(task)
+        trackBackgroundTask(task)
     }
 
     func forceProcessGarbageChapter() {
@@ -1083,7 +1095,6 @@ final class ReaderSession {
                 print("ReaderSession: Classification retry failed: \(error)")
             }
         }
-        backgroundTasks = backgroundTasks.filter { !$0.isCancelled }
-        backgroundTasks.append(task)
+        trackBackgroundTask(task)
     }
 }

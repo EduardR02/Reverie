@@ -25,6 +25,86 @@ final class RSVPEngineTests: XCTestCase {
         XCTAssertNil(engine.pendingPauseContent)
     }
 
+    func test_sync_to_block_with_pause_content_sets_pendingPauseContent_and_pauses() {
+        let engine = RSVPEngine()
+        let annotation = Annotation(id: 1, chapterId: 1, type: .science, title: "T", content: "C", sourceBlockId: 2)
+
+        engine.loadChapter(
+            blocks: [
+                makeBlock(id: 1, text: "Alpha beta"),
+                makeBlock(id: 2, text: "Gamma delta epsilon")
+            ],
+            annotations: [annotation],
+            images: [],
+            footnotes: []
+        )
+
+        // Start playing so that pause() has observable effect
+        engine.setWPM(1) // very slow, won't advance before we sync
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+
+        engine.sync(toBlockId: 2)
+
+        XCTAssertEqual(engine.currentWord?.text, "Gamma")
+        XCTAssertEqual(engine.pendingPauseContent, .insight(annotation))
+        XCTAssertFalse(engine.isPlaying)
+    }
+
+    func test_skip_lands_on_pause_content_sets_pendingPauseContent_and_pauses() {
+        let engine = RSVPEngine()
+        let footnote = Footnote(id: 1, chapterId: 1, marker: "*", content: "Note", refId: "n1", sourceBlockId: 1)
+
+        engine.loadChapter(
+            blocks: [
+                makeBlock(id: 1, text: "Alpha beta Gamma delta epsilon zeta eta theta iota kappa lambda mu")
+            ],
+            annotations: [],
+            images: [],
+            footnotes: [footnote]
+        )
+
+        engine.currentWordIndex = 5
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+
+        // Simulate pressing play first, then skip -10 from index 5
+        engine.currentWordIndex = 5
+        XCTAssertTrue(engine.isPlaying)
+
+        // Skip back to word 0 which has footnote pause
+        engine.skip(words: -5)
+
+        XCTAssertEqual(engine.currentWordIndex, 0)
+        XCTAssertEqual(engine.pendingPauseContent, .footnote(footnote))
+        XCTAssertFalse(engine.isPlaying)
+    }
+
+    func test_skip_to_non_pause_destination_clears_stale_content() {
+        let engine = RSVPEngine()
+
+        engine.loadChapter(
+            blocks: [
+                makeBlock(id: 1, text: "Alpha beta Gamma delta")
+            ],
+            annotations: [],
+            images: [],
+            footnotes: []
+        )
+
+        engine.currentWordIndex = 0
+        engine.pendingPauseContent = .footnote(Footnote(id: 9, chapterId: 1, marker: "1", content: "Stale", refId: "n1", sourceBlockId: 1))
+        engine.play()
+
+        engine.skip(words: 2)
+
+        XCTAssertEqual(engine.currentWordIndex, 2)
+        XCTAssertNil(engine.pendingPauseContent)
+        // Skip does not auto-pause on non-pause destinations — but we've already called play,
+        // and the skip itself doesn't change isPlaying. Let's verify:
+        XCTAssertTrue(engine.isPlaying)
+    }
+
     func testLoadChapterKeepsFirstPauseItemPerBlockAndAnnotationPrecedence() async {
         let engine = RSVPEngine()
         let firstAnnotation = Annotation(id: 11, chapterId: 1, type: .science, title: "A", content: "Insight", sourceBlockId: 2)

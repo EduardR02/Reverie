@@ -288,7 +288,7 @@ struct GeminiProvider: LLMProviderClient {
             usage = LLMService.TokenUsage(
                 input: prompt,
                 visibleOutput: candidates,
-                cached: nil,
+                cached: usageData["cachedContentTokenCount"] as? Int,
                 reasoning: thoughts
             )
         }
@@ -316,7 +316,7 @@ struct GeminiProvider: LLMProviderClient {
             let usage = LLMService.TokenUsage(
                 input: usageData["promptTokenCount"] as? Int ?? 0,
                 visibleOutput: usageData["candidatesTokenCount"] as? Int ?? 0,
-                cached: nil,
+                cached: usageData["cachedContentTokenCount"] as? Int,
                 reasoning: usageData["thoughtsTokenCount"] as? Int
             )
             continuation.yield(.usage(usage))
@@ -353,7 +353,7 @@ struct GeminiProvider: LLMProviderClient {
         return LLMService.TokenUsage(
             input: usageData["promptTokenCount"] as? Int ?? 0,
             visibleOutput: usageData["candidatesTokenCount"] as? Int ?? 0,
-            cached: nil,
+            cached: usageData["cachedContentTokenCount"] as? Int,
             reasoning: usageData["thoughtsTokenCount"] as? Int
         )
     }

@@ -480,9 +480,9 @@ struct HomeView: View {
             provider.loadFileRepresentation(forTypeIdentifier: UTType.epub.identifier) { url, error in
                 guard let url = url else { return }
 
-                // Copy to temp location (the provided URL is only valid during callback)
+                // Copy to unique temp location (the provided URL is only valid during callback)
                 let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(url.lastPathComponent)
+                    .appendingPathComponent(UUID().uuidString + "_" + url.lastPathComponent)
                 try? FileManager.default.removeItem(at: tempURL)
                 try? FileManager.default.copyItem(at: url, to: tempURL)
 
