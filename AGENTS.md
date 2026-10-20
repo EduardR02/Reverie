@@ -2,24 +2,23 @@
 
 A native macOS book reader with AI-generated insights. The only thing that matters is **insight quality**. If the annotations are generic "AI slop," the project is worthless. Every decision - architecture, UI, performance - serves delivering insights that go *beyond* the text: real science, historical context, connections to other works, philosophical depth. Not plot summaries. Not "explores themes of identity." Knowledge the reader couldn't get from the book alone.
 
-## Truth Sources
+## Model APIs
 
-Model APIs evolve faster than training data. Before making assumptions about APIs or models:
+Model APIs evolve faster than training data. Use current official provider documentation to verify API behavior and model availability, not model memory or archived examples.
 
-- **`Agents/`** - API docs and working JS reference implementations
-- **`frontend-design-skill.md`** - Required design system for UI work
-
-If something seems wrong in these files, ask before assuming it's a bug - the behavior is likely intentional.
+The provider implementations live in `Reverie/Services/LLM/`. Text-model IDs, capabilities, pricing, and utility-task selection belong in `Reverie/Services/SupportedModels.swift`; add ordinary model releases there rather than scattering model-name checks.
 
 ## Hard Rules
 
 **No file deletion via shell.** Inform the user and let them handle it.
 
-**No model downgrades.** If the code has `gemini-3-flash-preview` and you "know" an older version, trust the code. Verify against `Agents/` and notify the user before any model name changes.
+**No model downgrades.** Do not replace configured models based on model memory. Verify proposed changes against current official provider documentation and notify the user before any model name changes.
 
-**No test cheating.** Never hardcode values to pass tests. Never modify existing tests without explicit approval. New features require test coverage (UI-only changes exempt).
+**Behavioral tests, not legacy baggage.** Never hardcode values to pass tests. New non-UI behavior requires focused coverage. Update or remove tests that preserve obsolete contracts; do not pin prompt wording, implementation details, or historical model lists. Keep tests for meaningful boundaries, transitions, errors, and regressions.
 
-**Build must pass.** `swift build` and `swift test` must succeed. If the build fails for unrelated reasons, another agent is likely mid-edit - only fix what you broke.
+**Build must pass.** `swift build` and `swift test` must succeed. Report unrelated failures separately; do not assume their cause or expand scope to fix them.
+
+**Subscription credentials stay in Keychain.** ChatGPT subscription access is separate from paid OpenAI API access. Never import credentials from other apps, log tokens, store them in settings, or silently fall back to a paid API key. Preserve native reasoning and tool-result state without treating displayed thinking summaries as replayable reasoning.
 
 ## How to Write Code
 
