@@ -26,7 +26,7 @@ final class ReadingSpeedTrackerTests: XCTestCase {
         _ = tracker.tick(now: start.addingTimeInterval(idleTime))
 
         let result = tracker.endSession(now: start.addingTimeInterval(idleTime + 30))
-        XCTAssertEqual(result?.seconds ?? 0, 30, accuracy: 0.1)
+        XCTAssertEqual(result?.seconds ?? 0, ReadingSpeedTracker.idleThresholdSeconds, accuracy: 0.1)
     }
 
     func testLockPreventsUpdates() {

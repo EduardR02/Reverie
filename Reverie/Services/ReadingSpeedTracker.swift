@@ -24,9 +24,8 @@ final class ReadingSpeedTracker {
         }
 
         var wpm: Double {
-            let effectiveTime = timeSpentSeconds - pauses.reduce(0) { $0 + $1.duration }
-            guard effectiveTime > 0 else { return 0 }
-            return Double(wordsRead) / (effectiveTime / 60.0)
+            guard timeSpentSeconds > 0 else { return 0 }
+            return Double(wordsRead) / (timeSpentSeconds / 60.0)
         }
     }
 
@@ -122,6 +121,8 @@ final class ReadingSpeedTracker {
         now: Date = Date()
     ) {
         sessionLocked = false
+        activePauseReasons.removeAll()
+        pauseStartTime = nil
         let clampedStart = min(max(startPercent, 0), 1)
         currentSession = ReadingSession(
             startTime: now,
@@ -141,11 +142,11 @@ final class ReadingSpeedTracker {
         guard !sessionLocked else { return }
         guard var session = currentSession else { return }
 
-        lastActivityTime = now
         let clamped = min(max(scrollPercent, 0), 1)
         session.maxPercent = max(session.maxPercent, clamped)
         currentSession = session
         _ = tick(now: now)
+        lastActivityTime = now
     }
 
     struct SessionResult {
@@ -157,6 +158,7 @@ final class ReadingSpeedTracker {
 
     func endSession(now: Date = Date()) -> SessionResult? {
         _ = tick(now: now)
+        endAllPauses(now: now)
         guard let session = currentSession else { return nil }
 
         let wpm = session.wpm
@@ -189,15 +191,11 @@ final class ReadingSpeedTracker {
             return 0
         }
 
-        let delta = now.timeIntervalSince(lastTick)
+        guard now > lastTick else { return 0 }
         lastTickTime = now
-        guard delta > 0 else { return 0 }
-        guard let lastActivity = lastActivityTime,
-              now.timeIntervalSince(lastActivity) <= Self.idleThresholdSeconds else {
-            currentSession = session
-            return 0
-        }
-
+        guard !isPaused, let lastActivity = lastActivityTime else { return 0 }
+        let activeUntil = min(now, lastActivity.addingTimeInterval(Self.idleThresholdSeconds))
+        let delta = max(0, activeUntil.timeIntervalSince(lastTick))
         session.timeSpentSeconds += delta
         currentSession = session
         return delta
@@ -205,21 +203,23 @@ final class ReadingSpeedTracker {
 
     // MARK: - Pause Management
 
-    func startPause(reason: PauseReason) {
+    func startPause(reason: PauseReason, now: Date = Date()) {
+        _ = tick(now: now)
         let wasEmpty = activePauseReasons.isEmpty
         activePauseReasons.insert(reason)
         if wasEmpty {
-            pauseStartTime = Date()
+            pauseStartTime = now
         }
     }
 
-    func endPause(reason: PauseReason) {
+    func endPause(reason: PauseReason, now: Date = Date()) {
+        _ = tick(now: now)
         activePauseReasons.remove(reason)
         
         // Only record pause duration when ALL reasons cleared
         guard activePauseReasons.isEmpty, let startTime = pauseStartTime else { return }
         
-        let duration = Date().timeIntervalSince(startTime)
+        let duration = max(0, now.timeIntervalSince(startTime))
         if var session = currentSession {
             session.pauses.append(PauseEvent(
                 startTime: startTime,
@@ -229,12 +229,14 @@ final class ReadingSpeedTracker {
             currentSession = session
         }
         pauseStartTime = nil
+        lastActivityTime = now
     }
 
-    func endAllPauses() {
+    func endAllPauses(now: Date = Date()) {
+        _ = tick(now: now)
         guard !activePauseReasons.isEmpty, let startTime = pauseStartTime else { return }
         
-        let duration = Date().timeIntervalSince(startTime)
+        let duration = max(0, now.timeIntervalSince(startTime))
         if var session = currentSession {
             session.pauses.append(PauseEvent(
                 startTime: startTime,
@@ -245,6 +247,7 @@ final class ReadingSpeedTracker {
         }
         activePauseReasons.removeAll()
         pauseStartTime = nil
+        lastActivityTime = now
     }
 
     // MARK: - Adjustments
@@ -281,6 +284,8 @@ final class ReadingSpeedTracker {
         currentSession = nil
         lastActivityTime = nil
         lastTickTime = nil
+        activePauseReasons.removeAll()
+        pauseStartTime = nil
         return result
     }
 
