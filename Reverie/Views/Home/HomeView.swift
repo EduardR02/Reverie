@@ -132,6 +132,7 @@ struct HomeView: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(theme.muted)
                 }
+                .allowsHitTesting(false)
 
                 Spacer()
 
@@ -188,6 +189,7 @@ struct HomeView: View {
             .padding(.horizontal, 32)
             .padding(.vertical, 24)
         }
+        .background { ReaderWindowHeader(mode: .standard) }
     }
 
     // MARK: - Book Grid

@@ -19,10 +19,12 @@ final class LLMGoldenTests: XCTestCase {
             return try Data(contentsOf: projectFixturesURL)
         }
         
+        #if SWIFT_PACKAGE
         // Strategy 2: Check via Bundle.module (SPM resources)
         if let bundleURL = Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures") {
             return try Data(contentsOf: bundleURL)
         }
+        #endif
         
         throw NSError(domain: "Test", code: 404, userInfo: [NSLocalizedDescriptionKey: "Missing fixture: \(name). Checked project path and bundle."])
     }
@@ -100,6 +102,7 @@ final class LLMGoldenTests: XCTestCase {
     func testOpenAIUsageParsing() throws {
         let jsonString = """
         {
+            "status": "completed",
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}],
             "usage": {
                 "input_tokens": 100,
@@ -125,6 +128,7 @@ final class LLMGoldenTests: XCTestCase {
     func testAnthropicUsageParsing() throws {
         let jsonString = """
         {
+            "stop_reason": "end_turn",
             "content": [{"type": "text", "text": "Claude response"}],
             "usage": {
                 "input_tokens": 411,
@@ -186,73 +190,30 @@ final class LLMGoldenTests: XCTestCase {
     // MARK: - Streaming Token Counting Tests
 
     @MainActor
-    func testGeminiStreamingOnlyYieldsUsageOnFinalChunk() async throws {
+    func testGeminiUsageSnapshotsRemainSeparateFromVisibleDeltas() throws {
         let provider = GeminiProvider()
-
-        // Simulate intermediate chunk (no finishReason) - should NOT yield usage
-        let intermediateChunk: [String: Any] = [
-            "candidates": [[
-                "content": ["parts": [["text": "Hello"]]]
-                // No finishReason - this is an intermediate chunk
-            ]],
-            "usageMetadata": [
-                "promptTokenCount": 100,
-                "candidatesTokenCount": 10,
-                "totalTokenCount": 110
-            ]
+        let intermediate: [String: Any] = [
+            "candidates": [["content": ["parts": [["text": "Hello"]]]]],
+            "usageMetadata": ["promptTokenCount": 100, "candidatesTokenCount": 10]
         ]
-
-        var usageCount = 0
-        let intermediateStream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
-            do {
-                try provider.handleStreamEvent(intermediateChunk, continuation: continuation)
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
-            }
-        }
-
-        for try await chunk in intermediateStream {
-            if case .usage = chunk {
-                usageCount += 1
-            }
-        }
-        XCTAssertEqual(usageCount, 0, "Intermediate chunk should NOT yield usage")
-
-        // Simulate final chunk (has finishReason) - should yield usage
-        let finalChunk: [String: Any] = [
-            "candidates": [[
-                "content": ["parts": [["text": " World"]]],
-                "finishReason": "STOP"  // This marks it as final
-            ]],
-            "usageMetadata": [
-                "promptTokenCount": 100,
-                "candidatesTokenCount": 50,
-                "totalTokenCount": 150,
-                "thoughtsTokenCount": 20
-            ]
+        let final: [String: Any] = [
+            "candidates": [["finishReason": "STOP", "content": ["parts": [["text": " World"]]]]],
+            "usageMetadata": ["promptTokenCount": 100, "candidatesTokenCount": 50, "thoughtsTokenCount": 20]
         ]
-
-        var finalUsage: LLMService.TokenUsage?
-        let finalStream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
-            do {
-                try provider.handleStreamEvent(finalChunk, continuation: continuation)
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
+        var text = ""
+        for event in [intermediate, final] {
+            try provider.handleStreamEvent(event) { chunk in
+                if case .content(let delta) = chunk { text += delta }
+                if case .usage = chunk { XCTFail("Transport owns cumulative usage normalization") }
             }
         }
-
-        for try await chunk in finalStream {
-            if case .usage(let usage) = chunk {
-                finalUsage = usage
-            }
-        }
-
-        XCTAssertNotNil(finalUsage, "Final chunk should yield usage")
-        XCTAssertEqual(finalUsage?.input, 100)
-        XCTAssertEqual(finalUsage?.visibleOutput, 50)
-        XCTAssertEqual(finalUsage?.reasoning, 20)
+        XCTAssertEqual(text, "Hello World")
+        XCTAssertEqual(provider.observedUsage(fromStreamEvent: intermediate)?.visibleOutput, 10)
+        XCTAssertNil(provider.usage(fromStreamEvent: intermediate))
+        let usage = try XCTUnwrap(provider.usage(fromStreamEvent: final))
+        XCTAssertEqual(usage.input, 100)
+        XCTAssertEqual(usage.visibleOutput, 50)
+        XCTAssertEqual(usage.reasoning, 20)
     }
 
     @MainActor
@@ -273,19 +234,7 @@ final class LLMGoldenTests: XCTestCase {
             ]
         ]
 
-        var capturedUsage: LLMService.TokenUsage?
-        let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
-            do {
-                try provider.handleStreamEvent(chunk, continuation: continuation)
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
-            }
-        }
-
-        for try await c in stream {
-            if case .usage(let u) = c { capturedUsage = u }
-        }
+        let capturedUsage = provider.observedUsage(fromStreamEvent: chunk)
 
         // Verify no double-counting: visibleOutput should be candidates only, not candidates + thoughts
         XCTAssertEqual(capturedUsage?.visibleOutput, 500, "visibleOutput should be candidatesTokenCount only")
@@ -319,9 +268,10 @@ final class LLMGoldenTests: XCTestCase {
                 continue
             }
 
+            if let usage = provider.usage(fromStreamEvent: json) { usageEvents.append(usage) }
             let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
                 do {
-                    try provider.handleStreamEvent(json, continuation: continuation)
+                    try provider.handleStreamEvent(json, emit: { chunk in continuation.yield(chunk) })
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -330,15 +280,14 @@ final class LLMGoldenTests: XCTestCase {
 
             for try await chunk in stream {
                 switch chunk {
-                case .usage(let u): usageEvents.append(u)
+                case .usage: XCTFail("Provider deltas must not emit cumulative usage")
                 case .content(let c): contentChunks.append(c)
                 case .thinking(let t): thinkingChunks.append(t)
                 }
             }
         }
 
-        // Should only have ONE usage event (from final chunk with finishReason)
-        XCTAssertEqual(usageEvents.count, 1, "Should only yield usage once (on final chunk)")
+        XCTAssertEqual(usageEvents.count, 1, "The fixture has one terminal usage snapshot")
 
         // Verify final usage values match the fixture's final chunk
         let finalUsage = usageEvents.first!
@@ -374,9 +323,10 @@ final class LLMGoldenTests: XCTestCase {
                 continue
             }
 
+            if let usage = provider.usage(fromStreamEvent: json) { usageEvents.append(usage) }
             let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
                 do {
-                    try provider.handleStreamEvent(json, continuation: continuation)
+                    try provider.handleStreamEvent(json, emit: { chunk in continuation.yield(chunk) })
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -385,15 +335,14 @@ final class LLMGoldenTests: XCTestCase {
 
             for try await chunk in stream {
                 switch chunk {
-                case .usage(let u): usageEvents.append(u)
+                case .usage: XCTFail("Provider deltas must not emit cumulative usage")
                 case .content(let c): contentChunks.append(c)
                 case .thinking: break
                 }
             }
         }
 
-        // Should only have ONE usage event (from response.completed)
-        XCTAssertEqual(usageEvents.count, 1, "Should only yield usage once")
+        XCTAssertEqual(usageEvents.count, 1, "The fixture has one terminal usage snapshot")
 
         // OpenAI: output_tokens (3248) INCLUDES reasoning_tokens (1607)
         // Normalized: output = 3248 - 1607 = 1641 (visible output only)
@@ -423,9 +372,10 @@ final class LLMGoldenTests: XCTestCase {
                 continue
             }
 
+            if let usage = provider.usage(fromStreamEvent: json) { usageEvents.append(usage) }
             let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
                 do {
-                    try provider.handleStreamEvent(json, continuation: continuation)
+                    try provider.handleStreamEvent(json, emit: { chunk in continuation.yield(chunk) })
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -434,20 +384,16 @@ final class LLMGoldenTests: XCTestCase {
 
             for try await chunk in stream {
                 switch chunk {
-                case .usage(let u): usageEvents.append(u)
+                case .usage: XCTFail("Provider deltas must not emit cumulative usage")
                 case .content(let c): contentChunks.append(c)
                 case .thinking(let t): thinkingChunks.append(t)
                 }
             }
         }
 
-        XCTAssertEqual(usageEvents.count, 2, "Should yield input usage at message_start and output usage at message_delta")
-
-        XCTAssertEqual(usageEvents[0].input, 7572, "Input tokens")
-        XCTAssertEqual(usageEvents[0].visibleOutput, 0, "message_start should not emit cumulative output tokens")
-        XCTAssertEqual(usageEvents[1].input, 0, "message_delta should not re-emit input tokens")
-        XCTAssertEqual(usageEvents[1].visibleOutput, 6395, "Output tokens (not 6398 from double-counting)")
-        XCTAssertEqual(usageEvents.reduce(0) { $0 + $1.visibleOutput }, 6395, "Additive consumers should not double-count output")
+        XCTAssertEqual(usageEvents.count, 2, "Both snapshots must remain available for transport accounting")
+        XCTAssertEqual(usageEvents[0].input, 7572)
+        XCTAssertEqual(usageEvents[1].visibleOutput, 6395)
 
         // Verify content and thinking
         XCTAssertGreaterThan(contentChunks.count, 0, "Should have content")
@@ -465,7 +411,7 @@ final class LLMGoldenTests: XCTestCase {
 
         let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
             do {
-                try provider.handleStreamEvent(errorChunk, continuation: continuation)
+                try provider.handleStreamEvent(errorChunk, emit: { chunk in continuation.yield(chunk) })
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -494,7 +440,7 @@ final class LLMGoldenTests: XCTestCase {
 
         let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
             do {
-                try provider.handleStreamEvent(errorChunk, continuation: continuation)
+                try provider.handleStreamEvent(errorChunk, emit: { chunk in continuation.yield(chunk) })
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -523,7 +469,7 @@ final class LLMGoldenTests: XCTestCase {
 
         let stream = AsyncThrowingStream<LLMStreamChunk, Error> { continuation in
             do {
-                try provider.handleStreamEvent(errorChunk, continuation: continuation)
+                try provider.handleStreamEvent(errorChunk, emit: { chunk in continuation.yield(chunk) })
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)

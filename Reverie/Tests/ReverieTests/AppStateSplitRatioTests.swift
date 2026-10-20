@@ -44,23 +44,4 @@ final class AppStateSplitRatioTests: XCTestCase {
         XCTAssertEqual(reloaded.splitRatio, 0.72, accuracy: 0.0001)
     }
 
-    func testReaderSplitLayoutIdentityChangesWithSplitRatio() {
-        let original = ReaderSplitLayout(totalWidth: 1200, splitRatio: 0.65)
-        let updated = ReaderSplitLayout(totalWidth: 1200, splitRatio: 0.72)
-
-        XCTAssertEqual(original.readerIdealWidth, 780, accuracy: 0.001)
-        XCTAssertEqual(original.aiIdealWidth, 420, accuracy: 0.001)
-        XCTAssertEqual(updated.readerIdealWidth, 864, accuracy: 0.001)
-        XCTAssertEqual(updated.aiIdealWidth, 336, accuracy: 0.001)
-        XCTAssertNotEqual(original.identity, updated.identity)
-    }
-
-    func testReaderSplitLayoutWaitsForPositiveWidthBeforeCreatingSplitView() throws {
-        XCTAssertNil(ReaderSplitLayout.make(totalWidth: 0, splitRatio: 0.65))
-
-        let layout = try XCTUnwrap(ReaderSplitLayout.make(totalWidth: 1200, splitRatio: 0.65))
-        XCTAssertEqual(layout.readerIdealWidth, 780, accuracy: 0.001)
-        XCTAssertEqual(layout.aiIdealWidth, 420, accuracy: 0.001)
-        XCTAssertEqual(layout.identity, ReaderSplitLayout(totalWidth: 1200, splitRatio: 0.65).identity)
-    }
 }

@@ -55,6 +55,42 @@ final class ChapterAnalyzerTests: XCTestCase {
         try await super.tearDown()
     }
 
+    func testRapidReasoningFragmentsPreserveCompleteSummaryHistory() async throws {
+        settings.imagesEnabled = false
+        analyzer = ChapterAnalyzer(llm: llmService, imageService: imageService, database: database, settings: settings)
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+        var chapter = Chapter(bookId: book.id!, index: 0, title: "A measurement", contentHTML: "<p>She checked the instrument against an independent clock.</p>")
+        try database.saveChapter(&chapter)
+        let analysis = #"{"summary":"The instrument was independently checked.","annotations":[{"type":"science","title":"Independent calibration","content":"A common clock error can survive repeated measurements; an independent standard can expose it.","sourceBlockId":1}],"quizQuestions":[]}"#
+        let events: [[String: Any]] = [
+            ["candidates": [["content": ["parts": [["thought": true, "text": "Checking "]]]]]],
+            ["candidates": [["content": ["parts": [["thought": true, "text": "the evidence."]]]]]],
+            ["candidates": [["content": ["parts": [["thought": true, "text": "\nComparing independent standards."]]]]]],
+            ["candidates": [["finishReason": "STOP", "content": ["parts": [["text": analysis]]]]]]
+        ]
+        let data = try events.reduce(into: Data()) { result, event in
+            result.append(Data("data: ".utf8))
+            result.append(try JSONSerialization.data(withJSONObject: event))
+            result.append(Data("\n\n".utf8))
+        }
+        MockURLProtocol.requestHandler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!, data)
+        }
+        var summaries: [String] = []
+        for try await event in analyzer.analyzeChapter(chapter, book: book) {
+            if case .thinking(let summary) = event { summaries.append(summary) }
+        }
+        XCTAssertEqual(summaries, [
+            "Checking ",
+            "Checking the evidence.",
+            "Checking the evidence.\nComparing independent standards."
+        ])
+        XCTAssertEqual(try database.fetchAnnotations(for: chapter).first?.title, "Independent calibration")
+        XCTAssertTrue(try XCTUnwrap(database.fetchChapters(for: book).first).processed)
+        XCTAssertEqual(analyzer.processingStates[chapter.id!]?.liveThinking, "")
+    }
+
     func test_analyzeChapter_setsProcessingState() async {
         // Given
         var book = Book(title: "Book 1", author: "Author 1", epubPath: "")
@@ -388,4 +424,51 @@ final class ChapterAnalyzerTests: XCTestCase {
         XCTAssertEqual(persisted[0].excerpt, "Short excerpt")
         XCTAssertEqual(persisted[0].prompt, storedPrompt)
     }
+    func testInteractiveAnalysisAndAdditionalInsightsExcludeFutureAndOtherBookCoverage() async throws {
+        var book = Book(title: "Book", author: "Author", epubPath: "")
+        var other = Book(title: "Other", author: "Author", epubPath: "")
+        try database.saveBook(&book)
+        try database.saveBook(&other)
+        var chapters: [Chapter] = []
+        for index in 0..<3 {
+            var chapter = Chapter(bookId: book.id!, index: index, title: "Chapter \(index)", contentHTML: "<p>Passage \(index)</p>")
+            chapter.summary = index == 0 ? "PAST_ACCEPTED_SUMMARY" : "FUTURE_OR_CURRENT_SUMMARY"
+            try database.saveChapter(&chapter)
+            var annotation = Annotation(chapterId: chapter.id!, type: .science, title: "An explanation", content: ["PAST_IDEA", "CURRENT_IDEA", "FUTURE_IDEA"][index], sourceBlockId: 1)
+            try database.saveAnnotation(&annotation)
+            chapters.append(chapter)
+        }
+        var otherChapter = Chapter(bookId: other.id!, index: 0, title: "Other", contentHTML: "<p>Other passage</p>")
+        try database.saveChapter(&otherChapter)
+        var otherAnnotation = Annotation(chapterId: otherChapter.id!, type: .science, title: "Other explanation", content: "OTHER_BOOK_IDEA", sourceBlockId: 1)
+        try database.saveAnnotation(&otherAnnotation)
+        let prompts = ProviderRequestLog()
+        MockURLProtocol.requestHandler = { request in
+            prompts.append(try providerRequestJSON(request))
+            let text = #"{"summary":"Accepted current chapter.","annotations":[],"quizQuestions":[],"imageSuggestions":[]}"#
+            let response: [String: Any] = ["candidates": [["finishReason": "STOP", "content": ["parts": [["text": text]]]]]]
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!,
+                    try JSONSerialization.data(withJSONObject: response))
+        }
+        let current = chapters[1]
+        for try await _ in analyzer.analyzeChapter(current, book: book) {}
+        _ = try await analyzer.generateMoreInsights(for: current)
+
+        let calls = try prompts.snapshot().map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }
+        XCTAssertEqual(calls.count, 2)
+        let initial = try XCTUnwrap(calls.first)
+        let additional = try XCTUnwrap(calls.last)
+        XCTAssertTrue(initial.contains("PAST_IDEA"))
+        XCTAssertFalse(initial.contains("CURRENT_IDEA"))
+        XCTAssertTrue(additional.contains("CURRENT_IDEA"))
+        for call in calls {
+            XCTAssertTrue(call.contains("PAST_ACCEPTED_SUMMARY"))
+            XCTAssertTrue(call.contains("PAST_IDEA"))
+            XCTAssertFalse(call.contains("FUTURE_IDEA"))
+            XCTAssertFalse(call.contains("OTHER_BOOK_IDEA"))
+            XCTAssertFalse(call.contains("FUTURE_OR_CURRENT_SUMMARY"))
+        }
+        XCTAssertEqual(try database.fetchChapters(for: book)[1].summary, "Accepted current chapter.")
+    }
+
 }

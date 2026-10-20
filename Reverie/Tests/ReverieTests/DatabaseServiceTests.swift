@@ -198,7 +198,7 @@ final class DatabaseServiceTests: XCTestCase {
 
     func testMigrationToLLMCallUsagePreservesExistingData() throws {
         let queue = try DatabaseQueue()
-        var migrator = DatabaseService.makeMigrator()
+        let migrator = DatabaseService.makeMigrator()
         try migrator.migrate(queue, upTo: "v4_image_aspect_ratio")
 
         let createdAt = Date(timeIntervalSince1970: 1_700_000_000)

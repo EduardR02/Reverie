@@ -75,7 +75,7 @@ struct RSVPView: View {
                     if !word.beforeORP.isEmpty {
                         Text(word.beforeORP)
                             .font(font)
-                            .foregroundColor(theme.text.opacity(0.8))
+                            .foregroundColor(theme.readingText.opacity(0.8))
                             .lineLimit(1)
                             .fixedSize()
                             .position(x: beforeCenterX, y: centerY)
@@ -94,7 +94,7 @@ struct RSVPView: View {
                     if !word.afterORP.isEmpty {
                         Text(word.afterORP)
                             .font(font)
-                            .foregroundColor(theme.text.opacity(0.8))
+                            .foregroundColor(theme.readingText.opacity(0.8))
                             .lineLimit(1)
                             .fixedSize()
                             .position(x: afterCenterX, y: centerY)

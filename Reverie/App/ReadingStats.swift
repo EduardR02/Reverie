@@ -21,7 +21,21 @@ struct ReadingStats: Codable {
     var tokensInput: Int = 0
     var tokensReasoning: Int = 0
     var tokensOutput: Int = 0
-    var tokensCached: Int = 0
+    /// Cache reads/writes are subsets of input, not additional tokens. Nil means unreported.
+    var tokensCached: Int?
+    var tokensCacheWrite: Int?
+    /// Input from calls that explicitly reported cache reads, including reported zeroes.
+    var tokensCacheReportedInput: Int = 0
+
+    /// Input less reported cache hits. Unreported historical usage remains included.
+    var uncachedInputTokens: Int {
+        tokensInput - (tokensCached ?? 0)
+    }
+
+    var cacheHitRate: Double? {
+        guard let tokensCached, tokensCacheReportedInput > 0 else { return nil }
+        return Double(tokensCached) / Double(tokensCacheReportedInput)
+    }
 
     var totalTokens: Int {
         tokensInput + tokensReasoning + tokensOutput
@@ -71,11 +85,17 @@ struct ReadingStats: Codable {
         dailyLog[dateKey, default: 0] += seconds
     }
 
-    mutating func addTokens(input: Int, reasoning: Int, output: Int, cached: Int) {
+    mutating func addTokens(input: Int, reasoning: Int, output: Int, cached: Int?, cacheWrite: Int? = nil) {
         tokensInput += input
         tokensReasoning += reasoning
         tokensOutput += output
-        tokensCached += cached
+        if let cached {
+            tokensCached = (tokensCached ?? 0) + cached
+            tokensCacheReportedInput += input
+        }
+        if let cacheWrite {
+            tokensCacheWrite = (tokensCacheWrite ?? 0) + cacheWrite
+        }
     }
 
     mutating func recordInsightSeen() {

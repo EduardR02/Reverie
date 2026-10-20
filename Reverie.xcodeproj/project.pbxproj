@@ -12,6 +12,7 @@
 		BB1CB9B02F0CBD350032144E /* ExpandedProcessingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */; };
 		BB1FD8AD2F0EC96100AECB66 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */; };
 		BB2270132F7410B800C0A295 /* BookContentPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270122F7410B800C0A295 /* BookContentPipeline.swift */; };
+		F041 /* ReaderBookPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = S041 /* ReaderBookPagination.swift */; };
 		BB2270152F7410B800C0A295 /* AIPanelListOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270142F7410B800C0A295 /* AIPanelListOrder.swift */; };
 		BB2270312F7410B800C0A295 /* AIPanelListOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */; };
 		BB2270322F7410B800C0A295 /* BookContentPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */; };
@@ -21,6 +22,25 @@
 		BBD000032F75000000ABCDEF /* LLMPromptsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */; };
 		BBD000042F75000000ABCDEF /* ChapterAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */; };
 		BBD000092F75000000ABCDEF /* BookProcessorCostAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */; };
+		BB6100010000000000000001 /* ProviderProtocolRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000001; };
+		BB6100010000000000000002 /* OpenAISubscriptionAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000002; };
+		BB6100010000000000000003 /* ChapterAnalysisPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000003; };
+		BB6100010000000000000004 /* ModelCatalogRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000004; };
+		BB6100010000000000000005 /* BookProcessorBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000005; };
+		BB6100010000000000000006 /* ReadingTimeAccountingRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000006; };
+		BB6100010000000000000007 /* ChapterAnalysisValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000007; };
+		BB6100010000000000000008 /* EPUBBoundaryRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000008; };
+		BB6100010000000000000009 /* PendingProgressRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000009; };
+		BB610001000000000000000A /* ContentBlockBoundaryRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000A; };
+		BB610001000000000000000B /* CachedInputAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000B; };
+		BB610001000000000000000C /* ReaderChatLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000C; };
+		BB610001000000000000000D /* LLMGoldenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000D; };
+		BB610001000000000000000E /* SubscriptionTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000E; };
+		BB610001000000000000000F /* OpenAIBrowserLoginTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB610002000000000000000F; };
+		BB6100010000000000000010 /* SemanticReadingPositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000010; };
+		BB6100010000000000000011 /* ReaderBookPaginationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000011; };
+		BB6100010000000000000012 /* ThemeSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000012; };
+		BB6100010000000000000013 /* ReaderAIPauseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB6100020000000000000013; };
 		BBF000012F75000000ABC001 /* ChatMessageMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */; };
 		BBF000032F75000000ABC003 /* SelectableTextMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */; };
 		BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF000062F75000000ABC004 /* ModelUpdateTests.swift */; };
@@ -80,6 +100,9 @@
 		F035 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = S035 /* ReadingStats.swift */; };
 		F036 /* ProcessBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = S036 /* ProcessBookView.swift */; };
 		F037 /* ReaderBridge.js in Resources */ = {isa = PBXBuildFile; fileRef = S037 /* ReaderBridge.js */; };
+		F038 /* OpenAISubscriptionAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = S038 /* OpenAISubscriptionAuth.swift */; };
+		F039 /* OpenAISubscriptionSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = S039 /* OpenAISubscriptionSection.swift */; };
+		F040 /* OpenAIBrowserLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = S040 /* OpenAIBrowserLogin.swift */; };
 		BBF2000A2F999999000000AA /* DensityLevel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000A2F999999000000AA /* DensityLevel.swift */; };
 		BBF2000B2F999999000000BB /* ReasoningLevel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000B2F999999000000BB /* ReasoningLevel.swift */; };
 		BBF2000C2F999999000000CC /* UserSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF1000C2F999999000000CC /* UserSettings.swift */; };
@@ -104,6 +127,7 @@
 		BB1CB9AF2F0CBD350032144E /* ExpandedProcessingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExpandedProcessingCard.swift; path = Reverie/Views/Home/ExpandedProcessingCard.swift; sourceTree = "<group>"; };
 		BB1FD8AC2F0EC96100AECB66 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB2270122F7410B800C0A295 /* BookContentPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BookContentPipeline.swift; path = Reverie/Views/Reader/BookContentPipeline.swift; sourceTree = "<group>"; };
+		S041 /* ReaderBookPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReaderBookPagination.swift; path = Reverie/Views/Reader/ReaderBookPagination.swift; sourceTree = "<group>"; };
 		BB2270142F7410B800C0A295 /* AIPanelListOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPanelListOrder.swift; sourceTree = "<group>"; };
 		BB2270162F7410B800C0A295 /* AIPanelListOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPanelListOrderTests.swift; sourceTree = "<group>"; };
 		BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookContentPipelineTests.swift; sourceTree = "<group>"; };
@@ -114,6 +138,25 @@
 		BBD000072F75000000ABCDEF /* LLMPromptsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMPromptsTests.swift; sourceTree = "<group>"; };
 		BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalyzerTests.swift; sourceTree = "<group>"; };
 		BBD0000A2F75000000ABCDEF /* BookProcessorCostAccountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessorCostAccountingTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000001 /* ProviderProtocolRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderProtocolRegressionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000002 /* OpenAISubscriptionAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAISubscriptionAuthTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000003 /* ChapterAnalysisPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalysisPersistenceTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000004 /* ModelCatalogRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogRegressionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000005 /* BookProcessorBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookProcessorBoundaryTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000006 /* ReadingTimeAccountingRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingTimeAccountingRegressionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000007 /* ChapterAnalysisValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalysisValidationTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000008 /* EPUBBoundaryRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBBoundaryRegressionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000009 /* PendingProgressRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingProgressRegressionTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000A /* ContentBlockBoundaryRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentBlockBoundaryRegressionTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000B /* CachedInputAccountingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedInputAccountingTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000C /* ReaderChatLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderChatLifecycleTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000D /* LLMGoldenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMGoldenTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000E /* SubscriptionTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubscriptionTransportTests.swift; sourceTree = "<group>"; };
+		BB610002000000000000000F /* OpenAIBrowserLoginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIBrowserLoginTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000010 /* SemanticReadingPositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticReadingPositionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000011 /* ReaderBookPaginationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderBookPaginationTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000012 /* ThemeSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeSelectionTests.swift; sourceTree = "<group>"; };
+		BB6100020000000000000013 /* ReaderAIPauseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderAIPauseTests.swift; sourceTree = "<group>"; };
 		BBF000022F75000000ABC002 /* ChatMessageMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageMarkdownTests.swift; sourceTree = "<group>"; };
 		BBF000042F75000000ABC003 /* SelectableTextMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableTextMarkdownTests.swift; sourceTree = "<group>"; };
 		BBF000062F75000000ABC004 /* ModelUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelUpdateTests.swift; sourceTree = "<group>"; };
@@ -174,6 +217,9 @@
 		S035 /* ReadingStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStats.swift; sourceTree = "<group>"; };
 		S036 /* ProcessBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessBookView.swift; sourceTree = "<group>"; };
 		S037 /* ReaderBridge.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ReaderBridge.js; sourceTree = "<group>"; };
+		S038 /* OpenAISubscriptionAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAISubscriptionAuth.swift; sourceTree = "<group>"; };
+		S039 /* OpenAISubscriptionSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAISubscriptionSection.swift; sourceTree = "<group>"; };
+		S040 /* OpenAIBrowserLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIBrowserLogin.swift; sourceTree = "<group>"; };
 		BBF1000A2F999999000000AA /* DensityLevel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DensityLevel.swift; sourceTree = "<group>"; };
 		BBF1000B2F999999000000BB /* ReasoningLevel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningLevel.swift; sourceTree = "<group>"; };
 		BBF1000C2F999999000000CC /* UserSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettings.swift; sourceTree = "<group>"; };
@@ -283,6 +329,7 @@
 				BB5A899F2F71BD31006494B9 /* SupportedModels.swift */,
 				BB3A2BE12F71EB0E004A9F3E /* ReaderSplitView.swift */,
 				BB2270122F7410B800C0A295 /* BookContentPipeline.swift */,
+				S041 /* ReaderBookPagination.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -299,6 +346,23 @@
 				BBF000062F75000000ABC004 /* ModelUpdateTests.swift */,
 				BBF00008D2F75000000A0004 /* ProgressTrackerTests.swift */,
 				BBF00009D2F75000000B0004 /* ProcessingCostTrackerTests.swift */,
+				BB6100020000000000000001 /* ProviderProtocolRegressionTests.swift */,
+				BB6100020000000000000002 /* OpenAISubscriptionAuthTests.swift */,
+				BB6100020000000000000003 /* ChapterAnalysisPersistenceTests.swift */,
+				BB6100020000000000000004 /* ModelCatalogRegressionTests.swift */,
+				BB6100020000000000000005 /* BookProcessorBoundaryTests.swift */,
+				BB6100020000000000000006 /* ReadingTimeAccountingRegressionTests.swift */,
+				BB6100020000000000000007 /* ChapterAnalysisValidationTests.swift */,
+				BB6100020000000000000008 /* EPUBBoundaryRegressionTests.swift */,
+				BB6100020000000000000009 /* PendingProgressRegressionTests.swift */,
+				BB610002000000000000000A /* ContentBlockBoundaryRegressionTests.swift */,
+				BB610002000000000000000B /* CachedInputAccountingTests.swift */,
+				BB610002000000000000000C /* ReaderChatLifecycleTests.swift */,
+				BB610002000000000000000D /* LLMGoldenTests.swift */,
+				BB610002000000000000000E /* SubscriptionTransportTests.swift */,
+				BB610002000000000000000F /* OpenAIBrowserLoginTests.swift */,
+				BB6100020000000000000010 /* SemanticReadingPositionTests.swift */,
+				BB6100020000000000000012 /* ThemeSelectionTests.swift */,
 				BB2270222F7410B800C0A295 /* ViewModels */,
 			);
 			path = Reverie/Tests/ReverieTests;
@@ -310,6 +374,8 @@
 				BBD000082F75000000ABCDEF /* ChapterAnalyzerTests.swift */,
 				BB2270172F7410B800C0A295 /* BookContentPipelineTests.swift */,
 				BB2270182F7410B800C0A295 /* RSVPEngineTests.swift */,
+				BB6100020000000000000011 /* ReaderBookPaginationTests.swift */,
+				BB6100020000000000000013 /* ReaderAIPauseTests.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -320,6 +386,8 @@
 				S008 /* Database.swift */,
 				S009 /* EPUBParser.swift */,
 				S010 /* LLMService.swift */,
+				S038 /* OpenAISubscriptionAuth.swift */,
+				S040 /* OpenAIBrowserLogin.swift */,
 				BB2F0ACE2F06DFDB001C1E4C /* SearchQueryBuilder.swift */,
 				SERVICES_LLM /* LLM */,
 				S011 /* ImageService.swift */,
@@ -393,6 +461,7 @@
 			isa = PBXGroup;
 			children = (
 				S018 /* SettingsView.swift */,
+				S039 /* OpenAISubscriptionSection.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -542,6 +611,9 @@
 				BBF6ECBD2F118B9F00258A92 /* ProgressCalculatorCache.swift in Sources */,
 				F017 /* AIPanel.swift in Sources */,
 				F018 /* SettingsView.swift in Sources */,
+				F038 /* OpenAISubscriptionAuth.swift in Sources */,
+				F040 /* OpenAIBrowserLogin.swift in Sources */,
+				F039 /* OpenAISubscriptionSection.swift in Sources */,
 				F019 /* Theme.swift in Sources */,
 				BBC04C612F1B14A4006D17FB /* ResilientSession.swift in Sources */,
 				BBB3B7062F1EBE2300791C96 /* RSVPEngine.swift in Sources */,
@@ -557,6 +629,7 @@
 				F025 /* ReaderMetrics.swift in Sources */,
 				BB2270152F7410B800C0A295 /* AIPanelListOrder.swift in Sources */,
 				BB2270132F7410B800C0A295 /* BookContentPipeline.swift in Sources */,
+				F041 /* ReaderBookPagination.swift in Sources */,
 				F026 /* LibraryPaths.swift in Sources */,
 				F031 /* ContentBlockParser.swift in Sources */,
 				F032 /* CostEstimation.swift in Sources */,
@@ -585,6 +658,25 @@
 				BBF000052F75000000ABC004 /* ModelUpdateTests.swift in Sources */,
 				BBF00008C2F75000000A0003 /* ProgressTrackerTests.swift in Sources */,
 				BBF00009C2F75000000B0003 /* ProcessingCostTrackerTests.swift in Sources */,
+				BB6100010000000000000001 /* ProviderProtocolRegressionTests.swift in Sources */,
+				BB6100010000000000000002 /* OpenAISubscriptionAuthTests.swift in Sources */,
+				BB6100010000000000000003 /* ChapterAnalysisPersistenceTests.swift in Sources */,
+				BB6100010000000000000004 /* ModelCatalogRegressionTests.swift in Sources */,
+				BB6100010000000000000005 /* BookProcessorBoundaryTests.swift in Sources */,
+				BB6100010000000000000006 /* ReadingTimeAccountingRegressionTests.swift in Sources */,
+				BB6100010000000000000007 /* ChapterAnalysisValidationTests.swift in Sources */,
+				BB6100010000000000000008 /* EPUBBoundaryRegressionTests.swift in Sources */,
+				BB6100010000000000000009 /* PendingProgressRegressionTests.swift in Sources */,
+				BB610001000000000000000A /* ContentBlockBoundaryRegressionTests.swift in Sources */,
+				BB610001000000000000000B /* CachedInputAccountingTests.swift in Sources */,
+				BB610001000000000000000C /* ReaderChatLifecycleTests.swift in Sources */,
+				BB610001000000000000000D /* LLMGoldenTests.swift in Sources */,
+				BB610001000000000000000E /* SubscriptionTransportTests.swift in Sources */,
+				BB610001000000000000000F /* OpenAIBrowserLoginTests.swift in Sources */,
+				BB6100010000000000000010 /* SemanticReadingPositionTests.swift in Sources */,
+				BB6100010000000000000011 /* ReaderBookPaginationTests.swift in Sources */,
+				BB6100010000000000000012 /* ThemeSelectionTests.swift in Sources */,
+				BB6100010000000000000013 /* ReaderAIPauseTests.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */

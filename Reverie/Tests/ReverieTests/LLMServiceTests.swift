@@ -9,6 +9,11 @@ final class LLMServiceTests: XCTestCase {
     @MainActor
     override func setUp() async throws {
         try await super.setUp()
+        MockURLProtocol.stubResponseData = nil
+        MockURLProtocol.stubResponse = nil
+        MockURLProtocol.stubError = nil
+        MockURLProtocol.requestHandler = nil
+        MockURLProtocol.requestCount = 0
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         mockSession = URLSession(configuration: config)
@@ -30,6 +35,7 @@ final class LLMServiceTests: XCTestCase {
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": {
                     "parts": [{
                         "text": "{'summary': 'Test Summary', 'annotations': [], 'quizQuestions': [], 'imageSuggestions': []}"
@@ -66,6 +72,7 @@ final class LLMServiceTests: XCTestCase {
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": {
                     "parts": [{
                         "text": "{'summary': 'Streamed Summary', 'annotations': [], 'quizQuestions': [], 'imageSuggestions': []}"
@@ -108,6 +115,7 @@ final class LLMServiceTests: XCTestCase {
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": {
                     "parts": [{
                         "text": "Refined Search Query"
@@ -142,6 +150,7 @@ final class LLMServiceTests: XCTestCase {
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": {
                     "parts": [{
                         "text": "  safe cinematic city skyline at dusk  "
@@ -175,6 +184,7 @@ final class LLMServiceTests: XCTestCase {
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": {
                     "parts": [{
                         "text": "{\\\"summary\\\": \\\"Test Summary\\\", \\\"annotations\\\": [], \\\"quizQuestions\\\": [], \\\"imageSuggestions\\\": [{\\\"excerpt\\\": \\\"A narrow tower over the city.\\\", \\\"sourceBlockId\\\": 3, \\\"aspectRatio\\\": \\\"9:16\\\"}]}"
@@ -209,12 +219,13 @@ final class LLMServiceTests: XCTestCase {
     func testNonStreamingUsagePersistsLedgerRow() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": { "parts": [{ "text": "query text" }] }
             }],
             "usageMetadata": { "promptTokenCount": 1000, "candidatesTokenCount": 100, "thoughtsTokenCount": 25 }
@@ -242,7 +253,7 @@ final class LLMServiceTests: XCTestCase {
         let rows = try database.fetchLLMCallUsage()
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].provider, LLMProvider.google.rawValue)
-        XCTAssertEqual(rows[0].model, SupportedModels.Google.gemini3FlashPreview)
+        XCTAssertEqual(rows[0].model, SupportedModels.utilityModel(for: .google))
         XCTAssertEqual(rows[0].task, "other")
         XCTAssertEqual(rows[0].inputTokens, 1000)
         XCTAssertEqual(rows[0].outputTokens, 100)
@@ -254,12 +265,13 @@ final class LLMServiceTests: XCTestCase {
     func testGeminiNonStreamingUsageIncludesCachedContentTokenCount() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let jsonResponse = """
         {
             "candidates": [{
+                "finishReason": "STOP",
                 "content": { "parts": [{ "text": "query text" }] }
             }],
             "usageMetadata": { "promptTokenCount": 1000, "candidatesTokenCount": 100, "thoughtsTokenCount": 25, "cachedContentTokenCount": 300 }
@@ -296,7 +308,7 @@ final class LLMServiceTests: XCTestCase {
     func testAnthropicNonStreamingUsageIncludesCacheReadInTotalInput() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let jsonResponse = """
@@ -350,7 +362,7 @@ final class LLMServiceTests: XCTestCase {
     func testStreamingUsagePersistsLedgerRowOnceWhenConsumerIgnoresUsage() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let streamResponse = """
@@ -394,10 +406,10 @@ final class LLMServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testGeminiStreamingUsageWithoutFinishReasonUsesFinalObservedCumulativeUsage() async throws {
+    func testGeminiStreamingWithoutFinishReasonRejectsPartialAnswer() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let streamResponse = """
@@ -427,43 +439,52 @@ final class LLMServiceTests: XCTestCase {
 
         var text = ""
         var emittedUsages: [LLMService.TokenUsage] = []
-        for try await chunk in stream {
-            switch chunk {
-            case .content(let part): text += part
-            case .usage(let usage): emittedUsages.append(usage)
-            case .thinking: break
+        do {
+            for try await chunk in stream {
+                switch chunk {
+                case .content(let part): text += part
+                case .usage(let usage): emittedUsages.append(usage)
+                case .thinking: break
+                }
             }
+            XCTFail("A disconnected stream is not a completed answer")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("before generation completed"))
         }
-
         XCTAssertEqual(text, "Hello")
         XCTAssertEqual(emittedUsages.count, 1)
-        XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.input }, 1000)
-        XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.visibleOutput }, 8)
-        XCTAssertEqual(emittedUsages.reduce(0) { $0 + ($1.reasoning ?? 0) }, 20)
-
+        let reported = try XCTUnwrap(emittedUsages.first)
+        XCTAssertEqual(reported.input, 1000)
+        XCTAssertEqual(reported.visibleOutput, 8)
+        XCTAssertEqual(reported.reasoning, 20)
         let rows = try database.fetchLLMCallUsage()
         XCTAssertEqual(rows.count, 1)
-        guard rows.count == 1 else { return }
-        XCTAssertEqual(rows[0].inputTokens, 1000)
-        XCTAssertEqual(rows[0].outputTokens, 8)
-        XCTAssertEqual(rows[0].reasoningTokens, 20)
-        XCTAssertEqual(rows[0].cachedTokens, 200)
-        XCTAssertEqual(rows[0].task, "chat")
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.inputTokens, 1000)
+        XCTAssertEqual(row.cachedTokens, 200)
+        XCTAssertEqual(row.outputTokens, 8)
+        XCTAssertEqual(row.reasoningTokens, 20)
     }
 
     @MainActor
     func testAnthropicStreamingUsageMergesMessageStartAndMessageDelta() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let streamResponse = """
         data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"usage":{"input_tokens":1200,"cache_creation_input_tokens":300,"cache_read_input_tokens":400,"output_tokens":5}}}
 
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
         data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
 
-        data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":80,"reasoning_tokens":7}}
+        data: {"type":"content_block_stop","index":0}
+
+        data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":80}}
+
+        data: {"type":"message_stop"}
 
         """
         MockURLProtocol.stubResponseData = streamResponse.data(using: .utf8)
@@ -497,14 +518,13 @@ final class LLMServiceTests: XCTestCase {
         }
 
         XCTAssertEqual(text, "Hello")
-        XCTAssertEqual(emittedUsages.count, 2)
-        XCTAssertEqual(emittedUsages[0].input, 1900)
-        XCTAssertEqual(emittedUsages[0].cached, 400)
-        XCTAssertEqual(emittedUsages[0].cacheWrite, 300)
-        XCTAssertEqual(emittedUsages[0].visibleOutput, 0)
-        XCTAssertEqual(emittedUsages[1].input, 0)
-        XCTAssertEqual(emittedUsages[1].visibleOutput, 80)
-        XCTAssertEqual(emittedUsages[1].reasoning, 7)
+        XCTAssertEqual(emittedUsages.count, 1)
+        let reported = try XCTUnwrap(emittedUsages.first)
+        XCTAssertEqual(reported.input, 1900)
+        XCTAssertEqual(reported.cached, 400)
+        XCTAssertEqual(reported.cacheWrite, 300)
+        XCTAssertEqual(reported.visibleOutput, 80)
+        XCTAssertNil(reported.reasoning)
         let rows = try database.fetchLLMCallUsage()
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].provider, LLMProvider.anthropic.rawValue)
@@ -512,18 +532,18 @@ final class LLMServiceTests: XCTestCase {
         XCTAssertEqual(rows[0].inputTokens, 1900)
         XCTAssertEqual(rows[0].cachedTokens, 400)
         XCTAssertEqual(rows[0].outputTokens, 80)
-        XCTAssertEqual(rows[0].reasoningTokens, 7)
+        XCTAssertNil(rows[0].reasoningTokens)
         XCTAssertNotNil(rows[0].cost)
         XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.input }, rows[0].inputTokens)
         XCTAssertEqual(emittedUsages.reduce(0) { $0 + $1.visibleOutput }, rows[0].outputTokens)
-        XCTAssertEqual(rows[0].cost ?? 0, 0.00615, accuracy: 0.000001)
+        XCTAssertEqual(rows[0].cost ?? 0, 0.006045, accuracy: 0.000001)
     }
 
     @MainActor
-    func testFailedStreamingCallDoesNotPersistLedgerRow() async throws {
+    func testFailedStreamingCallPreservesReportedUsage() async throws {
         let queue = try DatabaseQueue()
         let database = try DatabaseService(dbQueue: queue)
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         llmService.setAppState(appState)
 
         let streamResponse = """
@@ -559,56 +579,12 @@ final class LLMServiceTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("model overloaded"))
         }
 
-        XCTAssertEqual(try database.fetchLLMCallUsage().count, 0)
-    }
-
-    @MainActor
-    func testBookProcessorImageLiveCostAccumulatesWithExistingTextCost() async throws {
-        let database = try DatabaseService(dbQueue: DatabaseQueue())
-        let appState = AppState(database: database)
-        appState.llmService = LLMService(appState: appState, session: mockSession)
-        appState.imageService = ImageService(session: mockSession)
-        appState.settings.googleAPIKey = "mock-key"
-        appState.settings.llmProvider = .google
-        appState.settings.llmModel = SupportedModels.Google.gemini3FlashPreview
-        appState.settings.useCheapestModelForClassification = true
-        appState.settings.imagesEnabled = true
-        appState.settings.imageModel = .gemini25Flash
-        appState.settings.webSearchEnabled = false
-        appState.settings.insightReasoningLevel = .off
-        appState.settings.maxConcurrentRequests = 1
-
-        var book = Book(title: "Book", author: "Author", epubPath: "book.epub", chapterCount: 1)
-        try database.saveBook(&book)
-        var chapter = Chapter(bookId: book.id!, index: 0, title: "Chapter 1", contentHTML: "<p>Chapter text.</p>", wordCount: 2)
-        try database.saveChapter(&chapter)
-
-        MockURLProtocol.requestHandler = { request in
-            let url = request.url!.absoluteString
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-
-            if url.contains(":streamGenerateContent") {
-                return (response, Self.analysisStreamResponse.data(using: .utf8)!)
-            }
-            if url.contains(ImageModel.gemini25Flash.apiModel) {
-                let data = #"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"aW1hZ2U="}}]}}]}"#.data(using: .utf8)!
-                return (response, data)
-            }
-
-            return (response, Self.summaryResponse.data(using: .utf8)!)
-        }
-
-        let processor = BookProcessor(appState: appState, book: book)
-        await processor.process()
-
-        let summaryInputCost = (1000.0 / 1_000_000.0) * 0.5
-        let summaryOutputCost = (100.0 / 1_000_000.0) * 3.0
-        let insightInputCost = (2000.0 / 1_000_000.0) * 0.5
-        let insightOutputCost = (350.0 / 1_000_000.0) * 3.0
-        let textCost = summaryInputCost + summaryOutputCost + insightInputCost + insightOutputCost
-        let imageCost = LLMCallUsage.calculatedImageCost(for: .gemini25Flash)!
-
-        XCTAssertEqual(appState.processingCostEstimate, textCost + imageCost, accuracy: 0.000001)
+        let rows = try database.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 1)
+        let reported = try XCTUnwrap(rows.first)
+        XCTAssertEqual(reported.inputTokens, 1200)
+        XCTAssertEqual(reported.outputTokens, 0)
+        XCTAssertEqual(reported.cachedTokens, 0)
     }
 
     @MainActor
@@ -645,21 +621,114 @@ final class LLMServiceTests: XCTestCase {
         }
     }
 
-    private static let summaryResponse = """
-    {
-        "candidates": [{
-            "content": { "parts": [{ "text": "{\\\"summary\\\":\\\"Short summary\\\"}" }] }
-        }],
-        "usageMetadata": { "promptTokenCount": 1000, "candidatesTokenCount": 100 }
+    @MainActor
+    func testTerminalSnapshotCompletesMissingTextWithoutDuplicatingDeltas() async throws {
+        var settings = UserSettings()
+        settings.llmProvider = .openai
+        settings.llmModel = SupportedModels.OpenAI.gpt61Sol
+        settings.openAIAPIKey = "synthetic-key"
+        for (delta, final) in [("", "Terminal answer"), ("Hello ", "Hello 🌍"), ("e", "e\u{301}vidence")] {
+            let response: [String: Any] = [
+                "status": "completed",
+                "output": [["type": "message", "content": [["type": "output_text", "text": final]]]],
+                "usage": ["input_tokens": 100, "output_tokens": 10]
+            ]
+            var events: [[String: Any]] = []
+            if !delta.isEmpty { events.append(["type": "response.output_text.delta", "delta": delta]) }
+            events.append(["type": "response.completed", "response": response])
+            let data = try events.map { "data: \(String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self))\n\n" }.joined()
+            MockURLProtocol.stubResponseData = Data(data.utf8)
+            MockURLProtocol.stubResponse = HTTPURLResponse(url: URL(string: "https://api.openai.com/v1/responses")!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])
+            var text = ""
+            var usages: [LLMService.TokenUsage] = []
+            for try await chunk in llmService.chatStreaming(message: "Explain", contentWithBlocks: "[1] Passage", rollingSummary: nil, settings: settings) {
+                switch chunk {
+                case .content(let part): text += part
+                case .usage(let usage): usages.append(usage)
+                case .thinking: break
+                }
+            }
+            XCTAssertEqual(text, final)
+            XCTAssertEqual(usages.count, 1)
+            XCTAssertEqual(usages.first?.total, 110)
+        }
     }
-    """
 
-    private static let analysisStreamResponse = """
-    data: {"candidates":[{"content":{"parts":[{"text":"{\\\"summary\\\":\\\"Insight summary\\\",\\\"annotations\\\":[],\\\"quizQuestions\\\":[],\\\"imageSuggestions\\\":[{\\\"excerpt\\\":\\\"A river at dawn\\\",\\\"sourceBlockId\\\":1}]}"}]}}]}
+    @MainActor
+    func testBilledIncompleteAndFailedResponsesPreserveCacheUsageExactlyOnce() async throws {
+        let database = try DatabaseService(dbQueue: DatabaseQueue())
+        var settings = UserSettings()
+        settings.llmProvider = .openai
+        settings.llmModel = SupportedModels.OpenAI.gpt61Sol
+        settings.openAIAPIKey = "synthetic-key"
+        let state = AppState(database: database, settings: settings)
+        llmService.setAppState(state)
+        for status in ["incomplete", "failed"] {
+            let response: [String: Any] = [
+                "status": status, "output": [],
+                "incomplete_details": ["reason": "max_output_tokens"],
+                "error": ["message": "Generation failed"],
+                "usage": [
+                    "input_tokens": 1000, "output_tokens": 50,
+                    "input_tokens_details": ["cached_tokens": 600, "cache_write_tokens": 100],
+                    "output_tokens_details": ["reasoning_tokens": 40]
+                ]
+            ]
+            let event: [String: Any] = ["type": "response.\(status)", "response": response]
+            MockURLProtocol.stubResponseData = Data("data: \(String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self))\n\n".utf8)
+            MockURLProtocol.stubResponse = HTTPURLResponse(url: URL(string: "https://api.openai.com/v1/responses")!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])
+            var usageCount = 0
+            do {
+                for try await chunk in llmService.chatStreaming(message: "Explain", contentWithBlocks: "[1] Passage", rollingSummary: nil, settings: settings) {
+                    if case .usage = chunk { usageCount += 1 }
+                }
+                XCTFail("An unsuccessful response must not be accepted")
+            } catch {
+                XCTAssertTrue(error is LLMService.LLMError)
+            }
+            XCTAssertEqual(usageCount, 1)
+        }
+        let rows = try database.fetchLLMCallUsage()
+        XCTAssertEqual(rows.count, 2)
+        for row in rows {
+            XCTAssertEqual(row.inputTokens, 1000)
+            XCTAssertEqual(row.outputTokens, 10)
+            XCTAssertEqual(row.reasoningTokens, 40)
+            XCTAssertEqual(row.cachedTokens, 600)
+            XCTAssertEqual(row.cacheWriteTokens, 100)
+        }
+        XCTAssertEqual(state.readingStats.tokensInput, 2000)
+        XCTAssertEqual(state.readingStats.tokensCached, 1200)
+        XCTAssertEqual(state.readingStats.tokensCacheWrite, 200)
+        XCTAssertEqual(state.readingStats.totalTokens, 2100)
+    }
 
-    data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2000,"candidatesTokenCount":300,"thoughtsTokenCount":50}}
+    @MainActor
+    func testSparseClassificationIndicesAndUnknownResultsRespectRequestedChapters() async throws {
+        var settings = UserSettings()
+        settings.googleAPIKey = "synthetic-key"
+        let chapters = [(index: 4, title: "Preface", preview: "Notes"), (index: 9, title: "Chapter", preview: "Story")]
+        for (classifications, valid) in [
+            ([["index": 4, "type": "garbage"]], true),
+            ([["index": 0, "type": "garbage"]], false),
+            ([["index": 4, "type": "garbage"], ["index": 4, "type": "content"]], false),
+            ([["index": 4, "type": "unknown"]], false)
+        ] {
+            let result = String(decoding: try JSONSerialization.data(withJSONObject: ["classifications": classifications]), as: UTF8.self)
+            let response: [String: Any] = ["candidates": [["finishReason": "STOP", "content": ["parts": [["text": result]]]]]]
+            MockURLProtocol.stubResponseData = try JSONSerialization.data(withJSONObject: response)
+            MockURLProtocol.stubResponse = HTTPURLResponse(url: URL(string: "https://generativelanguage.googleapis.com")!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])
+            do {
+                let result = try await llmService.classifyChapters(chapters: chapters, settings: settings)
+                XCTAssertTrue(valid)
+                XCTAssertEqual(result, [4: true, 9: false])
+            } catch {
+                XCTAssertFalse(valid)
+                XCTAssertTrue(error is LLMService.LLMError)
+            }
+        }
+    }
 
-    """
 }
 
 // MARK: - Mock Infrastructure

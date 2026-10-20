@@ -29,18 +29,18 @@ struct BookContentDocumentState: Equatable, Hashable, Sendable {
     }
 }
 
-struct BookContentDecorationState: Equatable, Sendable {
-    struct AnnotationMarker: Equatable, Encodable, Sendable {
+struct BookContentDecorationState: Equatable, Hashable, Sendable {
+    struct AnnotationMarker: Equatable, Hashable, Encodable, Sendable {
         let annotationId: Int64
         let sourceBlockId: Int
     }
 
-    struct ImageMarker: Equatable, Encodable, Sendable {
+    struct ImageMarker: Equatable, Hashable, Encodable, Sendable {
         let imageId: Int64
         let sourceBlockId: Int
     }
 
-    struct InlineImage: Equatable, Encodable, Sendable {
+    struct InlineImage: Equatable, Hashable, Encodable, Sendable {
         let key: String
         let imageId: Int64?
         let sourceBlockId: Int
@@ -145,6 +145,11 @@ struct BookContentDecorationState: Equatable, Sendable {
             ))
         }
 
+        // DB reads are source-ordered while streamed assets arrive in generation
+        // order. Identical marker geometry must keep the same pagination identity.
+        annotationMarkers.sort { ($0.sourceBlockId, $0.annotationId) < ($1.sourceBlockId, $1.annotationId) }
+        imageMarkers.sort { ($0.sourceBlockId, $0.imageId) < ($1.sourceBlockId, $1.imageId) }
+
         let inlineImages: [InlineImage]
         if inlineAIImagesEnabled {
             inlineImages = images.compactMap { image in
@@ -200,10 +205,26 @@ struct BookContentDecorationState: Equatable, Sendable {
     }
 }
 
-struct BookContentViewState: Equatable, Sendable {
+struct ReaderPageTurnRequest: Equatable, Sendable {
+    let id: Int
+    let delta: Int
+}
+
+struct BookContentViewState: Equatable, Hashable, Sendable {
     let document: BookContentDocumentState
     let style: BookContentStyleState
     let decorations: BookContentDecorationState
+    var readingMode: ReaderReadingMode = .scroll
+    var pageLayout: ReaderPageLayout = .spread
+
+    var pageLayoutJavaScript: String {
+        "window.setPageLayout('\(pageLayout.rawValue)');"
+    }
+
+    /// Mode application is a separate ordered bridge phase, before restoration/navigation.
+    var readingModeJavaScript: String {
+        "window.setReadingMode('\(readingMode.rawValue)');"
+    }
 }
 
 struct BookContentDecorationUpdatePlan: Equatable, Sendable {

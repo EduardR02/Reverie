@@ -2,101 +2,45 @@ import XCTest
 @testable import Reverie
 
 final class ModelUpdateTests: XCTestCase {
-    func testProviderModelListsExposeUpdatedModelIDs() {
-        XCTAssertEqual(
-            LLMProvider.google.models.map(\.id),
-            [
-                SupportedModels.Google.gemini3FlashPreview,
-                SupportedModels.Google.gemini31ProPreview
-            ]
-        )
-
-        XCTAssertEqual(
-            LLMProvider.openai.models.map(\.id),
-            [SupportedModels.OpenAI.gpt54]
-        )
-
-        XCTAssertEqual(
-            LLMProvider.anthropic.models.map(\.id),
-            [
-                SupportedModels.Anthropic.opus46,
-                SupportedModels.Anthropic.opus45,
-                SupportedModels.Anthropic.sonnet45,
-                SupportedModels.Anthropic.haiku45
-            ]
-        )
+    func testReasoningClampsToModelBoundsWithoutDroppingHighRequestsToLow() {
+        XCTAssertEqual(ReasoningLevel.max.openAIEffort(for: SupportedModels.OpenAI.gpt61Sol), "max")
+        XCTAssertEqual(ReasoningLevel.max.openAIEffort(for: SupportedModels.OpenAI.gpt54), "xhigh")
+        XCTAssertEqual(ReasoningLevel.off.openAIEffort(for: SupportedModels.OpenAI.gpt61Sol), "low")
+        XCTAssertEqual(ReasoningLevel.off.openAIEffort(for: SupportedModels.OpenAI.gpt6Luna), "none")
+        XCTAssertEqual(ReasoningLevel.max.geminiLevel(for: SupportedModels.Google.gemini38Flash), "high")
+        XCTAssertEqual(ReasoningLevel.off.geminiLevel(for: SupportedModels.Google.gemini38Flash), "low")
+        XCTAssertEqual(ReasoningLevel.minimal.geminiLevel(for: SupportedModels.Google.gemini3FlashPreview), "minimal")
+        XCTAssertEqual(ReasoningLevel.xhigh.anthropicEffort(for: SupportedModels.Anthropic.opus46), "max")
+        XCTAssertEqual(ReasoningLevel.max.anthropicEffort(for: SupportedModels.Anthropic.opus46), "max")
     }
 
-    func testProviderModelDefaultIsStrongest() {
-        // When switching provider, .models.first is used as default.
-        // The first model in the list should be the strongest/best.
-        // Anthropic default should be Opus 4.6
-        XCTAssertEqual(
-            LLMProvider.anthropic.models.first?.id,
-            SupportedModels.Anthropic.opus46,
-            "Anthropic default should be strongest (Opus 4.6)"
-        )
-        XCTAssertEqual(
-            LLMProvider.anthropic.models.first?.name,
-            "Claude 4.6 Opus"
-        )
-
-        // OpenAI has only one model, it's always the default
-        XCTAssertEqual(
-            LLMProvider.openai.models.first?.id,
-            SupportedModels.OpenAI.gpt54
-        )
-
-        // Verify Anthropic ordering: strongest -> weakest
-        XCTAssertGreaterThan(
-            LLMProvider.anthropic.models.count,
-            1,
-            "Anthropic should have multiple models for ordering verification"
-        )
-
-        // Anthropic strong-to-weak: Opus 4.6 > Opus 4.5 > Sonnet 4.5 > Haiku 4.5
-        let anthropicIDs = LLMProvider.anthropic.models.map(\.id)
-        XCTAssertEqual(anthropicIDs, [
-            SupportedModels.Anthropic.opus46,
-            SupportedModels.Anthropic.opus45,
-            SupportedModels.Anthropic.sonnet45,
-            SupportedModels.Anthropic.haiku45
-        ])
-    }
-
-    func testLegacyModelIDsNormalizeWithoutMutatingStoredSettings() throws {
-        let defaults = UserDefaults.standard
-        let key = "userSettings"
-        let originalData = defaults.data(forKey: key)
-        defer {
-            if let originalData {
-                defaults.set(originalData, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
+    func testIncreasingReasoningNeverReducesEffectiveEffort() {
+        let order = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        for model in SupportedModels.all {
+            let effort: (ReasoningLevel) -> String
+            switch model.capabilities.reasoning {
+            case .openAI: effort = { $0.openAIEffort(for: model.id) }
+            case .anthropicAdaptive: effort = { $0.anthropicEffort(for: model.id) }
+            case .geminiLevel: effort = { $0.geminiLevel(for: model.id) }
+            default: continue
+            }
+            let values = ReasoningLevel.allCases.map { order.firstIndex(of: effort($0))! }
+            for (previous, next) in zip(values, values.dropFirst()) {
+                XCTAssertLessThanOrEqual(previous, next, model.id)
             }
         }
-
-        var legacySettings = UserSettings()
-        legacySettings.llmProvider = .google
-        legacySettings.llmModel = SupportedModels.Google.legacyGemini3ProPreview
-        defaults.set(try JSONEncoder().encode(legacySettings), forKey: key)
-
-        XCTAssertEqual(UserSettings.load().llmModel, SupportedModels.Google.gemini31ProPreview)
-
-        legacySettings.llmProvider = .openai
-        legacySettings.llmModel = SupportedModels.OpenAI.legacyGPT52
-        defaults.set(try JSONEncoder().encode(legacySettings), forKey: key)
-
-        XCTAssertEqual(UserSettings.load().llmModel, SupportedModels.OpenAI.gpt54)
-
-        let persistedData = try XCTUnwrap(defaults.data(forKey: key))
-        let persistedSettings = try JSONDecoder().decode(UserSettings.self, from: persistedData)
-        XCTAssertEqual(persistedSettings.llmModel, SupportedModels.OpenAI.legacyGPT52)
     }
 
-    func testModelNamesResolveLegacyAliasesToCurrentNames() {
-        XCTAssertEqual(LLMProvider.google.modelName(for: SupportedModels.Google.legacyGemini3ProPreview), "Gemini 3.1 Pro")
-        XCTAssertEqual(LLMProvider.openai.modelName(for: SupportedModels.OpenAI.legacyGPT52), "GPT 5.4")
+    func testMaxReasoningSettingsRoundTripWithoutChangingSelectedModel() throws {
+        var settings = UserSettings()
+        settings.llmProvider = .openai
+        settings.llmModel = SupportedModels.OpenAI.gpt61Sol
+        settings.insightReasoningLevel = .max
+        settings.chatReasoningLevel = .max
+        let restored = try JSONDecoder().decode(UserSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.insightReasoningLevel, .max)
+        XCTAssertEqual(restored.chatReasoningLevel, .max)
+        XCTAssertEqual(restored.llmModel, settings.llmModel)
     }
 
     func testGemini31ProPreviewRequestUsesGemini3ThinkingConfig() throws {
@@ -116,10 +60,10 @@ final class ModelUpdateTests: XCTestCase {
 
         let body = try requestJSON(from: request)
         let generationConfig = try XCTUnwrap(body["generationConfig"] as? [String: Any])
-        let thinkingConfig = try XCTUnwrap(generationConfig["thinking_config"] as? [String: Any])
+        let thinkingConfig = try XCTUnwrap(generationConfig["thinkingConfig"] as? [String: Any])
         XCTAssertNotNil(thinkingConfig["thinkingLevel"])
         XCTAssertNil(thinkingConfig["thinkingBudget"])
-        XCTAssertEqual(thinkingConfig["include_thoughts"] as? Bool, true)
+        XCTAssertEqual(thinkingConfig["includeThoughts"] as? Bool, true)
         XCTAssertNotNil(body["tools"] as? [[String: Any]])
     }
 
@@ -157,7 +101,7 @@ final class ModelUpdateTests: XCTestCase {
 
         let body = try requestJSON(from: request)
         XCTAssertEqual(body["model"] as? String, SupportedModels.Anthropic.opus46)
-        XCTAssertEqual(body["max_tokens"] as? Int, 64_000)
+        XCTAssertEqual(body["max_tokens"] as? Int, 128_000)
         XCTAssertNotNil(body["thinking"] as? [String: Any])
         XCTAssertNil(body["temperature"])
     }

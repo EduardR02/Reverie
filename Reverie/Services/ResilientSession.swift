@@ -8,6 +8,13 @@ final class ResilientSession: Sendable {
     
     init(configuration: URLSessionConfiguration = .default) {
         let config = configuration
+        // Model requests contain private book/chat content and credentials. They must not
+        // share cookies, cached responses or ambient HTTP credentials with other sessions.
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         // Disable HTTP/3 (QUIC) - Apple's implementation doesn't handle MTU issues gracefully.
         // QUIC fails hard with EMSGSIZE on networks with non-standard MTU (VPNs, etc).
         // HTTP/2 over TCP fragments properly and just works.
@@ -30,7 +37,10 @@ final class ResilientSession: Sendable {
         try await session.data(for: request)
     }
     
-    func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
-        try await session.bytes(for: request)
+    func bytes(
+        for request: URLRequest,
+        delegate: (any URLSessionTaskDelegate)? = nil
+    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        try await session.bytes(for: request, delegate: delegate)
     }
 }

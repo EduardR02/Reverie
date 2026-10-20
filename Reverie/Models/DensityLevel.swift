@@ -60,14 +60,15 @@ enum DensityLevel: String, Codable, CaseIterable {
         }
     }
 
-    /// Returns proportional guidance string based on chapter word count
-    func proportionalGuidance(wordCount: Int) -> String {
-        let target = max(3, wordCount / wordsPerInsight)
-        let minTarget = max(2, target - 2)
-        let maxTarget = target + 3
+    /// A soft ceiling, never a quota: short or unilluminating text may merit none.
+    func suggestedInsightLimit(wordCount: Int) -> Int {
+        guard wordCount > 0 else { return 0 }
+        return wordCount / wordsPerInsight + (wordCount % wordsPerInsight == 0 ? 0 : 1)
+    }
 
-        return """
-        This chapter is ~\(wordCount) words. For \(rawValue) density, aim for roughly \(minTarget)-\(maxTarget) insights—but only if the content supports it. Fewer quality insights beats padding with generic observations.
+    func proportionalGuidance(wordCount: Int) -> String {
+        """
+        This chapter is ~\(max(0, wordCount)) words. For \(rawValue) density, consider up to roughly \(suggestedInsightLimit(wordCount: wordCount)) distinct insights when supported. This is not a target to fill: no minimum, no padding, and no forced category coverage. Develop the strongest explanations instead of splitting one idea into several items.
         """
     }
 }

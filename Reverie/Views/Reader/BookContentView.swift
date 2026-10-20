@@ -68,10 +68,20 @@ struct ScrollContext: Equatable {
     let blockOffset: Double?
     let primaryType: String?
     let scrollPercent: Double
+    /// Layout-local coordinate: vertical pixels in scroll; pageIndex × viewportHeight in pages.
     let scrollOffset: Double
     let viewportHeight: Double
     let scrollHeight: Double
     let isProgrammatic: Bool
+    var pageIndex: Int? = nil
+    var pageCount: Int? = nil
+    var visiblePageCount: Int = 1
+    var pageCapacity: Int = 1
+    var viewportWidth: Double = 0
+    var visibleAnnotationIds: Set<Int64> = []
+    var visibleImageIds: Set<Int64> = []
+    var paginationMeasurement: ReaderPaginationMeasurement? = nil
+    var paginationFailed = false
 }
 
 enum BookContentHTMLBuilder {
@@ -200,6 +210,28 @@ enum BookContentHTMLBuilder {
     }
 }
 
+@MainActor
+protocol ReaderInputFocusRecovering: AnyObject {
+    func readerContentDidAttach(_ content: ReaderWebView)
+}
+
+final class ReaderWebView: WKWebView {
+    var blocksReaderKeyboardHandling = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        var ancestor = superview
+        while let view = ancestor {
+            if let reader = view as? any ReaderInputFocusRecovering {
+                reader.readerContentDidAttach(self)
+                return
+            }
+            ancestor = view.superview
+        }
+    }
+}
+
 struct BookContentView: NSViewRepresentable {
     typealias BindingMutationScheduler = (@MainActor @Sendable @escaping () -> Void) -> Void
 
@@ -224,6 +256,11 @@ struct BookContentView: NSViewRepresentable {
     @Binding var pendingMarkerInjections: [MarkerInjection]
     @Binding var pendingImageMarkerInjections: [ImageMarkerInjection]
     @Binding var scrollByAmount: Double?
+    var pageTurnRequests: [ReaderPageTurnRequest] = []
+    var onPageTurnsConsumed: ([Int]) -> Void = { _ in }
+    var scrollToLocation: BlockLocation? = nil
+    var onLocationNavigationConsumed: (BlockLocation) -> Void = { _ in }
+    var onTopTug: () -> Void = {}
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
@@ -233,7 +270,7 @@ struct BookContentView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.userContentController.add(context.coordinator, name: "readerBridge")
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = ReaderWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         return webView
@@ -246,7 +283,7 @@ struct BookContentView: NSViewRepresentable {
         let state = makeViewState()
         coordinator.setDesiredState(state)
 
-        let hasContentNavigationRequest = scrollToAnnotationId != nil || scrollToQuote != nil || scrollToBlockId != nil
+        let hasContentNavigationRequest = scrollToAnnotationId != nil || scrollToQuote != nil || scrollToBlockId != nil || scrollToLocation != nil
         if coordinator.needsDocumentLoad(for: state.document) {
             coordinator.prepareForDocumentLoad(
                 state: state,
@@ -260,7 +297,8 @@ struct BookContentView: NSViewRepresentable {
         if let navigationRequest = coordinator.consumeContentNavigationRequest(
             annotationId: scrollToAnnotationId,
             quote: scrollToQuote,
-            block: scrollToBlockId
+            block: scrollToBlockId,
+            location: scrollToLocation
         ) {
             if coordinator.isContentLoaded {
                 coordinator.pendingContentNavigationClearAction = {
@@ -289,11 +327,13 @@ struct BookContentView: NSViewRepresentable {
             }
         }
 
+        coordinator.consumePageTurnRequests(pageTurnRequests)
+
         if coordinator.isContentLoaded {
             coordinator.flush(on: webView)
         }
 
-        if let amount = scrollByAmount {
+        if appState.settings.readingMode == .scroll, let amount = scrollByAmount {
             webView.evaluateJavaScript("window.scrollBy({top: \(amount), behavior: 'smooth'});") { _, _ in
                 DispatchQueue.main.async {
                     if self.scrollByAmount == amount {
@@ -307,22 +347,7 @@ struct BookContentView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeHTMLRenderInput(for state: BookContentViewState) -> BookContentHTMLBuilder.RenderInput {
-        BookContentHTMLBuilder.RenderInput(
-            contentHTML: state.document.contentHTML,
-            injections: [],
-            themeBase: state.style.themeBase,
-            themeSurface: state.style.themeSurface,
-            themeText: state.style.themeText,
-            themeMuted: state.style.themeMuted,
-            themeRose: state.style.themeRose,
-            themeIris: state.style.themeIris,
-            fontFamily: state.style.fontFamily,
-            fontSize: state.style.fontSize,
-            lineSpacing: state.style.lineSpacing,
-            baseHref: state.document.baseHref,
-            documentToken: state.document.bridgeToken,
-            readerBridgeJS: Self.readerBridgeJS
-        )
+        state.htmlRenderInput(readerBridgeJS: Self.readerBridgeJS)
     }
 
     func makeViewState() -> BookContentViewState {
@@ -330,7 +355,7 @@ struct BookContentView: NSViewRepresentable {
         let style = BookContentStyleState(
             themeBase: theme.base.hexString,
             themeSurface: theme.surface.hexString,
-            themeText: theme.text.hexString,
+            themeText: theme.readingText.hexString,
             themeMuted: theme.muted.hexString,
             themeRose: theme.rose.hexString,
             themeIris: theme.iris.hexString,
@@ -352,7 +377,7 @@ struct BookContentView: NSViewRepresentable {
             pendingImageMarkers: pendingImageMarkerInjections
         )
 
-        return BookContentViewState(document: document, style: style, decorations: decorations)
+        return BookContentViewState(document: document, style: style, decorations: decorations, readingMode: settings.readingMode, pageLayout: settings.pageLayout)
     }
 
     private static let readerBridgeJS = ReaderBridgeScriptLoader.load()
@@ -406,6 +431,7 @@ struct BookContentView: NSViewRepresentable {
             }
 
             if persistenceResult != .failed {
+                coordinator.installDocumentBootstrap(on: webView)
                 let navigation = webView.loadFileURL(fileURL, allowingReadAccessTo: readerRootURL)
                 coordinator.registerNavigation(navigation, documentGeneration: documentGeneration)
                 return
@@ -423,7 +449,8 @@ struct BookContentView: NSViewRepresentable {
                 return
             }
 
-            let navigation = webView.loadHTMLString(html, baseURL: readerRootURL)
+            coordinator.installDocumentBootstrap(on: webView)
+            let navigation = webView.loadHTMLString(html, baseURL: URL(string: state.document.baseHref))
             coordinator.registerNavigation(navigation, documentGeneration: documentGeneration)
         }
     }
@@ -500,6 +527,8 @@ struct BookContentView: NSViewRepresentable {
                current.2 == target.type {
                 scrollToBlockId = nil
             }
+        case .location(let location):
+            onLocationNavigationConsumed(location)
         }
     }
 
@@ -538,14 +567,17 @@ struct BookContentView: NSViewRepresentable {
             case annotation(Int64)
             case quote(String)
             case block(BlockNavigationTarget)
+            case location(BlockLocation)
 
-            init?(annotationId: Int64?, quote: String?, block: (Int, Int64?, String?)?) {
+            init?(annotationId: Int64?, quote: String?, block: (Int, Int64?, String?)?, location: BlockLocation? = nil) {
                 if let annotationId {
                     self = .annotation(annotationId)
                 } else if let quote {
                     self = .quote(quote)
                 } else if let block {
                     self = .block(.init(blockId: block.0, markerId: block.1, type: block.2))
+                } else if let location {
+                    self = .location(location)
                 } else {
                     return nil
                 }
@@ -564,6 +596,8 @@ struct BookContentView: NSViewRepresentable {
                     let markerId = target.markerId.map(String.init) ?? "null"
                     let type = target.type.map { "'\($0)'" } ?? "null"
                     return "scrollToBlock(\(target.blockId), \(markerId), \(type));"
+                case .location(let location):
+                    return "restoreReadingLocation(\(location.blockId), \(location.offset));"
                 }
             }
         }
@@ -616,10 +650,28 @@ struct BookContentView: NSViewRepresentable {
         private var currentDocumentState: BookContentDocumentState?
         private var appliedStyle: BookContentStyleState?
         private var appliedMarkerPayload: BookContentDecorationState.MarkerPayload = .empty
+        private var appliedReadingMode: ReaderReadingMode = .scroll
+        private var appliedPageLayout: ReaderPageLayout = .spread
+        private var paginationMeasurement: ReaderPaginationMeasurement?
+        private var measuringPaginationState: BookContentViewState?
+        private var paginationMeasurementViewSize: CGSize = .zero
+        private var failedPaginationState: BookContentViewState?
+        private var failedPaginationViewSize: CGSize = .zero
+        private(set) var pendingPageTurns: [ReaderPageTurnRequest] = []
+        private var lastConsumedPageTurnID = 0
         private var appliedInlineImagePayload: BookContentDecorationState.InlineImagePayload = .empty
         private var isFlushing = false
         private var needsFlushAfterCurrent = false
         private var renderedHTMLCache: [String: Int] = [:]
+        private struct DocumentBootstrap {
+            let generation: Int
+            let state: BookContentViewState
+            let scrollRequestID: Int?
+            let contentNavigationRequestID: Int?
+            let markers: [MarkerInjection]
+            let imageMarkers: [ImageMarkerInjection]
+        }
+        private var pendingDocumentBootstrap: DocumentBootstrap?
         private var pendingScrollState = PendingRequest<ScrollRequest>()
         private var pendingContentNavigationState = PendingRequest<ContentNavigationRequest>()
         private var nextPendingRequestID = 1
@@ -692,6 +744,12 @@ struct BookContentView: NSViewRepresentable {
             currentDocumentTokenStorage = state.document.bridgeToken
             currentDocumentState = state.document
             appliedStyle = nil
+            appliedReadingMode = .scroll
+            appliedPageLayout = .spread
+            paginationMeasurement = nil
+            measuringPaginationState = nil
+            failedPaginationState = nil
+            pendingPageTurns.removeAll()
             appliedMarkerPayload = .empty
             appliedInlineImagePayload = .empty
             isContentLoaded = false
@@ -700,11 +758,65 @@ struct BookContentView: NSViewRepresentable {
             activeNavigationLoadID = nil
             activeNavigationDocumentGeneration = nil
             acceptedBridgeDocumentToken = nil
+            pendingDocumentBootstrap = nil
             preserveScrollPositionIfNeeded(
                 requestedScrollOffset: requestedScrollOffset,
                 requestedScrollPercent: requestedScrollPercent,
                 hasContentNavigationRequest: hasContentNavigationRequest
             )
+        }
+
+        func installDocumentBootstrap(on webView: WKWebView) {
+            guard let state = desiredState, state.document == currentDocumentState,
+                  let style = javaScriptJSON(state.style),
+                  let markers = javaScriptJSON(state.decorations.markerPayload),
+                  let images = javaScriptJSON(state.decorations.inlineImagePayload) else { return }
+            let bootstrap = DocumentBootstrap(
+                generation: currentDocumentGeneration, state: state,
+                scrollRequestID: pendingContentNavigationRequest == nil ? pendingScrollState.requestID : nil,
+                contentNavigationRequestID: pendingContentNavigationState.requestID,
+                markers: parent.pendingMarkerInjections, imageMarkers: parent.pendingImageMarkerInjections
+            )
+            let navigation = pendingContentNavigationRequest?.javaScript ?? pendingScroll?.javaScript ?? ""
+            let script = """
+            (() => {
+                if (window.__readerDocumentToken !== '\(state.document.bridgeToken)') return;
+                try {
+                    initializeReader(\(style), \(markers), \(images),
+                        '\(state.pageLayout.rawValue)', '\(state.readingMode.rawValue)');
+                    \(navigation)
+                    postToNative({ type: 'readerBootstrap', generation: \(bootstrap.generation), success: true });
+                } catch (error) {
+                    postToNative({ type: 'readerBootstrap', generation: \(bootstrap.generation), success: false });
+                }
+            })();
+            """
+            pendingDocumentBootstrap = bootstrap
+            let controller = webView.configuration.userContentController
+            controller.removeAllUserScripts()
+            controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
+
+        @discardableResult
+        func completeDocumentBootstrap(documentToken: String?, generation: Int, success: Bool) -> Bool {
+            guard let bootstrap = pendingDocumentBootstrap,
+                  bootstrap.generation == generation, currentDocumentGeneration == generation,
+                  documentToken == currentDocumentTokenStorage else { return false }
+            pendingDocumentBootstrap = nil
+            guard success else { return true }
+            appliedStyle = bootstrap.state.style
+            appliedPageLayout = bootstrap.state.pageLayout
+            appliedReadingMode = bootstrap.state.readingMode
+            _ = completeDecorationSync(
+                bootstrap.state.decorations, markerSnapshot: bootstrap.markers,
+                imageMarkerSnapshot: bootstrap.imageMarkers, documentGeneration: generation, error: nil
+            )
+            if let requestID = bootstrap.contentNavigationRequestID {
+                _ = completeContentNavigationSync(requestID: requestID, documentGeneration: generation, error: nil)
+            } else if let requestID = bootstrap.scrollRequestID {
+                _ = completeScrollSync(requestID: requestID, documentGeneration: generation, error: nil)
+            }
+            return true
         }
 
         func isCurrentDocumentGeneration(_ documentGeneration: Int) -> Bool {
@@ -736,8 +848,8 @@ struct BookContentView: NSViewRepresentable {
         }
 
         @discardableResult
-        func consumeContentNavigationRequest(annotationId: Int64?, quote: String?, block: (Int, Int64?, String?)?) -> ContentNavigationRequest? {
-            guard let request = ContentNavigationRequest(annotationId: annotationId, quote: quote, block: block) else {
+        func consumeContentNavigationRequest(annotationId: Int64?, quote: String?, block: (Int, Int64?, String?)?, location: BlockLocation? = nil) -> ContentNavigationRequest? {
+            guard let request = ContentNavigationRequest(annotationId: annotationId, quote: quote, block: block, location: location) else {
                 consumedContentNavigationRequest = nil
                 return nil
             }
@@ -750,6 +862,17 @@ struct BookContentView: NSViewRepresentable {
             assignPendingContentNavigationRequest(request)
             clearPendingScroll()
             return request
+        }
+
+        func consumePageTurnRequests(_ requests: [ReaderPageTurnRequest]) {
+            let fresh = requests.filter { $0.id > lastConsumedPageTurnID }
+            guard let latest = fresh.last else { return }
+            lastConsumedPageTurnID = latest.id
+            if desiredState?.readingMode == .pages {
+                pendingPageTurns.append(contentsOf: fresh)
+            }
+            let ids = fresh.map(\.id)
+            DispatchQueue.main.async { self.parent.onPageTurnsConsumed(ids) }
         }
 
         @discardableResult
@@ -820,7 +943,7 @@ struct BookContentView: NSViewRepresentable {
         }
 
         func flush(on webView: WKWebView, triggerInitialScrollReport: Bool = false) {
-            guard isContentLoaded else {
+            guard isContentLoaded, pendingDocumentBootstrap == nil else {
                 return
             }
 
@@ -849,6 +972,35 @@ struct BookContentView: NSViewRepresentable {
                         documentGeneration: documentGeneration,
                         error: error,
                         on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
+
+            if let state = desiredState, appliedPageLayout != state.pageLayout {
+                let generation = currentDocumentGeneration
+                webView.evaluateJavaScript(state.pageLayoutJavaScript) { _, error in
+                    if error == nil, self.currentDocumentGeneration == generation {
+                        self.appliedPageLayout = state.pageLayout
+                    }
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: generation, error: error, on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
+
+            if let state = desiredState, appliedReadingMode != state.readingMode {
+                let generation = currentDocumentGeneration
+                webView.evaluateJavaScript(state.readingModeJavaScript) { _, error in
+                    if error == nil, self.currentDocumentGeneration == generation {
+                        self.appliedReadingMode = state.readingMode
+                        if state.readingMode == .scroll { self.pendingPageTurns.removeAll() }
+                    }
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: generation, error: error, on: webView,
                         triggerInitialScrollReport: triggerInitialScrollReport
                     )
                 }
@@ -941,24 +1093,93 @@ struct BookContentView: NSViewRepresentable {
                 return
             }
 
+            if desiredState?.readingMode == .pages, !pendingPageTurns.isEmpty {
+                // Consume before evaluation: a later style update or reload must never replay a turn.
+                let request = pendingPageTurns.removeFirst()
+                let generation = currentDocumentGeneration
+                webView.evaluateJavaScript("window.turnPage(\(request.delta));") { _, error in
+                    self.continueFlushAfterJavaScriptEvaluation(
+                        documentGeneration: generation, error: error, on: webView,
+                        triggerInitialScrollReport: triggerInitialScrollReport
+                    )
+                }
+                return
+            }
+
             guard triggerInitialScrollReport else {
                 finishFlush(on: webView)
                 return
             }
 
-            webView.evaluateJavaScript("window.dispatchEvent(new Event('scroll'));") { _, _ in
+            // Bootstrap's layout messages precede native navigation acceptance.
+            // Report the settled page without performing that layout a second time.
+            let initialReport = desiredState?.readingMode == .pages
+                ? "postToNative({ type: 'pageMetadata', ...pageMetadata() }); updateFocus(true);"
+                : "window.dispatchEvent(new Event('scroll'));"
+            webView.evaluateJavaScript(initialReport) { _, _ in
                 self.finishFlush(on: webView)
             }
         }
 
         private func finishFlush(on webView: WKWebView) {
             isFlushing = false
+            requestPaginationMeasurement(on: webView)
             guard needsFlushAfterCurrent else {
                 return
             }
 
             needsFlushAfterCurrent = false
             flush(on: webView)
+        }
+
+        private func requestPaginationMeasurement(on webView: WKWebView) {
+            guard let state = desiredState, state.readingMode == .pages,
+                  !isFlushing, !needsFlushAfterCurrent,
+                  measuringPaginationState == nil else { return }
+            let viewSize = webView.bounds.size
+            guard viewSize.width > 0, viewSize.height > 0 else { return }
+            guard failedPaginationState != state || failedPaginationViewSize != viewSize else { return }
+            if let measured = paginationMeasurement,
+               measured.state == state, paginationMeasurementViewSize == viewSize { return }
+            measuringPaginationState = state
+            failedPaginationState = nil
+            let generation = currentDocumentGeneration
+            Task { @MainActor [weak self, weak webView] in
+                guard let webView else { return }
+                let result: Result<Any?, Error>
+                do {
+                    result = .success(try await webView.callAsyncJavaScript(
+                        "return await window.measurePagination();",
+                        arguments: [:], in: nil, contentWorld: .page
+                    ))
+                } catch {
+                    result = .failure(error)
+                }
+                guard let self, generation == self.currentDocumentGeneration else { return }
+                self.measuringPaginationState = nil
+                guard self.desiredState == state, webView.bounds.size == viewSize else {
+                    self.requestPaginationMeasurement(on: webView)
+                    return
+                }
+                guard case .success(let value) = result,
+                      let metadata = value as? [String: Any],
+                      let count = metadata["pageCount"] as? Int, count > 0,
+                      let measuredWidth = metadata["viewportWidth"] as? Double, measuredWidth > 0,
+                      let measuredHeight = metadata["viewportHeight"] as? Double, measuredHeight > 0 else {
+                    self.failedPaginationState = state
+                    self.failedPaginationViewSize = viewSize
+                    self.paginationMeasurement = nil
+                    webView.evaluateJavaScript("updateFocus(true);", completionHandler: nil)
+                    return
+                }
+                self.paginationMeasurementViewSize = viewSize
+                self.paginationMeasurement = .init(
+                    state: state, viewportWidth: measuredWidth,
+                    viewportHeight: measuredHeight, pageCount: count,
+                    pageCapacity: metadata["pageCapacity"] as? Int ?? 1
+                )
+                webView.evaluateJavaScript("updateFocus(true);", completionHandler: nil)
+            }
         }
 
         private func continueFlushAfterJavaScriptEvaluation(
@@ -1113,7 +1334,7 @@ struct BookContentView: NSViewRepresentable {
         }
 
         func shouldAcceptBridgeMessage(documentToken: String?) -> Bool {
-            isContentLoaded && documentToken == acceptedBridgeDocumentToken
+            isContentLoaded && pendingDocumentBootstrap == nil && documentToken == acceptedBridgeDocumentToken
         }
 
         private func clearPendingInjections(
@@ -1140,12 +1361,13 @@ struct BookContentView: NSViewRepresentable {
         }
 
         private func javaScriptInvocation<Payload: Encodable>(function: String, payload: Payload) -> String? {
-            let encoder = JSONEncoder()
-            guard let data = try? encoder.encode(payload),
-                  let json = String(data: data, encoding: .utf8) else {
-                return nil
-            }
+            guard let json = javaScriptJSON(payload) else { return nil }
             return "\(function)(\(json));"
+        }
+
+        private func javaScriptJSON<Payload: Encodable>(_ payload: Payload) -> String? {
+            guard let data = try? JSONEncoder().encode(payload) else { return nil }
+            return String(data: data, encoding: .utf8)
         }
 
         func applyScrollRequest(_ request: ScrollRequest, on webView: WKWebView, completion: ((Error?) -> Void)? = nil) {
@@ -1172,11 +1394,24 @@ struct BookContentView: NSViewRepresentable {
             }
 
             flush(on: webView, triggerInitialScrollReport: true)
+            webView.evaluateJavaScript("reportReaderInteractionState();", completionHandler: nil)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any],
                   let type = body["type"] as? String else {
+                return
+            }
+            if type == "readerBootstrap" {
+                guard let generation = body["generation"] as? Int,
+                      let success = body["success"] as? Bool,
+                      completeDocumentBootstrap(
+                        documentToken: body["documentToken"] as? String,
+                        generation: generation, success: success
+                      ) else { return }
+                if let webView = message.webView {
+                    flush(on: webView, triggerInitialScrollReport: true)
+                }
                 return
             }
 
@@ -1185,6 +1420,12 @@ struct BookContentView: NSViewRepresentable {
             }
 
             switch type {
+            case "readerInteractionState":
+                if let webView = message.webView as? ReaderWebView,
+                   let hasSelection = body["hasSelection"] as? Bool,
+                   let isEditing = body["isEditing"] as? Bool {
+                    webView.blocksReaderKeyboardHandling = hasSelection || isEditing
+                }
             case "annotationClick":
                 if let id = (body["id"] as? String).flatMap(Int64.init),
                    let annotation = parent.annotations.first(where: { $0.id == id }) {
@@ -1212,6 +1453,8 @@ struct BookContentView: NSViewRepresentable {
                 }
             case "bottomTug":
                 parent.onBottomTug()
+            case "topTug":
+                parent.onTopTug()
             case "markersUpdated":
                 if let stationsData = body["stations"] as? [[String: Any]] {
                     let markers = stationsData.compactMap { data -> MarkerInfo? in
@@ -1230,6 +1473,14 @@ struct BookContentView: NSViewRepresentable {
                 if let path = body["path"] as? String {
                     parent.onChapterNavigationRequest?(path, body["anchor"] as? String)
                 }
+            case "pageMetadata":
+                if let count = body["pageCount"] as? Int,
+                   count != paginationMeasurement?.pageCount {
+                    paginationMeasurement = nil
+                }
+                if let webView = message.webView {
+                    requestPaginationMeasurement(on: webView)
+                }
             case "scrollPosition":
                 let annotationId = (body["annotationId"] as? String).flatMap(Int64.init)
                 let imageId = (body["imageId"] as? String).flatMap(Int64.init)
@@ -1245,6 +1496,13 @@ struct BookContentView: NSViewRepresentable {
 
                 lastScrollOffset = scrollOffset
                 lastScrollPercent = scrollPercent
+                let visibleAnnotationIds = Set((body["visibleAnnotationIds"] as? [String] ?? []).compactMap(Int64.init))
+                let visibleImageIds = Set((body["visibleImageIds"] as? [String] ?? []).compactMap(Int64.init))
+                let viewportWidth = body["viewportWidth"] as? Double ?? 0
+                let currentMeasurement = paginationMeasurement.flatMap {
+                    $0.state == desiredState && $0.viewportWidth == viewportWidth &&
+                        $0.viewportHeight == viewportHeight ? $0 : nil
+                }
 
                 parent.onScrollPositionChange(.init(
                     annotationId: annotationId,
@@ -1257,7 +1515,16 @@ struct BookContentView: NSViewRepresentable {
                     scrollOffset: scrollOffset,
                     viewportHeight: viewportHeight,
                     scrollHeight: scrollHeight,
-                    isProgrammatic: isProgrammatic
+                    isProgrammatic: isProgrammatic,
+                    pageIndex: body["pageIndex"] as? Int,
+                    pageCount: body["pageCount"] as? Int,
+                    visiblePageCount: body["visiblePageCount"] as? Int ?? 1,
+                    pageCapacity: body["pageCapacity"] as? Int ?? 1,
+                    viewportWidth: viewportWidth,
+                    visibleAnnotationIds: visibleAnnotationIds,
+                    visibleImageIds: visibleImageIds,
+                    paginationMeasurement: currentMeasurement,
+                    paginationFailed: failedPaginationState != nil && failedPaginationState == desiredState
                 ))
             default:
                 break

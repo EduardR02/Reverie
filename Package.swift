@@ -26,7 +26,7 @@ let package = Package(
             name: "ReverieTests",
             dependencies: ["Reverie"],
             path: "Reverie/Tests",
-            exclude: [".DS_Store"],
+            exclude: [".DS_Store", "Web"],
             sources: ["ReverieTests"],
             resources: [
                 .copy("Fixtures")

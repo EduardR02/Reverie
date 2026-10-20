@@ -24,6 +24,8 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, E
     var currentChapter: Int = 0
     var currentScrollPercent: Double = 0
     var currentScrollOffset: Double = 0
+    var currentBlockId: Int?
+    var currentBlockOffset: Double?
     var chapterCount: Int = 0
     var importStatus: ImportStatus = .complete
     var processedFully: Bool = false
@@ -63,8 +65,8 @@ struct Book: Identifiable, Codable, FetchableRecord, MutablePersistableRecord, E
 extension Book {
     enum Columns: String, ColumnExpression {
         case id, title, author, coverPath, epubPath, progressPercent, currentChapter, 
-             currentScrollPercent, currentScrollOffset, chapterCount, importStatus,
-             processedFully, createdAt, lastReadAt, classificationStatus, 
+             currentScrollPercent, currentScrollOffset, currentBlockId, currentBlockOffset,
+             chapterCount, importStatus, processedFully, createdAt, lastReadAt, classificationStatus,
              classificationError, isFinished
     }
 

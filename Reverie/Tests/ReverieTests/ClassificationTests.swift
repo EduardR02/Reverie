@@ -23,7 +23,7 @@ final class ClassificationTests: XCTestCase {
         
         var (provider, model, key) = llmService.classificationModelSelection(settings: settings)
         XCTAssertEqual(provider, .google)
-        XCTAssertEqual(model, "gemini-3-flash-preview")
+        XCTAssertEqual(model, SupportedModels.utilityModel(for: .google))
         XCTAssertEqual(key, "g-key")
         
         // 2. No Google Key, Anthropic Key exists, Anthropic selected -> Should use Haiku (cheapest)
@@ -34,10 +34,10 @@ final class ClassificationTests: XCTestCase {
         
         (provider, model, key) = llmService.classificationModelSelection(settings: settings)
         XCTAssertEqual(provider, .anthropic)
-        XCTAssertEqual(model, "claude-haiku-4-5")
+        XCTAssertEqual(model, SupportedModels.utilityModel(for: .anthropic))
         XCTAssertEqual(key, "a-key")
         
-        // 3. No Google Key, No Anthropic Key, OpenAI selected -> Should use GPT 5.2
+        // A provider's utility model is independent of the saved analysis-model selection.
         settings.googleAPIKey = ""
         settings.anthropicAPIKey = ""
         settings.openAIAPIKey = "o-key"
@@ -46,7 +46,7 @@ final class ClassificationTests: XCTestCase {
         
         (provider, model, key) = llmService.classificationModelSelection(settings: settings)
         XCTAssertEqual(provider, .openai)
-        XCTAssertEqual(model, SupportedModels.OpenAI.gpt54)
+        XCTAssertEqual(model, SupportedModels.utilityModel(for: .openai))
         
         // 4. Setting OFF -> Should always use currently selected model
         settings.useCheapestModelForClassification = false
@@ -59,6 +59,29 @@ final class ClassificationTests: XCTestCase {
         XCTAssertEqual(provider, .anthropic)
         XCTAssertEqual(model, "claude-sonnet-4-5")
         XCTAssertEqual(key, "a-key")
+    }
+
+    @MainActor
+    func testLunaUtilitySelectionPreservesInsightModelAndAuthenticationMode() {
+        for mode in [OpenAIAuthenticationMode.apiKey, .chatGPTSubscription] {
+            var settings = UserSettings()
+            settings.llmProvider = .openai
+            settings.llmModel = SupportedModels.OpenAI.gpt61Sol
+            settings.openAIAuthenticationMode = mode
+            settings.openAIAPIKey = "utility-fixture-key"
+            settings.useCheapestModelForClassification = true
+            let selection = llmService.classificationModelSelection(settings: settings)
+            XCTAssertEqual(selection.0, .openai)
+            XCTAssertEqual(selection.1, "gpt-6-luna")
+            XCTAssertEqual(selection.2, mode == .apiKey ? "utility-fixture-key" : "")
+            XCTAssertEqual(settings.llmModel, SupportedModels.OpenAI.gpt61Sol)
+            XCTAssertEqual(settings.openAIAuthenticationMode, mode)
+
+            settings.useCheapestModelForClassification = false
+            let selected = llmService.classificationModelSelection(settings: settings)
+            XCTAssertEqual(selected.1, SupportedModels.OpenAI.gpt61Sol)
+            XCTAssertEqual(settings.openAIAuthenticationMode, mode)
+        }
     }
 
     @MainActor
@@ -77,15 +100,15 @@ final class ClassificationTests: XCTestCase {
         (provider, _, _) = llmService.classificationModelSelection(settings: settings)
         XCTAssertEqual(provider, .anthropic)
         
-        // 3. Remove Anthropic Key -> Fallback to selected model (or Google if nothing else)
+        // Removing every credential keeps the selected provider so its missing-auth error is accurate.
         settings.anthropicAPIKey = ""
         settings.openAIAPIKey = ""
         settings.llmProvider = .openai
         settings.llmModel = SupportedModels.OpenAI.legacyGPT52
-        (provider, _, _) = llmService.classificationModelSelection(settings: settings)
-        // Since useCheapest is on, but no "cheap" keys exist, it uses the selected model if it has a key.
-        // if it has no key, it might hit final fallback. 
-        // In our logic: if current (openai) has no key, it hits final fallback (google).
-        XCTAssertEqual(provider, .google)
+        let missingAuthentication = llmService.classificationModelSelection(settings: settings)
+        XCTAssertEqual(missingAuthentication.0, settings.llmProvider)
+        XCTAssertEqual(missingAuthentication.1, SupportedModels.utilityModel(for: settings.llmProvider))
+        XCTAssertTrue(missingAuthentication.2.isEmpty)
+        XCTAssertFalse(settings.hasAuthentication(for: missingAuthentication.0))
     }
 }

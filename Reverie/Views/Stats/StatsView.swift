@@ -79,15 +79,18 @@ struct StatsView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(theme.text)
             }
+            .allowsHitTesting(false)
 
             Spacer()
 
             // Placeholder for symmetry
             Color.clear.frame(width: 80)
+                .allowsHitTesting(false)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .frame(height: 52)
+        .background { ReaderWindowHeader(mode: .standard) }
         .background(theme.surface)
     }
 
@@ -225,20 +228,25 @@ struct StatsView: View {
             VStack(spacing: 12) {
                 TokenBar(
                     label: "Input",
-                    value: stats.tokensInput,
+                    value: stats.uncachedInputTokens,
                     total: max(total, 1),
                     color: theme.foam,
                     animate: animateStats
                 )
 
-                if stats.tokensCached > 0 {
-                    TokenBar(
-                        label: "  └ Cached",
-                        value: stats.tokensCached,
-                        total: max(total, 1),
-                        color: theme.gold,
-                        animate: animateStats
-                    )
+                cacheUsageRow(label: "Cached input", value: stats.tokensCached, total: total)
+
+                if let hitRate = stats.cacheHitRate {
+                    Text("\(hitRate, format: .percent.precision(.fractionLength(1))) cache hit rate")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.subtle)
+                        .help("Calculated from calls that report cache usage.")
+                }
+                if stats.tokensCacheReportedInput < stats.tokensInput {
+                    Text("Older calls without cache reporting remain in Input.")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 TokenBar(
@@ -304,6 +312,29 @@ struct StatsView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(theme.overlay, lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func cacheUsageRow(label: String, value: Int?, total: Int) -> some View {
+        if let value {
+            TokenBar(
+                label: label,
+                value: value,
+                total: max(total, 1),
+                color: theme.gold,
+                animate: animateStats
+            )
+        } else {
+            HStack {
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.text)
+                Spacer()
+                Text("Not reported")
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.muted)
+            }
         }
     }
 

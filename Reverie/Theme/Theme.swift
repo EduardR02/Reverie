@@ -14,6 +14,7 @@ protocol Theme: Sendable {
 
     // Text
     var text: Color { get }
+    var readingText: Color { get }
     var subtle: Color { get }
     var muted: Color { get }
 
@@ -31,18 +32,23 @@ protocol Theme: Sendable {
     var highlightHigh: Color { get }
 }
 
+extension Theme {
+    var readingText: Color { text }
+}
+
 // MARK: - Theme Manager
 
 @Observable
 final class ThemeManager {
     @MainActor static let shared = ThemeManager()
 
-    let defaultThemeName = "Rose Pine"
+    let defaultThemeName = "Rose Pine Black"
 
-    var current: Theme = RosePineTheme()
+    var current: Theme = RosePineBlackTheme()
     var availableThemes: [Theme] = []
 
     private let builtInThemes: [Theme] = [
+        RosePineBlackTheme(),
         RosePineTheme(),
         RosePineMoonTheme(),
         RosePineDawnTheme()
@@ -268,7 +274,7 @@ enum ThemeImportError: LocalizedError {
 
 @MainActor
 struct ThemeKey: @preconcurrency EnvironmentKey {
-    static let defaultValue: Theme = RosePineTheme()
+    static let defaultValue: Theme = RosePineBlackTheme()
 }
 
 extension EnvironmentValues {

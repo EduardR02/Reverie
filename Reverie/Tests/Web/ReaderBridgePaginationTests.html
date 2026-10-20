@@ -1,0 +1,444 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ReaderBridge pagination regression</title>
+<style>body { margin: 16px; font: 14px system-ui; } iframe { width: 800px; height: 600px; border: 1px solid #888; } pre { white-space: pre-wrap; }</style>
+<iframe id="reader" title="Reader regression fixture"></iframe>
+<pre id="results">Running…</pre>
+<script>
+// Open this file in a browser. The promise also lets an automation runner await
+// the result without depending on console wording or implementation source text.
+window.readerPaginationTests = (async () => {
+    const frame = document.getElementById('reader');
+    const bridgeURL = new URL('../../Resources/ReaderBridge.js', location.href).href;
+    const longText = 'A long paragraph has distinct words and keeps flowing across every page. '.repeat(360);
+    const loaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+    frame.srcdoc = `<!doctype html><style>
+        html,body { margin:0; font:20px/1.6 Georgia; background:#fff; color:#111; }
+        body { padding:40px 60px; position:relative; }
+        #readerContent { position:relative; z-index:1; }
+        .annotation-marker,.image-marker { display:inline-block; width:10px; height:10px; }
+        .selection-overlay { position:absolute; top:0; left:0; pointer-events:none; }
+        .selection-rect { position:absolute; }
+        .highlight-active { padding:2px 4px; margin:-2px -4px; }
+        #wordPopup { display:none; position:fixed; }
+    </style><div id="selectionOverlay" class="selection-overlay"></div><div id="readerContent">
+        <img id="delayed-image" data-block-id="1" style="width:100%">
+        <p data-reader-block-id="1">${longText}<span class="annotation-marker" data-annotation-id="11"></span><span class="image-marker" data-image-id="99"></span></p>
+        <p data-reader-block-id="2">${'More reading text for the second source block. '.repeat(55)}<a class="footnote-ref" href="#note">1</a>${'Text after the footnote. '.repeat(20)}</p>
+        <p data-reader-block-id="3" id="note">${'Footnote definition and its explanation. '.repeat(35)}<span class="image-marker" data-image-id="21"></span></p>
+        <p data-reader-block-id="4">THE END OF THE COMPLETE CHAPTER.</p>
+        </div><div id="wordPopup"></div>
+        <script>window.messages=[]; window.__readerDocumentToken='pagination-regression'; window.webkit={messageHandlers:{readerBridge:{postMessage(message){window.messages.push(message)}}}};<\/script>
+        <script src="${bridgeURL}"><\/script>`;
+    await loaded;
+    const doc = frame.contentDocument;
+    const reader = doc.defaultView;
+    const scriptErrors = [];
+    reader.addEventListener('error', event => scriptErrors.push(event.message));
+    const assertions = [];
+    function assert(value, description, diagnostics) {
+        if (!value) throw new Error(description + (diagnostics ? `: ${JSON.stringify(diagnostics)}` : ''));
+        assertions.push(description);
+    }
+    const settle = () => new Promise(resolve => reader.requestAnimationFrame(() => reader.requestAnimationFrame(resolve)));
+    const position = () => reader.messages.filter(message => message.type === 'scrollPosition').at(-1);
+    const tugs = () => reader.messages.filter(message => message.type === 'bottomTug').length;
+    function visible(rect) {
+        return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < reader.innerWidth &&
+            rect.bottom > 0 && rect.top < reader.innerHeight;
+    }
+    function characterRect(blockId, fraction) {
+        const block = doc.querySelector(`[data-reader-block-id="${blockId}"]`);
+        const walker = doc.createTreeWalker(block, reader.NodeFilter.SHOW_TEXT);
+        let remaining = Math.min(block.textContent.length - 1, Math.floor(block.textContent.length * fraction));
+        let node;
+        while ((node = walker.nextNode())) {
+            if (remaining >= node.length) { remaining -= node.length; continue; }
+            const range = doc.createRange();
+            range.setStart(node, remaining);
+            range.setEnd(node, remaining + 1);
+            return range.getBoundingClientRect();
+        }
+        throw new Error('Fixture character missing');
+    }
+    function assertSemanticPosition(fraction, description) {
+        assert(position().blockId === 1 && Math.abs(position().blockOffset - fraction) < 0.0001 &&
+            visible(characterRect(1, fraction)), description);
+    }
+
+    reader.restoreReadingLocation(1, 0.35);
+    const restoredBlock = doc.querySelector('[data-reader-block-id="1"]');
+    const hasSourceEmphasis = () => !!restoredBlock.style.backgroundColor ||
+        !!restoredBlock.style.color || restoredBlock.classList.contains('highlight-active');
+    assert(!hasSourceEmphasis(), 'Initial saved-position restoration does not highlight or start a fade');
+    const scrollDeadline = performance.now() + 5000;
+    while (position()?.blockId !== 1 || Math.abs(position().blockOffset - 0.35) >= 0.005) {
+        if (performance.now() > scrollDeadline) throw new Error('Programmatic scroll did not report its final semantic anchor');
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const scrollAnchor = position();
+    assert(scrollAnchor.blockId === 1 && Math.abs(scrollAnchor.blockOffset - 0.35) < 0.005,
+        'Programmatic scroll completion reports the final semantic text position');
+    reader.setPageLayout('single');
+    const first = reader.setReadingMode('pages');
+    assert(first.pageCount > 5 && first.pageIndex > 0, 'A long paragraph really spans multiple pages');
+    assert(position().blockId === scrollAnchor.blockId &&
+        Math.abs(position().blockOffset - scrollAnchor.blockOffset) < 0.01,
+        'Scroll-to-pages preserves the semantic text position');
+    assert(!hasSourceEmphasis(), 'Reading-mode bootstrap preserves a saved position without source emphasis');
+    assert(position().documentToken === 'pagination-regression', 'Pagination retains the document token');
+    const transitionMessageIndex = reader.messages.length;
+    const transitionTugs = tugs();
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const delayedPagePositions = reader.messages.slice(transitionMessageIndex)
+        .filter(message => message.type === 'scrollPosition');
+    assert([position(), ...delayedPagePositions].every(message =>
+        message.scrollY === message.pageIndex * message.viewportHeight &&
+        message.scrollHeight === message.pageCount * message.viewportHeight &&
+        Math.abs(message.scrollPercent - message.pageIndex / (message.pageCount - 1)) < 0.001),
+        'Delayed pre-switch callbacks cannot mix vertical scroll coordinates with page metadata');
+    assert(tugs() === transitionTugs, 'Pre-switch scroll callbacks cannot trigger a page-mode bottom tug');
+
+    reader.scrollToBlock(1, null, null, 0.62);
+    assertSemanticPosition(0.62, 'Fractional navigation reaches the middle of a multi-page paragraph');
+    assert(hasSourceEmphasis(), 'An explicit source jump still highlights the target paragraph');
+    reader.restoreReadingLocation(1, 0.62);
+    assert(hasSourceEmphasis(), 'Silent restoration does not remove an intentional source-jump highlight');
+    reader.applyReaderStyle({ themeBase:'#fff', themeSurface:'#eee', themeText:'#111', themeMuted:'#777',
+        themeRose:'#a55', themeIris:'#55a', fontFamily:'Georgia', fontSize:27, lineSpacing:1.8 });
+    assertSemanticPosition(0.62, 'Font and line-height reflow preserve the same text');
+    const spreadReflow = reader.setPageLayout('spread');
+    assert(spreadReflow.visiblePageCount === 2 && spreadReflow.pageIndex % 2 === 0,
+        'Spread layout starts at an aligned pair of physical pages');
+    assertSemanticPosition(0.62, 'Switching from single page to a spread preserves semantic text');
+    reader.setPageLayout('single');
+    assertSemanticPosition(0.62, 'Switching back to single page preserves semantic text');
+    for (const viewportWidth of [800, 901, 1600]) {
+        frame.style.width = `${viewportWidth}px`;
+        await settle();
+        const layouts = [];
+        for (const layout of ['single', 'spread']) {
+            reader.setPageLayout(layout);
+            const geometry = await reader.measurePagination();
+            const pageWindow = doc.getElementById('readerPageWindow').getBoundingClientRect();
+            const contentStyle = reader.getComputedStyle(doc.getElementById('readerContent'));
+            const pageWidth = parseFloat(contentStyle.columnWidth);
+            const gap = parseFloat(contentStyle.columnGap);
+            const expectedCapacity = layout === 'single' ? 1 : 2;
+            const expectedPadding = Math.floor(Math.min(60, Math.max(24, viewportWidth * 0.055)));
+            assert(geometry.pageCapacity === expectedCapacity &&
+                Number.isInteger(pageWidth) && Number.isInteger(pageWidth + gap) &&
+                Math.abs(pageWindow.width - (pageWidth * expectedCapacity + gap * (expectedCapacity - 1))) < 1,
+                `${layout} at ${viewportWidth}px renders its reported integral column geometry`);
+            assert(pageWindow.left === expectedPadding &&
+                Math.abs(viewportWidth - pageWindow.right - expectedPadding) <= 1,
+                `${layout} at ${viewportWidth}px uses the available reader width with shared outer padding`);
+            assertSemanticPosition(0.62, `${layout} at ${viewportWidth}px retains the same semantic anchor`);
+            layouts.push(pageWindow);
+            reader.scrollToPercent(1);
+            assert(visible(characterRect(4, 0.99)),
+                `${layout} at ${viewportWidth}px keeps the final chapter text reachable after reflow`);
+            reader.restoreReadingLocation(1, 0.62);
+        }
+        assert(layouts[0].left === layouts[1].left && Math.abs(layouts[0].right - layouts[1].right) <= 1,
+            `Single and spread have the same actual outer padding at ${viewportWidth}px`);
+    }
+    reader.setPageLayout('single');
+    frame.style.width = '620px';
+    frame.style.height = '440px';
+    await settle();
+    assertSemanticPosition(0.62, 'Window and split-pane resize preserve the same text');
+
+    const image = doc.getElementById('delayed-image');
+    const imageLoaded = new Promise(resolve => image.addEventListener('load', resolve, { once:true }));
+    image.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="1800"%3E%3Crect width="400" height="1800" fill="tomato"/%3E%3C/svg%3E';
+    await imageLoaded;
+    await settle();
+    assertSemanticPosition(0.62, 'Delayed image loading preserves the reading anchor');
+    assert(image.getBoundingClientRect().height > 0 && image.getBoundingClientRect().height < reader.innerHeight,
+        'Tall images fit a reflowable page without disappearing');
+
+    reader.scrollToAnnotation(11);
+    assert(position().annotationId === '11' && visible(doc.querySelector('[data-annotation-id="11"]').getBoundingClientRect()),
+        'Annotation navigation reaches its actual marker page');
+    assert(position().visibleImageIds.includes('99') && !position().visibleImageIds.includes('21'),
+        'Image visibility follows its actual inline marker, not the start of its multi-page source block');
+    reader.applyReaderStyle({ themeBase:'#fff', themeSurface:'#eee', themeText:'#111', themeMuted:'#777',
+        themeRose:'#a55', themeIris:'#55a', fontFamily:'Georgia', fontSize:25, lineSpacing:1.7 });
+    await settle();
+    assert(position().annotationId === '11' && position().isProgrammatic && position().imageId === null,
+        'Passive layout feedback cannot replace an explicitly selected insight with a nearby marker');
+    reader.turnPage(-1);
+    assert(position().annotationId === null && position().imageId === null,
+        'Visible-page focus never selects markers on a different page');
+    assert(position().visibleImageIds.length === 0,
+        'Moving to text in the same source block does not expose an offscreen image');
+
+    reader.scrollToQuote('note');
+    assert(position().footnoteRefId === 'note' && position().isProgrammatic &&
+        position().blockOffset > 0 && position().blockOffset < 1 &&
+        visible(doc.querySelector('.footnote-ref').getBoundingClientRect()),
+        'Footnote navigation reaches the reference and reports its true inline text offset');
+    doc.querySelector('.footnote-ref').click();
+    assert(visible(characterRect(3, 0)), 'An in-document footnote link reaches its definition page', {
+        rect: characterRect(3, 0).toJSON(), position: position(),
+        blockRects: Array.from(doc.getElementById('note').getClientRects(), rect => rect.toJSON()),
+        href: doc.querySelector('.footnote-ref').href, base: doc.baseURI, errors: scriptErrors
+    });
+    reader.scrollToBlock(3, 21, 'image');
+    assert(position().imageId === '21' && position().isProgrammatic &&
+        visible(doc.querySelector('[data-image-id="21"]').getBoundingClientRect()),
+        'Image insight navigation reaches and locks its marker');
+
+    // Decorations may arrive in the same native queue immediately before a jump.
+    reader.syncMarkers({ annotations:[{annotationId:12,sourceBlockId:1}], imageMarkers:[] });
+    reader.scrollToAnnotation(12);
+    assert(position().annotationId === '12' && visible(doc.querySelector('[data-annotation-id="12"]').getBoundingClientRect()),
+        'Immediate post-decoration navigation flushes the pending reflow');
+
+    reader.scrollToPercent(0);
+    const initialPage = position().pageIndex;
+    for (let index = 0; index < 25; index++) {
+        doc.body.dispatchEvent(new reader.WheelEvent('wheel', { deltaY:50, bubbles:true, cancelable:true }));
+    }
+    assert(position().pageIndex === initialPage + 1, 'A wheel gesture and its inertia turn only one page');
+    await new Promise(resolve => setTimeout(resolve, 220));
+    doc.body.dispatchEvent(new reader.WheelEvent('wheel', { deltaY:50, bubbles:true, cancelable:true }));
+    assert(position().pageIndex === initialPage + 2, 'A separate deliberate wheel gesture can turn again');
+    const editable = doc.createElement('textarea');
+    doc.body.appendChild(editable);
+    const editableWheel = new reader.WheelEvent('wheel', { deltaY:100, bubbles:true, cancelable:true });
+    editable.dispatchEvent(editableWheel);
+    assert(!editableWheel.defaultPrevented && position().pageIndex === initialPage + 2,
+        'Page gestures do not hijack editable controls');
+    editable.remove();
+
+    reader.scrollToBlock(1, null, null, 0.5);
+    const selection = reader.getSelection();
+    const selectionRange = doc.createRange();
+    selectionRange.selectNodeContents(doc.querySelector('[data-reader-block-id="1"]'));
+    selection.removeAllRanges();
+    selection.addRange(selectionRange);
+    await settle();
+    const overlays = Array.from(doc.querySelectorAll('.selection-rect'));
+    assert(overlays.length > 0 && overlays.every(element => visible(element.getBoundingClientRect())),
+        'Multi-page selections draw highlights only on the visible page');
+    selection.removeAllRanges();
+
+    reader.scrollToBlock(1, null, null, 0.5);
+    reader.setReadingMode('scroll');
+    assert(visible(characterRect(1, 0.5)) && reader.scrollY > 0, 'Pages-to-scroll does not reset the reader to the beginning');
+    reader.setReadingMode('pages');
+    assert(visible(characterRect(1, 0.5)), 'A round-trip mode switch retains the same text', {
+        position: position(), character: characterRect(1, 0.5).toJSON()
+    });
+
+    reader.scrollToPercent(0);
+    const startTugs = tugs();
+    let metadata = reader.setReadingMode('pages');
+    for (let page = 1; page < metadata.pageCount; page++) {
+        metadata = reader.turnPage(1);
+        assert(metadata.pageIndex === page, `Page ${page + 1} is reachable by a single forward turn`);
+    }
+    assert(visible(characterRect(4, 0.99)) && position().scrollPercent === 1,
+        'The complete chapter tail is visible on the final page');
+    assert(tugs() === startTugs, 'Final-page arrival does not auto-open the quiz');
+    assert(position().scrollY === position().pageIndex * position().viewportHeight &&
+        position().scrollHeight === position().pageCount * position().viewportHeight,
+        'Page progress uses the documented compatible virtual offset');
+    reader.turnPage(1);
+    assert(tugs() === startTugs + 1, 'A separate deliberate advance beyond the last page emits bottomTug');
+    reader.scrollToOffset(reader.innerHeight * 2);
+    assert(position().pageIndex === 2, 'Existing offset navigation accepts virtual page coordinates');
+    reader.turnPage(-100000);
+    assert(position().pageIndex === 0, 'Backward navigation clamps at the first page');
+
+    // Traverse the same long real text in a spread at a fractional-prone width.
+    // Reaching its final character catches accumulated WebKit column-pitch drift.
+    frame.style.width = '901px';
+    frame.style.height = '601px';
+    reader.setPageLayout('spread');
+    await settle();
+    reader.scrollToPercent(0);
+    metadata = await reader.measurePagination();
+    assert(metadata.visiblePageCount === 2 && metadata.effectiveLayout === 'spread' &&
+        Number.isInteger(metadata.pageWidth) && Number.isInteger(metadata.pagePitch) &&
+        metadata.viewportWidth === 901 && metadata.viewportHeight === 601,
+        'Settled spread metadata reports integral physical geometry and actual viewport');
+    reader.scrollToQuote('note');
+    assert(position().footnoteRefId === 'note' &&
+        visible(doc.querySelector('.footnote-ref').getBoundingClientRect()),
+        'Spread navigation reaches the actual inline footnote reference');
+    doc.querySelector('.footnote-ref').click();
+    assert(visible(characterRect(3, 0)), 'A footnote definition remains reachable inside a spread');
+    // Decoration synchronization above intentionally removed the old markers.
+    reader.syncMarkers({ annotations:[{annotationId:12,sourceBlockId:1}],
+        imageMarkers:[{imageId:21,sourceBlockId:3}] });
+    reader.scrollToBlock(3, 21, 'image');
+    assert(position().imageId === '21' && position().isProgrammatic &&
+        visible(doc.querySelector('[data-image-id="21"]').getBoundingClientRect()),
+        'Spread image insight navigation preserves its explicit visible focus');
+    reader.scrollToPercent(0);
+    metadata = await reader.measurePagination();
+    const spreadTugs = tugs();
+    const physicalCount = metadata.pageCount;
+    for (let page = 2; page < physicalCount; page += 2) {
+        metadata = reader.turnPage(1);
+        assert(metadata.pageIndex === page && metadata.pageCount === physicalCount &&
+            metadata.visiblePageCount === Math.min(2, physicalCount - page),
+            `Spread at physical page ${page + 1} is reachable without count drift`);
+    }
+    assert(visible(characterRect(4, 0.99)) && position().scrollPercent === 1,
+        'Long spread pagination reaches the complete chapter tail');
+    assert(tugs() === spreadTugs, 'Final-spread arrival does not emit bottomTug');
+    reader.turnPage(1);
+    assert(tugs() === spreadTugs + 1, 'A deliberate turn after final-spread arrival emits bottomTug');
+
+    // Forced real CSS columns make odd-tail and second-column marker coverage
+    // deterministic while still exercising the actual production paginator.
+    const content = doc.getElementById('readerContent');
+    content.innerHTML = Array.from({ length:7 }, (_, index) =>
+        `<p data-reader-block-id="${index + 1}" style="${index ? 'break-before:column;' : ''}">Physical page ${index + 1}.
+        <span class="annotation-marker" data-annotation-id="${100 + index}"></span><span class="image-marker" data-image-id="${200 + index}"></span><span class="image-marker" data-image-id="${300 + index}" style="display:none"></span></p>`).join('');
+    reader.scrollToPercent(0);
+    metadata = await reader.measurePagination();
+    reader.scrollToPercent(0);
+    assert(metadata.pageCount === 7, 'Seven forced physical columns produce an exact odd page count');
+    const originalAnimationFrame = reader.requestAnimationFrame;
+    const deferredFrames = [];
+    let measurementDeadline;
+    let offscreenMetadata;
+    reader.requestAnimationFrame = callback => { deferredFrames.push(callback); return 0; };
+    try {
+        offscreenMetadata = await Promise.race([
+            reader.measurePagination({ offscreen:true }),
+            new Promise((_, reject) => {
+                measurementDeadline = setTimeout(() => reject(new Error('Hidden measurement waited for a suspended animation clock')), 1000);
+            })
+        ]);
+    } finally {
+        clearTimeout(measurementDeadline);
+        reader.requestAnimationFrame = originalAnimationFrame;
+        for (const callback of deferredFrames) reader.requestAnimationFrame(callback);
+    }
+    assert(offscreenMetadata.pageCount === metadata.pageCount &&
+        offscreenMetadata.pageWidth === metadata.pageWidth && offscreenMetadata.pagePitch === metadata.pagePitch,
+        'Hidden measurement returns identical exact geometry without an active animation clock');
+    assert(position().visibleAnnotationIds.join(',') === '100,101',
+        'Every visible insight is reported, including the second page of a spread');
+    assert(position().visibleImageIds.join(',') === '200,201',
+        'Every visible image marker is reported across both columns, excluding hidden and offscreen markers');
+    reader.scrollToAnnotation(101);
+    assert(position().pageIndex === 0 && position().annotationId === '101' &&
+        position().visibleAnnotationIds.includes(position().annotationId) &&
+        visible(doc.querySelector('[data-annotation-id="101"]').getBoundingClientRect()),
+        'Explicit insight navigation can focus the second page without leaving its spread');
+    const secondPageSelection = doc.createRange();
+    secondPageSelection.selectNodeContents(doc.querySelector('[data-reader-block-id="2"]'));
+    selection.addRange(secondPageSelection);
+    await settle();
+    assert(doc.querySelectorAll('.selection-rect').length > 0 &&
+        Array.from(doc.querySelectorAll('.selection-rect')).every(element => visible(element.getBoundingClientRect())),
+        'Selection overlays remain visible on the second page of a spread');
+    selection.removeAllRanges();
+    reader.turnPage(1);
+    assert(position().pageIndex === 2 && position().visibleAnnotationIds.join(',') === '102,103' &&
+        !position().visibleAnnotationIds.includes('101'),
+        'Spread turning replaces visible insights and releases offscreen focus');
+    assert(position().visibleImageIds.join(',') === '202,203',
+        'Page turns replace the entire visible image set without retaining previous-page images');
+    const oddTailTugs = tugs();
+    reader.turnPage(1);
+    metadata = reader.turnPage(1);
+    assert(metadata.pageIndex === 6 && metadata.visiblePageCount === 1 && metadata.pageCapacity === 2 &&
+        position().pageCapacity === 2 && position().visibleImageIds.join(',') === '206' &&
+        position().visibleAnnotationIds.join(',') === '106' && visible(characterRect(7, 0.5)),
+        'An odd final spread exposes exactly its remaining physical page and insights', {
+            metadata, position: position(), character: characterRect(7, 0.5).toJSON()
+        });
+    assert(tugs() === oddTailTugs, 'Odd-tail arrival never auto-advances the chapter');
+    reader.turnPage(1);
+    assert(tugs() === oddTailTugs + 1, 'Odd-tail forward boundary requires another deliberate turn');
+    metadata = reader.turnPage(-1);
+    assert(metadata.pageIndex === 4 && metadata.visiblePageCount === 2,
+        'Backward turning from an odd tail returns to the preceding complete spread');
+    reader.scrollToBlock(2, null, null, 0.35);
+    frame.style.width = '560px';
+    await settle();
+    metadata = await reader.measurePagination();
+    assert(metadata.layout === 'spread' && metadata.effectiveLayout === 'single' &&
+        metadata.visiblePageCount === 1 && metadata.pageCapacity === 1 && visible(characterRect(2, 0.35)),
+        'A narrow pane falls back to readable single pages without losing preference or semantic anchor');
+    frame.style.width = '901px';
+    await settle();
+    metadata = await reader.measurePagination();
+    assert(metadata.layout === 'spread' && metadata.effectiveLayout === 'spread' &&
+        metadata.visiblePageCount === 2 && metadata.pageCapacity === 2 && visible(characterRect(2, 0.35)),
+        'Widening restores the preferred spread around the same text');
+    const idempotentIndex = reader.messages.length;
+    reader.setPageLayout('spread');
+    reader.setReadingMode('pages');
+    assert(reader.messages.length === idempotentIndex,
+        'Repeated mode and layout synchronization is idempotent without bridge feedback');
+    metadata = reader.turnPage(-100000);
+    assert(metadata.pageIndex === 0 && position().visibleAnnotationIds.join(',') === '100,101',
+        'Spread backward boundary clamps cleanly to the first pair');
+    reader.turnPage(1);
+    const topTugs = () => reader.messages.filter(message => message.type === 'topTug').length;
+    const firstSpreadTugs = topTugs();
+    reader.turnPage(-1);
+    assert(position().pageIndex === 0 && topTugs() === firstSpreadTugs,
+        'Arrival at the first spread does not request a previous chapter');
+    reader.turnPage(-1);
+    assert(topTugs() === firstSpreadTugs + 1 && position().pageIndex === 0,
+        'A deliberate backward turn at the first spread emits topTug for native chapter navigation');
+    for (let index = 0; index < 25; index++) {
+        doc.body.dispatchEvent(new reader.WheelEvent('wheel', { deltaY:-50, bubbles:true, cancelable:true }));
+    }
+    assert(topTugs() === firstSpreadTugs + 2,
+        'A backward wheel gesture at the first spread emits only one previous-chapter request');
+
+    // At this viewport the adjacent columns extend five pixels into the outer
+    // margins. Test the rendered hit surface, not only offscreen DOM geometry.
+    frame.style.width = '1008px';
+    for (const block of content.querySelectorAll('[data-reader-block-id]')) {
+        block.style.margin = '0';
+        block.style.height = '180px';
+        block.style.background = 'rgb(255, 0, 255)';
+    }
+    await settle();
+    metadata = await reader.measurePagination();
+    reader.scrollToPercent(0);
+    const readingHit = (x, y) => !!doc.elementFromPoint(x, y)?.closest('#readerContent');
+    const thirdColumn = doc.querySelector('[data-reader-block-id="3"]').getBoundingClientRect();
+    assert(thirdColumn.left < reader.innerWidth && thirdColumn.right > reader.innerWidth,
+        'The clipping fixture places an actual adjacent column across the viewport right margin');
+    assert(!readingHit(reader.innerWidth - 2, thirdColumn.top + 20),
+        'The stationary page window prevents a third column from painting or hit-testing in the right margin');
+    assert(readingHit(metadata.insetX + 5, metadata.insetY + 20) &&
+        readingHit(metadata.insetX + metadata.pagePitch + 5, metadata.insetY + 20),
+        'Clipping leaves both visible physical pages painted and hit-testable');
+    reader.turnPage(1);
+    const previousColumn = doc.querySelector('[data-reader-block-id="2"]').getBoundingClientRect();
+    assert(previousColumn.right > 0 && previousColumn.right < metadata.insetX &&
+        !readingHit(2, previousColumn.top + 20),
+        'The stationary page window also hides the previous column extending into the left margin');
+    reader.scrollToPercent(1);
+    assert(position().visiblePageCount === 1 &&
+        !readingHit(metadata.insetX + metadata.pagePitch + 5, metadata.insetY + 20) &&
+        !readingHit(reader.innerWidth - 2, metadata.insetY + 20),
+        'An odd final spread leaves the second page and outer margin genuinely empty');
+    reader.setReadingMode('scroll');
+    assert(doc.querySelector('#readerPageWindow').getBoundingClientRect().width === 0 &&
+        content.getBoundingClientRect().width > 0,
+        'The stationary page window has no layout box in unchanged scrolling mode');
+    assert(!Object.hasOwn(position(), 'visibleImageIds') && doc.querySelectorAll('.image-marker').length === 14,
+        'Scroll mode retains all chapter image source markers without page-local filtering metadata');
+    const result = { passed: assertions.length, assertions };
+    document.getElementById('results').textContent = JSON.stringify(result, null, 2);
+    return result;
+})().catch(error => {
+    document.getElementById('results').textContent = error.stack;
+    throw error;
+});
+</script>

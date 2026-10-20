@@ -22,6 +22,10 @@ final class ChapterAnalyzer {
     private let imageService: ImageService
     private let database: DatabaseService
     private let settings: UserSettings
+    private var cancellationGenerationByChapter: [Int64: Int] = [:]
+    private var imageCancellationGenerationByChapter: [Int64: Int] = [:]
+    private var producerTasks: [UUID: (chapterId: Int64, isImage: Bool, task: Task<Void, Never>)] = [:]
+    private var classificationGeneration = UUID()
     
     init(llm: LLMService, imageService: ImageService, database: DatabaseService, settings: UserSettings) {
         self.llm = llm
@@ -40,10 +44,18 @@ final class ChapterAnalyzer {
     
     // Streaming analysis - yields annotations as they're created
     func analyzeChapter(_ chapter: Chapter, book: Book) -> AsyncThrowingStream<AnalysisEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let generation = chapter.id.map { cancellationGenerationByChapter[$0, default: 0] }
+        let taskID = UUID()
+        return AsyncThrowingStream { continuation in
             let task = Task {
-                guard let chapterId = chapter.id else {
+                defer { producerTasks.removeValue(forKey: taskID) }
+                guard let chapterId = chapter.id, let generation else {
                     continuation.finish()
+                    return
+                }
+                guard !Task.isCancelled,
+                      cancellationGenerationByChapter[chapterId, default: 0] == generation else {
+                    continuation.finish(throwing: CancellationError())
                     return
                 }
                 
@@ -51,32 +63,39 @@ final class ChapterAnalyzer {
                     $0.isProcessingInsights = true
                     $0.error = nil
                     $0.liveInsightCount = 0
+                    $0.liveThinking = ""
                     $0.liveQuizCount = 0
                 }
-                defer { updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" } }
+                defer {
+                    if cancellationGenerationByChapter[chapterId, default: 0] == generation {
+                        updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" }
+                    }
+                }
                 
                 do {
-                    let (contentWithBlocks, blockCount) = chapter.getContentText()
+                    let (blocks, contentWithBlocks) = ContentBlockParser().parse(html: chapter.contentHTML)
+                    let blockCount = blocks.count
                     let rollingSummary = rollingSummaryForAnalysis(chapter)
+                    let coveredIdeas = try database.fetchAnnotationsBeforeChapter(
+                        bookId: chapter.bookId, chapterIndex: chapter.index
+                    ).map(PromptLibrary.coverageHint)
                     let stream = llm.analyzeChapterStreaming(
                         contentWithBlocks: contentWithBlocks,
                         rollingSummary: rollingSummary,
                         bookTitle: book.title,
                         author: book.author,
-                        settings: settings
+                        settings: settings,
+                        coveredIdeas: coveredIdeas
                     )
                     
-                    var lastThinkingUpdate = Date.distantPast
                     var finalAnalysis: LLMService.ChapterAnalysis?
                     
                     for try await event in stream {
+                        try checkCancellation(for: chapterId, generation: generation)
                         switch event {
                         case .thinking(let text):
-                            if Date().timeIntervalSince(lastThinkingUpdate) > 0.1 {
-                                updateState(for: chapterId) { $0.liveThinking = text }
-                                lastThinkingUpdate = Date()
-                                continuation.yield(.thinking(text))
-                            }
+                            updateState(for: chapterId) { $0.liveThinking += text }
+                            continuation.yield(.thinking(processingStates[chapterId]!.liveThinking))
                         case .insightFound:
                             updateState(for: chapterId) { $0.liveInsightCount += 1 }
                         case .quizQuestionFound:
@@ -88,23 +107,27 @@ final class ChapterAnalyzer {
                         }
                     }
                     
-                    guard let analysis = finalAnalysis else {
-                        continuation.finish()
-                        return
+                    guard let finalAnalysis else {
+                        throw ChapterAnalysisValidationError.missingCompletion
                     }
-                    
-                    for data in analysis.annotations {
-                        let type = AnnotationType(rawValue: data.type) ?? .science
-                        let blockId = (data.sourceBlockId > 0 && data.sourceBlockId <= blockCount) ? data.sourceBlockId : 1
-                        var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: blockId)
-                        try database.saveAnnotation(&annotation)
+                    try checkCancellation(for: chapterId, generation: generation)
+                    let analysis = try finalAnalysis.validated(blocks: blocks)
+
+                    var updatedChapter = chapter
+                    updatedChapter.processed = true
+                    updatedChapter.summary = analysis.summary
+                    updatedChapter.rollingSummary = rollingSummary
+                    updatedChapter.contentText = contentWithBlocks
+                    updatedChapter.blockCount = blockCount
+                    let saved = try database.saveChapterAnalysis(
+                        analysis,
+                        chapter: &updatedChapter,
+                        blockCount: blockCount
+                    )
+                    for annotation in saved.annotations {
                         continuation.yield(.annotation(annotation))
                     }
-                    
-                    for data in analysis.quizQuestions {
-                        let blockId = (data.sourceBlockId > 0 && data.sourceBlockId <= blockCount) ? data.sourceBlockId : 1
-                        var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: blockId)
-                        try database.saveQuiz(&quiz)
+                    for quiz in saved.quizzes {
                         continuation.yield(.quiz(quiz))
                     }
                     
@@ -112,25 +135,17 @@ final class ChapterAnalyzer {
                         continuation.yield(.imageSuggestions(analysis.imageSuggestions))
                     }
                     
-                    var updatedChapter = chapter
-                    updatedChapter.processed = true
-                    updatedChapter.summary = analysis.summary
-                    updatedChapter.rollingSummary = rollingSummary
-                    updatedChapter.contentText = contentWithBlocks
-                    updatedChapter.blockCount = blockCount
-                    do {
-                        try database.saveChapter(&updatedChapter)
-                    } catch {
-                        print("ChapterAnalyzer: Failed to save chapter after analysis: \(error)")
-                    }
                     
                     continuation.yield(.complete(chapterSummary: analysis.summary))
                     continuation.finish()
                 } catch {
-                    updateState(for: chapterId) { $0.error = error.localizedDescription }
+                    if !Task.isCancelled && cancellationGenerationByChapter[chapterId, default: 0] == generation {
+                        updateState(for: chapterId) { $0.error = error.localizedDescription }
+                    }
                     continuation.finish(throwing: error)
                 }
             }
+            if let chapterId = chapter.id { producerTasks[taskID] = (chapterId, false, task) }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
@@ -138,43 +153,64 @@ final class ChapterAnalyzer {
     // Generate more (returns arrays, not streams - simpler for "more" operations)
     func generateMoreInsights(for chapter: Chapter) async throws -> [Annotation] {
         guard let chapterId = chapter.id else { return [] }
+        try Task.checkCancellation()
+        let generation = cancellationGenerationByChapter[chapterId, default: 0]
         updateState(for: chapterId) { $0.isProcessingInsights = true; $0.error = nil }
-        defer { updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" } }
+        defer {
+            if cancellationGenerationByChapter[chapterId, default: 0] == generation {
+                updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" }
+            }
+        }
         
-        let (contentWithBlocks, blockCount) = chapter.getContentText()
-        let existingTitles = (try? database.fetchAnnotations(for: chapter))?.map { $0.title } ?? []
+        let (blocks, contentWithBlocks) = ContentBlockParser().parse(html: chapter.contentHTML)
+        let existing = try database.fetchAnnotations(for: chapter)
+        let prior = try database.fetchAnnotationsBeforeChapter(bookId: chapter.bookId, chapterIndex: chapter.index)
         let stream = llm.generateMoreInsightsStreaming(
             contentWithBlocks: contentWithBlocks,
-            rollingSummary: chapter.rollingSummary,
-            existingTitles: existingTitles,
-            settings: settings
+            rollingSummary: rollingSummaryForAnalysis(chapter),
+            existingTitles: existing.map(\.title),
+            settings: settings,
+            coveredIdeas: (prior + existing).map(PromptLibrary.coverageHint)
         )
         
         var finalAnalysis: LLMService.ChapterAnalysis?
         for try await event in stream {
+            try checkCancellation(for: chapterId, generation: generation)
             if case .completed(let analysis) = event { finalAnalysis = analysis }
-            if case .thinking(let text) = event { updateState(for: chapterId) { $0.liveThinking = text } }
+            if case .thinking(let text) = event { updateState(for: chapterId) { $0.liveThinking += text } }
         }
         
-        guard let analysis = finalAnalysis else { return [] }
-        var saved: [Annotation] = []
-        for data in analysis.annotations {
-            let type = AnnotationType(rawValue: data.type) ?? .science
-            let blockId = (data.sourceBlockId > 0 && data.sourceBlockId <= blockCount) ? data.sourceBlockId : 1
-            var annotation = Annotation(chapterId: chapterId, type: type, title: data.title, content: data.content, sourceBlockId: blockId)
-            try database.saveAnnotation(&annotation)
-            saved.append(annotation)
+        guard let finalAnalysis else {
+            throw ChapterAnalysisValidationError.missingCompletion
         }
+        try checkCancellation(for: chapterId, generation: generation)
+        let analysis = try finalAnalysis.validated(blocks: blocks)
+        var saved = analysis.annotations.map { data in
+            Annotation(
+                chapterId: chapterId,
+                type: AnnotationType(rawValue: data.type)!,
+                title: data.title,
+                content: data.content,
+                sourceBlockId: data.sourceBlockId
+            )
+        }
+        try database.saveAnnotations(&saved)
         return saved
     }
     
     func generateMoreQuestions(for chapter: Chapter) async throws -> [Quiz] {
         guard let chapterId = chapter.id else { return [] }
+        try Task.checkCancellation()
+        let generation = cancellationGenerationByChapter[chapterId, default: 0]
         updateState(for: chapterId) { $0.isProcessingInsights = true; $0.error = nil }
-        defer { updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" } }
+        defer {
+            if cancellationGenerationByChapter[chapterId, default: 0] == generation {
+                updateState(for: chapterId) { $0.isProcessingInsights = false; $0.liveThinking = "" }
+            }
+        }
         
-        let (contentWithBlocks, blockCount) = chapter.getContentText()
-        let existingQuestions = (try? database.fetchQuizzes(for: chapter))?.map { $0.question } ?? []
+        let (blocks, contentWithBlocks) = ContentBlockParser().parse(html: chapter.contentHTML)
+        let existingQuestions = try database.fetchQuizzes(for: chapter).map { $0.question }
         let stream = llm.generateMoreQuestionsStreaming(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: chapter.rollingSummary,
@@ -184,32 +220,46 @@ final class ChapterAnalyzer {
         
         var finalAnalysis: LLMService.ChapterAnalysis?
         for try await event in stream {
+            try checkCancellation(for: chapterId, generation: generation)
             if case .completed(let analysis) = event { finalAnalysis = analysis }
-            if case .thinking(let text) = event { updateState(for: chapterId) { $0.liveThinking = text } }
+            if case .thinking(let text) = event { updateState(for: chapterId) { $0.liveThinking += text } }
         }
         
-        guard let analysis = finalAnalysis else { return [] }
-        var saved: [Quiz] = []
-        for data in analysis.quizQuestions {
-            let blockId = (data.sourceBlockId > 0 && data.sourceBlockId <= blockCount) ? data.sourceBlockId : 1
-            var quiz = Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: blockId)
-            try database.saveQuiz(&quiz)
-            saved.append(quiz)
+        guard let finalAnalysis else {
+            throw ChapterAnalysisValidationError.missingCompletion
         }
+        try checkCancellation(for: chapterId, generation: generation)
+        let analysis = try finalAnalysis.validated(blocks: blocks)
+        var saved = analysis.quizQuestions.map { data in
+            Quiz(chapterId: chapterId, question: data.question, answer: data.answer, sourceBlockId: data.sourceBlockId)
+        }
+        try database.saveQuizzes(&saved)
         return saved
     }
     
     // Image generation
     func generateImages(suggestions: [LLMService.ImageSuggestion], book: Book, chapter: Chapter) -> AsyncThrowingStream<GeneratedImage, Error> {
-        AsyncThrowingStream { continuation in
+        let generation = chapter.id.map { imageCancellationGenerationByChapter[$0, default: 0] }
+        let taskID = UUID()
+        return AsyncThrowingStream { continuation in
             let task = Task {
-                guard let chapterId = chapter.id, let bookId = book.id else {
+                defer { producerTasks.removeValue(forKey: taskID) }
+                guard let chapterId = chapter.id, let bookId = book.id, let generation else {
                     continuation.finish()
+                    return
+                }
+                guard !Task.isCancelled,
+                      imageCancellationGenerationByChapter[chapterId, default: 0] == generation else {
+                    continuation.finish(throwing: CancellationError())
                     return
                 }
                 
                 updateState(for: chapterId) { $0.isProcessingImages = true }
-                defer { updateState(for: chapterId) { $0.isProcessingImages = false } }
+                defer {
+                    if imageCancellationGenerationByChapter[chapterId, default: 0] == generation {
+                        updateState(for: chapterId) { $0.isProcessingImages = false }
+                    }
+                }
                 
                 let (_, blockCount) = chapter.getContentText()
                 let apiKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,7 +283,8 @@ final class ChapterAnalyzer {
                 )
 
                 for result in results {
-                    if Task.isCancelled { break }
+                    guard !Task.isCancelled,
+                          imageCancellationGenerationByChapter[chapterId, default: 0] == generation else { break }
                     do {
                         let image = try persistGeneratedImage(result, bookId: bookId, chapterId: chapterId)
                         continuation.yield(image)
@@ -243,6 +294,7 @@ final class ChapterAnalyzer {
                 }
                 continuation.finish()
             }
+            if let chapterId = chapter.id { producerTasks[taskID] = (chapterId, true, task) }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
@@ -264,6 +316,8 @@ final class ChapterAnalyzer {
         guard let chapterId = chapter.id, let bookId = book.id else {
             throw ImageService.ImageError.invalidResponse
         }
+        try Task.checkCancellation()
+        let generation = imageCancellationGenerationByChapter[chapterId, default: 0]
 
         let apiKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
@@ -271,7 +325,11 @@ final class ChapterAnalyzer {
         }
 
         updateState(for: chapterId) { $0.isProcessingImages = true }
-        defer { updateState(for: chapterId) { $0.isProcessingImages = false } }
+        defer {
+            if imageCancellationGenerationByChapter[chapterId, default: 0] == generation {
+                updateState(for: chapterId) { $0.isProcessingImages = false }
+            }
+        }
 
         let promptToUse: String
         if rewritePrompt {
@@ -282,6 +340,7 @@ final class ChapterAnalyzer {
             promptToUse = image.prompt
         }
 
+        try checkImageCancellation(for: chapterId, generation: generation)
         let input = ImageService.ImageSuggestionInput(
             excerpt: image.excerpt,
             prompt: promptToUse,
@@ -296,6 +355,7 @@ final class ChapterAnalyzer {
         ).first else {
             throw ImageService.ImageError.invalidResponse
         }
+        try checkImageCancellation(for: chapterId, generation: generation)
 
         var updatedImage = image
         updatedImage.prompt = promptToUse
@@ -349,14 +409,21 @@ final class ChapterAnalyzer {
     
     // Classification
     func classifyChapters(_ chapters: [Chapter], for book: Book) async throws -> [Int64: ChapterType] {
+        try Task.checkCancellation()
+        let generation = UUID()
+        classificationGeneration = generation
         isClassifying = true
         classificationError = nil
-        defer { isClassifying = false }
+        defer {
+            if classificationGeneration == generation { isClassifying = false }
+        }
         
         let chapterData = chapters.map { (index: $0.index, title: $0.title, preview: $0.contentHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)) }
         
         do {
             let classifications = try await llm.classifyChapters(chapters: chapterData, settings: settings)
+            try Task.checkCancellation()
+            guard classificationGeneration == generation else { throw CancellationError() }
             var results: [Int64: ChapterType] = [:]
             
             for var chapter in chapters {
@@ -372,7 +439,9 @@ final class ChapterAnalyzer {
             }
             return results
         } catch {
-            classificationError = error.localizedDescription
+            if !Task.isCancelled && classificationGeneration == generation {
+                classificationError = error.localizedDescription
+            }
             throw error
         }
     }
@@ -384,13 +453,32 @@ final class ChapterAnalyzer {
     
     // Cancellation
     func cancel(for chapterId: Int64) {
-        updateState(for: chapterId) { 
+        cancelInsights(for: chapterId)
+        imageCancellationGenerationByChapter[chapterId, default: 0] += 1
+        for (id, producer) in producerTasks where producer.chapterId == chapterId && producer.isImage {
+            producer.task.cancel()
+            producerTasks.removeValue(forKey: id)
+        }
+        updateState(for: chapterId) { $0.isProcessingImages = false }
+    }
+
+    func cancelInsights(for chapterId: Int64) {
+        cancellationGenerationByChapter[chapterId, default: 0] += 1
+        for (id, producer) in producerTasks where producer.chapterId == chapterId && !producer.isImage {
+            producer.task.cancel()
+            producerTasks.removeValue(forKey: id)
+        }
+        updateState(for: chapterId) {
             $0.isProcessingInsights = false
-            $0.isProcessingImages = false
+            $0.liveThinking = ""
         }
     }
     
     func cancelAll() {
+        classificationGeneration = UUID()
+        isClassifying = false
+        for producer in producerTasks.values { producer.task.cancel() }
+        producerTasks.removeAll()
         for id in processingStates.keys {
             cancel(for: id)
         }
@@ -402,16 +490,31 @@ final class ChapterAnalyzer {
     
     // Helpers
     func shouldAutoProcess(_ chapter: Chapter, in chapters: [Chapter], book: Book? = nil) -> Bool {
+        let hasLLMKey = settings.hasAuthentication(for: settings.llmProvider)
+        guard hasLLMKey, !chapter.processed else { return false }
         if chapter.userOverride { return true }
-        let hasLLMKey = !settings.googleAPIKey.isEmpty || !settings.openAIAPIKey.isEmpty || !settings.anthropicAPIKey.isEmpty
         let isClassified = book == nil || book?.classificationStatus == .completed
-        return settings.autoAIProcessingEnabled && hasLLMKey && !chapter.processed && !chapter.shouldSkipAutoProcessing && isClassified
+        return settings.autoAIProcessingEnabled && !chapter.shouldSkipAutoProcessing && isClassified
     }
     
     private func updateState(for chapterId: Int64, transform: (inout ProcessingState) -> Void) {
         var state = processingStates[chapterId] ?? ProcessingState()
         transform(&state)
         processingStates[chapterId] = state
+    }
+
+    private func checkCancellation(for chapterId: Int64, generation: Int) throws {
+        try Task.checkCancellation()
+        guard cancellationGenerationByChapter[chapterId, default: 0] == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private func checkImageCancellation(for chapterId: Int64, generation: Int) throws {
+        try Task.checkCancellation()
+        guard imageCancellationGenerationByChapter[chapterId, default: 0] == generation else {
+            throw CancellationError()
+        }
     }
 
     func rollingSummaryForAnalysis(_ chapter: Chapter) -> String? {

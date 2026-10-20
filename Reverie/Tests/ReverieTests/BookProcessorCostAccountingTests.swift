@@ -20,7 +20,7 @@ final class BookProcessorCostAccountingTests: XCTestCase {
         let session = URLSession(configuration: config)
 
         let database = try DatabaseService(dbQueue: DatabaseQueue())
-        let appState = AppState(database: database)
+        let appState = AppState(database: database, settings: UserSettings())
         appState.llmService = LLMService(appState: appState, session: session)
         appState.imageService = ImageService(session: session)
         appState.settings.googleAPIKey = "mock-key"
@@ -42,43 +42,27 @@ final class BookProcessorCostAccountingTests: XCTestCase {
             let url = request.url!.absoluteString
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
 
-            if url.contains(":streamGenerateContent") {
-                let data = Self.analysisStreamResponse.data(using: .utf8)!
-                return (response, data)
-            }
             if url.contains(ImageModel.gemini25Flash.apiModel) {
                 let data = #"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"aW1hZ2U="}}]}}]}"#.data(using: .utf8)!
                 return (response, data)
             }
 
-            let data = Self.summaryResponse.data(using: .utf8)!
-            return (response, data)
+            return (response, Self.analysisStreamResponse.data(using: .utf8)!)
         }
 
         let processor = BookProcessor(appState: appState, book: book)
         await processor.process()
 
-        let summaryInputCost = (1000.0 / 1_000_000.0) * 0.5
-        let summaryOutputCost = (100.0 / 1_000_000.0) * 3.0
         let insightInputCost = (2000.0 / 1_000_000.0) * 0.5
         let insightOutputCost = (350.0 / 1_000_000.0) * 3.0
-        let textCost = summaryInputCost + summaryOutputCost + insightInputCost + insightOutputCost
+        let textCost = insightInputCost + insightOutputCost
         let imageCost = LLMCallUsage.calculatedImageCost(for: .gemini25Flash)!
 
         XCTAssertEqual(appState.processingCostEstimate, textCost + imageCost, accuracy: 0.000001)
     }
 
-    private static let summaryResponse = """
-    {
-        "candidates": [{
-            "content": { "parts": [{ "text": "{\\\"summary\\\":\\\"Short summary\\\"}" }] }
-        }],
-        "usageMetadata": { "promptTokenCount": 1000, "candidatesTokenCount": 100 }
-    }
-    """
-
     private static let analysisStreamResponse = """
-    data: {"candidates":[{"content":{"parts":[{"text":"{\\\"summary\\\":\\\"Insight summary\\\",\\\"annotations\\\":[],\\\"quizQuestions\\\":[],\\\"imageSuggestions\\\":[{\\\"excerpt\\\":\\\"A river at dawn\\\",\\\"sourceBlockId\\\":1}]}"}]}}]}
+    data: {"candidates":[{"content":{"parts":[{"text":"{\\\"summary\\\":\\\"Insight summary\\\",\\\"annotations\\\":[],\\\"quizQuestions\\\":[],\\\"imageSuggestions\\\":[{\\\"excerpt\\\":\\\"Chapter text.\\\",\\\"sourceBlockId\\\":1}]}"}]}}]}
 
     data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2000,"candidatesTokenCount":300,"thoughtsTokenCount":50}}
 

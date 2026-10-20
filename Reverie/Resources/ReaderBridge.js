@@ -50,6 +50,493 @@ const focusState = {
 };
 
 let scrollTicking = false;
+let isInitializingReader = false;
+
+// The same logical document is either vertically scrolled or flowed into columns.
+// Page-mode offsets are virtual vertical coordinates: pageIndex * viewportHeight.
+// This keeps existing progress/back-navigation consumers on the scroll bridge.
+const pagination = {
+    mode: 'scroll',
+    layout: 'spread',
+    capacity: 1,
+    gap: 1,
+    pageIndex: 0,
+    pageCount: 1,
+    pitch: 1,
+    width: 1,
+    height: 1,
+    insetX: 60,
+    insetY: 40,
+    anchor: null,
+    scrollAnchorY: null,
+    needsAnchor: true,
+    reflowFrame: null,
+    wheelTimer: null,
+    wheelDelta: 0,
+    wheelConsumed: false
+};
+
+function pageMetadata() {
+    return {
+        pageIndex: pagination.pageIndex,
+        pageCount: pagination.pageCount,
+        visiblePageCount: Math.min(pagination.capacity, pagination.pageCount - pagination.pageIndex),
+        pageCapacity: pagination.capacity,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        pageWidth: pagination.width,
+        pageHeight: pagination.height,
+        pageGap: pagination.gap,
+        pagePitch: pagination.pitch,
+        insetX: pagination.insetX,
+        insetY: pagination.insetY,
+        layout: pagination.layout,
+        effectiveLayout: pagination.capacity === 2 ? 'spread' : 'single'
+    };
+}
+
+function spreadStart(index) {
+    const lastStart = Math.floor((pagination.pageCount - 1) / pagination.capacity) * pagination.capacity;
+    return Math.max(0, Math.min(lastStart, Math.floor(index / pagination.capacity) * pagination.capacity));
+}
+
+async function measurePagination({ offscreen = false } = {}) {
+    if (document.fonts) await document.fonts.ready;
+    await Promise.all(Array.from(document.querySelectorAll('#readerContent img'), image => {
+        // Hidden whole-book measurement must load offscreen EPUB images too.
+        image.loading = 'eager';
+        if (image.complete) return Promise.resolve();
+        return new Promise(resolve => {
+            const finished = () => {
+                image.removeEventListener('load', finished);
+                image.removeEventListener('error', finished);
+                resolve();
+            };
+            image.addEventListener('load', finished);
+            image.addEventListener('error', finished);
+        });
+    }));
+    // Hidden WKWebViews may suspend their animation clock. Forced geometry reads
+    // in rebuildPages still perform the same layout after fonts/images settle.
+    if (!offscreen) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    if (pagination.mode === 'pages') rebuildPages();
+    return pageMetadata();
+}
+
+function installPageStyle() {
+    const content = document.getElementById('readerContent');
+    if (!document.getElementById('readerPageWindow')) {
+        const pageWindow = document.createElement('div');
+        pageWindow.id = 'readerPageWindow';
+        content.before(pageWindow);
+        pageWindow.appendChild(content);
+    }
+    if (document.getElementById('readerPageStyle')) return;
+    const style = document.createElement('style');
+    style.id = 'readerPageStyle';
+    style.textContent = `
+        #readerPageWindow { display: contents; }
+        html.reader-pages #readerPageWindow {
+            display: block;
+            width: var(--reader-window-width); height: var(--reader-page-height);
+            overflow: hidden; overflow: clip;
+        }
+        html.reader-pages, html.reader-pages body {
+            width: 100%; height: 100%; overflow: hidden !important;
+            overscroll-behavior: none; scroll-behavior: auto !important;
+        }
+        html.reader-pages body {
+            box-sizing: border-box;
+            padding: var(--reader-inset-y) var(--reader-inset-x) !important;
+        }
+        html.reader-pages #readerContent {
+            width: var(--reader-page-width); height: var(--reader-page-height);
+            max-width: none !important; max-height: none !important;
+            column-width: var(--reader-page-width); column-count: auto;
+            column-gap: var(--reader-page-gap); column-fill: auto;
+            overflow: visible; overflow-wrap: anywhere;
+        }
+        html.reader-pages #readerContent [data-reader-block-id],
+        html.reader-pages #readerContent [id^="block-"] {
+            break-inside: auto !important; page-break-inside: auto !important;
+            orphans: 2; widows: 2;
+        }
+        html.reader-pages #readerContent img,
+        html.reader-pages #readerContent svg,
+        html.reader-pages #readerContent video,
+        html.reader-pages #readerContent canvas {
+            max-width: 100% !important;
+            max-height: calc(var(--reader-page-height) - 2em) !important;
+            object-fit: contain; box-sizing: border-box;
+            break-inside: avoid; page-break-inside: avoid;
+        }
+        html.reader-pages #readerContent .generated-image { margin: 1em 0; }
+        html.reader-pages #readerContent pre { white-space: pre-wrap; }
+        html.reader-pages #readerContent table { max-width: 100%; table-layout: fixed; }
+        html.reader-pages .selection-overlay { position: fixed; }
+    `;
+    document.head.appendChild(style);
+}
+
+function rectIsOnPage(rect) {
+    if (rect.width <= 0 || rect.height <= 0 ||
+        rect.bottom <= pagination.insetY || rect.top >= pagination.insetY + pagination.height) return false;
+    const span = Math.min(pagination.capacity, pagination.pageCount - pagination.pageIndex);
+    for (let column = 0; column < span; column++) {
+        const left = pagination.insetX + column * pagination.pitch;
+        if (rect.right > left && rect.left < left + pagination.width) return true;
+    }
+    return false;
+}
+
+function elementIsOnPage(element) {
+    for (const rect of element.getClientRects()) {
+        if (rectIsOnPage(rect)) return true;
+    }
+    return false;
+}
+
+function pageForRect(rect) {
+    const documentX = rect.left + pagination.pageIndex * pagination.pitch - pagination.insetX;
+    return Math.max(0, Math.floor((documentX + Math.min(rect.width / 2, 1)) / pagination.pitch));
+}
+
+function firstElementRect(element) {
+    const rects = element.getClientRects();
+    for (const rect of rects) {
+        if (rect.width > 0 && rect.height > 0) return rect;
+    }
+    return element.getBoundingClientRect();
+}
+
+// A text fraction, unlike a paragraph's bounding box, remains meaningful when a
+// paragraph spans several columns. Ranges give the actual fragment at that offset.
+function rangeAtBlockOffset(block, offset) {
+    const length = block.textContent.length;
+    if (!length) return null;
+    let remaining = Math.min(length - 1, Math.max(0, Math.floor(length * offset)));
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+        if (remaining < node.length) {
+            const range = document.createRange();
+            range.setStart(node, remaining);
+            range.setEnd(node, remaining + 1);
+            return range;
+        }
+        remaining -= node.length;
+    }
+    return null;
+}
+
+function anchorFromCaret(x, y) {
+    let range;
+    if (document.caretRangeFromPoint) {
+        range = document.caretRangeFromPoint(x, y);
+    } else if (document.caretPositionFromPoint) {
+        const position = document.caretPositionFromPoint(x, y);
+        if (position) {
+            range = document.createRange();
+            range.setStart(position.offsetNode, position.offset);
+            range.collapse(true);
+        }
+    }
+    if (!range) return null;
+    const block = getClosestBlock(range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer : range.startContainer.parentElement);
+    const blockId = blockIdFromElement(block);
+    if (!blockId) return null;
+    const prefix = document.createRange();
+    prefix.selectNodeContents(block);
+    prefix.setEnd(range.startContainer, range.startOffset);
+    const offset = block.textContent.length ? prefix.toString().length / block.textContent.length : 0;
+    const character = rangeAtBlockOffset(block, offset);
+    const rect = character ? firstElementRect(character) : firstElementRect(block);
+    if (pagination.mode === 'pages' && !rectIsOnPage(rect)) return null;
+    if (pagination.mode !== 'pages' && (rect.bottom < 0 || rect.top > window.innerHeight)) return null;
+    return { blockId, offset };
+}
+
+function anchorForElement(element) {
+    let block = getClosestBlock(element) || getBlockByIdOrIndex(element.dataset.blockId);
+    if (!block) {
+        for (const candidate of document.querySelectorAll(BLOCK_SELECTOR)) {
+            if (element.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_PRECEDING) block = candidate;
+            else if (!block) { block = candidate; break; }
+            else break;
+        }
+    }
+    let offset = element === block ? 0 : 1;
+    if (block?.contains(element) && element !== block && block.textContent.length) {
+        const prefix = document.createRange();
+        prefix.selectNodeContents(block);
+        prefix.setEndBefore(element);
+        offset = prefix.toString().length / block.textContent.length;
+    }
+    // A fragmented block can own an empty box before its first text line
+    // (orphans/widows). Restore text blocks through a character Range instead.
+    return { blockId: blockIdFromElement(block), offset,
+        element: element === block && block.textContent.length ? null : element };
+}
+
+function offsetAtEyeLine(block, fragment) {
+    const length = block.textContent.length;
+    if (!length) return 0;
+    const targetPage = pagination.mode === 'pages' ? pageForRect(fragment) : 0;
+    let low = 0;
+    let high = length - 1;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        const rect = firstElementRect(rangeAtBlockOffset(block, middle / length));
+        const page = pagination.mode === 'pages' ? pageForRect(rect) : 0;
+        if (page < targetPage || (page === targetPage && rect.bottom < window.innerHeight * EYE_LINE_RATIO)) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low / length;
+}
+
+function captureReadingAnchor() {
+    const eyeLine = window.innerHeight * EYE_LINE_RATIO;
+    const firstColumnCenter = pagination.mode === 'pages'
+        ? pagination.insetX + pagination.width / 2 : window.innerWidth / 2;
+    const elementAtEyeLine = document.elementFromPoint(firstColumnCenter, eyeLine);
+    if (elementAtEyeLine instanceof HTMLImageElement) return anchorForElement(elementAtEyeLine);
+    for (const x of [firstColumnCenter, pagination.insetX + 4, window.innerWidth - pagination.insetX - 4]) {
+        const anchor = anchorFromCaret(x, eyeLine);
+        if (anchor) return anchor;
+    }
+
+    // Image-only pages and whitespace between blocks have no text caret.
+    let best = null;
+    let bestDistance = Infinity;
+    for (const element of document.querySelectorAll(`${BLOCK_SELECTOR}, #readerContent img`)) {
+        const elementAnchor = anchorForElement(element);
+        const rects = element.getClientRects();
+        for (let index = 0; index < rects.length; index++) {
+            const rect = rects[index];
+            const visible = pagination.mode === 'pages' ? rectIsOnPage(rect)
+                : rect.bottom > 0 && rect.top < window.innerHeight;
+            if (!visible) continue;
+            const distance = Math.abs(Math.max(rect.top, Math.min(rect.bottom, eyeLine)) - eyeLine);
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
+            best = element.matches('img') ? elementAnchor : {
+                blockId: elementAnchor.blockId,
+                offset: offsetAtEyeLine(element, rect)
+            };
+        }
+    }
+    return best;
+}
+
+function anchorRect(anchor) {
+    if (!anchor) return null;
+    if (anchor.element?.isConnected) return firstElementRect(anchor.element);
+    const block = getBlockByIdOrIndex(anchor.blockId);
+    if (!block) return null;
+    const range = rangeAtBlockOffset(block, anchor.offset);
+    return firstElementRect(range || block);
+}
+
+function renderPage() {
+    const content = document.getElementById('readerContent');
+    content.style.transform = `translateX(${-pagination.pageIndex * pagination.pitch}px)`;
+    // A browser's fragment navigation/selection must not leave a hidden scroll
+    // offset on either the viewport or the multicolumn element.
+    window.scrollTo(0, 0);
+    content.scrollLeft = 0;
+    content.scrollTop = 0;
+}
+
+function rebuildPages(anchor = pagination.anchor) {
+    if (pagination.reflowFrame !== null) {
+        cancelAnimationFrame(pagination.reflowFrame);
+        pagination.reflowFrame = null;
+    }
+    const root = document.documentElement;
+    const content = document.getElementById('readerContent');
+    // Keep the column width and gap integral. WebKit quantizes fractional CSS
+    // lengths independently; that tiny stride error otherwise accumulates into
+    // a wrong page index near the end of a long chapter.
+    const viewportWidth = Math.floor(window.innerWidth);
+    const outerMargin = Math.floor(Math.min(60, Math.max(24, viewportWidth * 0.055)));
+    const spreadGap = Math.floor(Math.min(56, Math.max(32, viewportWidth * 0.05)));
+    pagination.capacity = pagination.layout === 'spread' &&
+        viewportWidth - outerMargin * 2 - spreadGap >= 280 * 2 ? 2 : 1;
+    pagination.width = Math.max(1, Math.floor(
+        (viewportWidth - outerMargin * 2 - (pagination.capacity - 1) * spreadGap) / pagination.capacity));
+    const spreadWidth = pagination.width * pagination.capacity + (pagination.capacity - 1) * spreadGap;
+    pagination.insetX = Math.floor((viewportWidth - spreadWidth) / 2);
+    pagination.insetY = Math.floor(Math.min(40, Math.max(12, window.innerHeight * 0.06)));
+    pagination.height = Math.max(1, Math.floor(window.innerHeight) - pagination.insetY * 2);
+    pagination.gap = pagination.capacity === 2 ? spreadGap : pagination.insetX * 2;
+    pagination.pitch = pagination.width + pagination.gap;
+    root.style.setProperty('--reader-inset-x', `${pagination.insetX}px`);
+    root.style.setProperty('--reader-inset-y', `${pagination.insetY}px`);
+    root.style.setProperty('--reader-page-width', `${pagination.width}px`);
+    root.style.setProperty('--reader-page-height', `${pagination.height}px`);
+    root.style.setProperty('--reader-page-gap', `${pagination.gap}px`);
+    root.style.setProperty('--reader-window-width', `${spreadWidth}px`);
+    renderPage();
+    pagination.pageCount = Math.max(1, Math.ceil(
+        (content.scrollWidth + pagination.gap - 1) / pagination.pitch));
+    const rect = anchorRect(anchor);
+    pagination.pageIndex = spreadStart(rect ? pageForRect(rect) : pagination.pageIndex);
+    pagination.anchor = anchor;
+    pagination.needsAnchor = !anchor;
+    renderPage();
+    buildTerritoryMap();
+    updateFocus(true);
+    updateSelectionOverlay();
+    postToNative({ type: 'pageMetadata', ...pageMetadata() });
+    return pageMetadata();
+}
+
+function schedulePageReflow() {
+    if (pagination.reflowFrame !== null) return;
+    pagination.reflowFrame = requestAnimationFrame(() => {
+        pagination.reflowFrame = null;
+        if (pagination.mode === 'pages') rebuildPages();
+    });
+}
+
+function flushPageReflow() {
+    if (pagination.mode !== 'pages' || pagination.reflowFrame === null) return;
+    cancelAnimationFrame(pagination.reflowFrame);
+    pagination.reflowFrame = null;
+    rebuildPages();
+}
+
+function setPageLayout(layout) {
+    if ((layout !== 'single' && layout !== 'spread') || layout === pagination.layout) return pageMetadata();
+    flushPageReflow();
+    pagination.layout = layout;
+    if (pagination.mode === 'pages') return rebuildPages();
+    return pageMetadata();
+}
+
+function setReadingMode(mode) {
+    if (mode !== 'pages' && mode !== 'scroll') return pageMetadata();
+    flushPageReflow();
+    if (mode === pagination.mode) return pageMetadata();
+    // Retain the exact character through an immediate round trip. Re-capturing
+    // a nearby caret can otherwise land just across a column boundary.
+    const anchor = pagination.mode === 'pages' ||
+        (pagination.scrollAnchorY !== null && Math.abs(window.scrollY - pagination.scrollAnchorY) < 1)
+        ? pagination.anchor : captureReadingAnchor();
+    const wasLocked = programmatic.isSticky();
+    const targetId = programmatic.preferredTargetId();
+    programmatic.cancel(true);
+    clearTimeout(focusState.idleTimeout);
+    focusState.idleTimeout = null;
+    pagination.mode = mode;
+    pagination.anchor = anchor;
+    pagination.needsAnchor = !anchor;
+    installPageStyle();
+    document.documentElement.classList.toggle('reader-pages', mode === 'pages');
+    focusState.currentBlockIndex = -1;
+    focusState.currentStationIndex = -1;
+    focusState.mapBuilt = false;
+    if (wasLocked) programmatic.lock(targetId);
+    if (mode === 'pages') {
+        for (const block of document.querySelectorAll('.highlight-active')) block.classList.remove('highlight-active');
+        return rebuildPages(anchor);
+    }
+
+    document.getElementById('readerContent').style.removeProperty('transform');
+    const rect = anchorRect(anchor);
+    if (rect) window.scrollTo(0, Math.max(0, window.scrollY + rect.top - window.innerHeight * EYE_LINE_RATIO));
+    if (wasLocked) programmatic.lock(targetId);
+    focusState.lastBlockCheckY = -Infinity;
+    buildTerritoryMap();
+    updateFocus(true);
+    pagination.scrollAnchorY = window.scrollY;
+    updateSelectionOverlay();
+    return pageMetadata();
+}
+
+function navigateToPage(index, targetId = null, anchor = null, locked = true) {
+    if (locked) programmatic.lock(targetId);
+    else programmatic.cancel(true);
+    pagination.pageIndex = spreadStart(Math.round(index));
+    pagination.anchor = anchor;
+    pagination.needsAnchor = !anchor;
+    renderPage();
+    focusState.lastVelocity = 0;
+    updateFocus(true);
+    updateSelectionOverlay();
+    const popup = document.getElementById('wordPopup');
+    if (popup) popup.style.display = 'none';
+    return pageMetadata();
+}
+
+function turnPage(delta) {
+    if (pagination.mode !== 'pages' || !Number.isFinite(delta)) return pageMetadata();
+    flushPageReflow();
+    const step = Math.trunc(delta);
+    if (step > 0 && pagination.pageIndex + pagination.capacity >= pagination.pageCount) {
+        // Arrival never opens the quiz. Only a separate deliberate advance does.
+        postToNative({ type: 'bottomTug' });
+    }
+    if (step < 0 && pagination.pageIndex === 0) {
+        postToNative({ type: 'topTug' });
+    }
+    if (step !== 0) return navigateToPage(pagination.pageIndex + step * pagination.capacity, null, null, false);
+    return pageMetadata();
+}
+
+function updatePageFocus(forceReport) {
+    if (!focusState.mapBuilt) buildTerritoryMap();
+    if (pagination.needsAnchor) {
+        pagination.anchor = captureReadingAnchor();
+        pagination.needsAnchor = false;
+    }
+    const anchor = pagination.anchor;
+    focusState.currentBlockIndex = anchor?.blockId ? anchor.blockId - 1 : -1;
+    focusState.currentBlockOffset = anchor?.offset || 0;
+
+    const targetId = programmatic.preferredTargetId();
+    let stationIndex = -1;
+    let bestDistance = Infinity;
+    let low = 0;
+    let high = focusState.stations.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (focusState.stations[middle].pageIndex < pagination.pageIndex) low = middle + 1;
+        else high = middle;
+    }
+    for (let index = low; index < focusState.stations.length; index++) {
+        const station = focusState.stations[index];
+        if (station.pageIndex < pagination.pageIndex) continue;
+        if (station.pageIndex >= pagination.pageIndex + pagination.capacity) break;
+        if (!elementIsOnPage(station.element)) continue;
+        if (programmatic.isSticky()) {
+            if (`${station.type}-${station.id}` === targetId || String(station.id) === String(targetId)) {
+                stationIndex = index;
+                break;
+            }
+        } else {
+            const distance = Math.abs(station.y % window.innerHeight - window.innerHeight * EYE_LINE_RATIO);
+            if (distance < bestDistance) {
+                stationIndex = index;
+                bestDistance = distance;
+            }
+        }
+    }
+    const changed = stationIndex !== focusState.currentStationIndex;
+    focusState.currentStationIndex = stationIndex;
+    const atBottom = pagination.pageIndex + pagination.capacity >= pagination.pageCount;
+    if (atBottom && !focusState.reachedBottom) focusState.bottomArrivalTime = Date.now();
+    focusState.reachedBottom = atBottom;
+    const progress = atBottom ? 1 : pagination.pageIndex / (pagination.pageCount - 1);
+    reportToNative(pagination.pageIndex * window.innerHeight, progress, window.innerHeight,
+        pagination.pageCount * window.innerHeight, programmatic.isSticky(), changed, forceReport);
+}
 
 function postToNative(message) {
     webkit.messageHandlers.readerBridge.postMessage({
@@ -120,6 +607,10 @@ const programmatic = (() => {
     };
 
     const start = (targetId, targetY) => {
+        if (pagination.mode === 'pages') {
+            navigateToPage(targetY / window.innerHeight, targetId);
+            return;
+        }
         cancel(true); 
         const currentSession = state.sessionId;
         const startY = window.scrollY;
@@ -177,6 +668,14 @@ const programmatic = (() => {
     };
 
     return {
+        cancel,
+        lock: (targetId) => {
+            cancel(true);
+            state.sticky = true;
+            state.targetId = targetId;
+            state.expectedY = window.scrollY;
+            state.lastSetAt = performance.now();
+        },
         start,
         noteScroll: (actualY) => {
             if (!state.sticky) return;
@@ -231,7 +730,7 @@ function getMarkers() {
     const scrollY = window.scrollY;
     
     return Array.from(markerElements).map((element, index) => {
-        const rect = element.getBoundingClientRect();
+        const rect = firstElementRect(element);
         let type = 'annotation';
         if (element.classList.contains('image-marker')) type = 'image';
         else if (element.classList.contains('footnote-ref')) type = 'footnote';
@@ -242,7 +741,10 @@ function getMarkers() {
         const block = getClosestBlock(element);
         const blockId = blockIdFromElement(block) || parseInt(element.dataset.blockId || "0", 10);
 
-        return { element, id, type, order: index, blockId, y: rect.top + scrollY + (rect.height * 0.5) };
+        const pageIndex = pagination.mode === 'pages' ? pageForRect(rect) : null;
+        const y = pageIndex === null ? rect.top + scrollY + rect.height * 0.5
+            : pageIndex * window.innerHeight + rect.top + rect.height * 0.5;
+        return { element, id, type, order: index, blockId, y, pageIndex };
     }).sort((a, b) => (a.y !== b.y) ? a.y - b.y : a.order - b.order);
 }
 
@@ -251,7 +753,7 @@ function getMarkers() {
 function buildTerritoryMap() {
     const stations = getMarkers();
     const vh = window.innerHeight;
-    const sh = document.documentElement.scrollHeight;
+    const sh = pagination.mode === 'pages' ? pagination.pageCount * vh : document.documentElement.scrollHeight;
     const scrollMax = Math.max(1, sh - vh);
     
     focusState.viewportHeight = vh;
@@ -299,6 +801,11 @@ function buildTerritoryMap() {
 }
 
 function scheduleMapRebuild() {
+    if (isInitializingReader) return;
+    if (pagination.mode === 'pages') {
+        schedulePageReflow();
+        return;
+    }
     if (focusState.mapPending) return;
     focusState.mapPending = true;
     (window.requestIdleCallback || ((cb) => setTimeout(cb, 50)))(() => {
@@ -311,6 +818,10 @@ function scheduleMapRebuild() {
  * Synchronizes Focus with Scroll Position
  */
 function updateFocus(forceReport = false) {
+    if (pagination.mode === 'pages') {
+        updatePageFocus(forceReport);
+        return;
+    }
     const scrollY = window.scrollY;
     const now = performance.now();
     
@@ -373,19 +884,14 @@ function updateFocus(forceReport = false) {
     }
 
     // 2. Block Tracking (Spatial Throttling)
-    if (!isAnimating) {
-        if (Math.abs(scrollY - focusState.lastBlockCheckY) > 20 || focusState.currentBlockIndex === -1) {
-            const eyeLine = focusState.eyeLineY || (vh * EYE_LINE_RATIO);
-            const el = document.elementFromPoint(window.innerWidth / 2, eyeLine);
-            const block = getClosestBlock(el);
-            const blockId = blockIdFromElement(block);
-            if (blockId) {
-                activeBlockIndex = blockId - 1;
-                const rect = block.getBoundingClientRect();
-                if (rect.height > 0) {
-                    const rawOffset = (eyeLine - rect.top) / rect.height;
-                    focusState.currentBlockOffset = Math.max(0, Math.min(1, rawOffset));
-                }
+    // Completion reports still carry isProgrammatic, but must measure the final
+    // text position even while the animation controller owns the focus lock.
+    if (!isAnimating || forceReport) {
+        if (forceReport || Math.abs(scrollY - focusState.lastBlockCheckY) > 20 || focusState.currentBlockIndex === -1) {
+            const anchor = captureReadingAnchor();
+            if (anchor) {
+                activeBlockIndex = anchor.blockId - 1;
+                focusState.currentBlockOffset = anchor.offset;
             } else {
                 activeBlockIndex = focusState.currentBlockIndex;
             }
@@ -414,6 +920,7 @@ function updateFocus(forceReport = false) {
     if (forceReport || hasChangedFocus || hasChangedBlock || timeSinceLast > 1000) {
         clearTimeout(focusState.idleTimeout);
         focusState.idleTimeout = setTimeout(() => {
+            if (pagination.mode === 'pages') return;
             const curY = window.scrollY;
             const curMax = Math.max(1, (focusState.scrollHeight || document.documentElement.scrollHeight) - (focusState.viewportHeight || window.innerHeight));
             if (Math.abs(curY - focusState.lastReportedScrollY) > 5) {
@@ -464,7 +971,20 @@ function reportToNative(scrollY, scrollPercent, vh, sh, isLocked, shouldPulse, f
     postToNative({
         type: 'scrollPosition', annotationId: aId, imageId: iId, footnoteRefId: fId,
         blockId: bId, blockOffset: bOffset, primaryType: s?.type || null, scrollY, scrollPercent: roundedP,
-        viewportHeight: vh, scrollHeight: sh, isProgrammatic: programmatic.isActive()
+        viewportHeight: vh, viewportWidth: window.innerWidth, scrollHeight: sh,
+        isProgrammatic: programmatic.isActive() || (pagination.mode === 'pages' && isLocked),
+        ...(pagination.mode === 'pages' ? {
+            ...pageMetadata(),
+            visibleAnnotationIds: Array.from(new Set(focusState.stations
+                .filter(station => station.type === 'annotation' &&
+                    station.pageIndex >= pagination.pageIndex &&
+                    station.pageIndex < pagination.pageIndex + pagination.capacity &&
+                    elementIsOnPage(station.element))
+                .map(station => String(station.id)))),
+            visibleImageIds: Array.from(new Set(focusState.stations
+                .filter(station => station.type === 'image' && elementIsOnPage(station.element))
+                .map(station => String(station.id))))
+        } : {})
     });
 }
 
@@ -487,7 +1007,7 @@ function highlightMarker(el) {
 
 function highlightBlock(el) {
     if (!el) return;
-    el.classList.add('highlight-active');
+    if (pagination.mode !== 'pages') el.classList.add('highlight-active');
     el.style.backgroundColor = 'var(--rose)'; el.style.color = 'var(--base)'; el.style.transition = 'none';
     setTimeout(() => {
         el.style.transition = 'background-color 1.5s ease-out, color 1.5s ease-out';
@@ -497,6 +1017,13 @@ function highlightBlock(el) {
 }
 
 function performSmoothScroll(el, ratio, targetId) {
+    if (pagination.mode === 'pages') {
+        flushPageReflow();
+        const station = focusState.stations.find(s => `${s.type}-${s.id}` === targetId);
+        const target = station?.element || el;
+        const anchor = anchorForElement(target);
+        return navigateToPage(pageForRect(anchorRect(anchor) || firstElementRect(target)), targetId, anchor);
+    }
     const vh = window.innerHeight;
     const sh = document.documentElement.scrollHeight;
     const scrollMax = Math.max(1, sh - vh);
@@ -514,15 +1041,32 @@ function scrollToAnnotation(id) {
     if (el) { performSmoothScroll(el, EYE_LINE_RATIO, 'annotation-' + id); highlightMarker(el); }
 }
 
-function scrollToBlock(id, mId, type) {
+function scrollToBlock(id, mId, type, blockOffset, highlight = true) {
+    flushPageReflow();
     const b = getBlockByIdOrIndex(id);
     if (!b) return;
     const tId = mId && type ? `${type}-${mId}` : `block-${id}`;
-    performSmoothScroll(b, EYE_LINE_RATIO, tId);
+    if (Number.isFinite(blockOffset) && !mId) {
+        const anchor = { blockId: Number(id), offset: Math.max(0, Math.min(1, blockOffset)) };
+        const rect = anchorRect(anchor);
+        if (rect && pagination.mode === 'pages') {
+            navigateToPage(pageForRect(rect), tId, anchor);
+        } else if (rect) {
+            programmatic.start(tId, window.scrollY + rect.top - window.innerHeight * EYE_LINE_RATIO);
+        }
+    } else {
+        performSmoothScroll(b, EYE_LINE_RATIO, tId);
+    }
+    if (!highlight) return;
     if (mId && type) {
         const m = document.querySelector(`[data-${type}-id="${mId}"]`);
         if (m) highlightMarker(m);
     } else highlightBlock(b);
+}
+
+// Saved semantic positions share navigation geometry, not source-jump emphasis.
+function restoreReadingLocation(id, blockOffset) {
+    scrollToBlock(id, null, null, blockOffset, false);
 }
 
 function scrollToQuote(qId) {
@@ -535,6 +1079,10 @@ function scrollToQuote(qId) {
 }
 
 function scrollToPercent(p) {
+    if (pagination.mode === 'pages') {
+        flushPageReflow();
+        return navigateToPage(Math.max(0, Math.min(1, p)) * (pagination.pageCount - 1));
+    }
     const vh = window.innerHeight;
     const sh = document.documentElement.scrollHeight;
     const scrollMax = Math.max(1, sh - vh);
@@ -542,11 +1090,13 @@ function scrollToPercent(p) {
 }
 
 function scrollToOffset(o) {
+    flushPageReflow();
     programmatic.start(null, o);
 }
 
 function applyReaderStyle(style) {
     if (!style) return;
+    const anchor = pagination.mode === 'pages' ? pagination.anchor : captureReadingAnchor();
 
     const root = document.documentElement;
     root.style.setProperty('--base', style.themeBase);
@@ -560,7 +1110,15 @@ function applyReaderStyle(style) {
     document.body.style.fontSize = `${style.fontSize}px`;
     document.body.style.lineHeight = String(style.lineSpacing);
 
-    scheduleMapRebuild();
+    if (pagination.mode === 'pages') {
+        rebuildPages(anchor);
+    } else {
+        pagination.scrollAnchorY = null;
+        const rect = anchorRect(anchor);
+        if (rect) window.scrollTo(0, Math.max(0, window.scrollY + rect.top - window.innerHeight * EYE_LINE_RATIO));
+        focusState.lastBlockCheckY = -Infinity;
+        scheduleMapRebuild();
+    }
 }
 
 function syncMarkerGroup(items, selector, datasetKey, className) {
@@ -652,9 +1210,30 @@ function syncDecorations(payload) {
     syncInlineImages(payload || { inlineAIImagesEnabled: false, inlineImages: [] });
 }
 
+// Called by the main-frame document-end user script before the first paint.
+// Configure decorations and typography before enabling columns, so the initial
+// chapter is laid out once in its actual reading mode rather than flashing scroll.
+function initializeReader(style, markers, images, layout, mode) {
+    isInitializingReader = true;
+    try {
+        applyReaderStyle(style);
+        syncMarkers(markers);
+        syncInlineImages(images);
+        setPageLayout(layout);
+        setReadingMode(mode);
+    } finally {
+        isInitializingReader = false;
+    }
+    if (mode === 'scroll') scheduleMapRebuild();
+}
+
 // --- Event Listeners ---
 
 window.addEventListener('scroll', () => {
+    if (pagination.mode === 'pages') {
+        if (window.scrollX !== 0 || window.scrollY !== 0) renderPage();
+        return;
+    }
     const sy = window.scrollY;
     focusState.lastVelocity = Math.abs(sy - focusState.lastScrollY);
     focusState.lastScrollY = sy;
@@ -662,6 +1241,11 @@ window.addEventListener('scroll', () => {
     if (!scrollTicking) {
         scrollTicking = true;
         window.requestAnimationFrame(() => {
+            if (pagination.mode === 'pages') {
+                scrollTicking = false;
+                return;
+            }
+            const sy = window.scrollY;
             updateFocus();
             const max = document.documentElement.scrollHeight - window.innerHeight;
             // Two-step tug: first arrival at bottom doesn't trigger, only deliberate second tug after settling
@@ -699,6 +1283,7 @@ function updateSelectionOverlay() {
         const rects = sel.getRangeAt(0).getClientRects();
         selectionOverlay.innerHTML = '';
         for (const r of rects) {
+            if (pagination.mode === 'pages' && !rectIsOnPage(r)) continue;
             const d = document.createElement('div');
             d.className = 'selection-rect';
             d.style.left = (r.left + window.scrollX) + 'px';
@@ -712,12 +1297,83 @@ function updateSelectionOverlay() {
 
 document.addEventListener('selectionchange', updateSelectionOverlay);
 
+// Native reader shortcuts must leave WebKit's selection and embedded EPUB
+// editors alone. Report state only; keyboard/navigation still has one owner.
+function reportReaderInteractionState() {
+    const selection = window.getSelection();
+    const active = document.activeElement;
+    postToNative({
+        type: 'readerInteractionState',
+        hasSelection: !!selection && !selection.isCollapsed,
+        isEditing: !!active && (active.matches('input, textarea, select') || active.isContentEditable)
+    });
+}
+document.addEventListener('selectionchange', reportReaderInteractionState);
+document.addEventListener('focusin', reportReaderInteractionState);
+document.addEventListener('focusout', () => {
+    queueMicrotask(reportReaderInteractionState);
+});
+
 // High-precision Layout Monitoring
 const layoutObserver = new ResizeObserver(() => scheduleMapRebuild());
 layoutObserver.observe(document.body);
+window.addEventListener('resize', scheduleMapRebuild);
+document.addEventListener('load', event => {
+    if (event.target instanceof HTMLImageElement) scheduleMapRebuild();
+}, true);
+if (document.fonts) {
+    document.fonts.ready.then(scheduleMapRebuild);
+    document.fonts.addEventListener('loadingdone', scheduleMapRebuild);
+}
+
+// One turn per wheel gesture, including its momentum tail. Keyboard handling is
+// deliberately owned by the native reader, not duplicated in the web view.
+document.addEventListener('wheel', event => {
+    if (pagination.mode !== 'pages' || event.ctrlKey ||
+        event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    event.preventDefault();
+    clearTimeout(pagination.wheelTimer);
+    pagination.wheelTimer = setTimeout(() => {
+        pagination.wheelDelta = 0;
+        pagination.wheelConsumed = false;
+    }, 200);
+    if (pagination.wheelConsumed) return;
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+    pagination.wheelDelta += delta * scale;
+    if (Math.abs(pagination.wheelDelta) < 24) return;
+    pagination.wheelConsumed = true;
+    turnPage(Math.sign(pagination.wheelDelta));
+}, { passive: false });
 
 document.addEventListener('click', e => {
     const t = e.target;
+    if (pagination.mode === 'pages') {
+        const marker = t.closest('.annotation-marker, .image-marker, .footnote-ref');
+        if (marker) {
+            const type = marker.classList.contains('annotation-marker') ? 'annotation'
+                : marker.classList.contains('image-marker') ? 'image' : 'footnote';
+            const id = marker.dataset.annotationId || marker.dataset.imageId || marker.getAttribute('href')?.split('#')[1];
+            programmatic.lock(`${type}-${id}`);
+            pagination.anchor = anchorForElement(marker);
+            pagination.needsAnchor = false;
+            updateFocus(true);
+        }
+        const link = t.closest('a[href]');
+        const href = link?.getAttribute('href');
+        const isSameDocument = link && link.origin === location.origin &&
+            link.pathname === location.pathname && link.search === location.search;
+        if (href?.startsWith('#') || (isSameDocument && link.hash)) {
+            const fragment = href.startsWith('#') ? href.slice(1) : link.hash.slice(1);
+            let id = fragment;
+            try { id = decodeURIComponent(fragment); } catch { /* EPUBs may contain literal percent signs in IDs. */ }
+            const target = document.getElementById(id);
+            if (target) {
+                e.preventDefault();
+                performSmoothScroll(target, EYE_LINE_RATIO, null);
+            }
+        }
+    }
     if (t.classList.contains('annotation-marker')) postToNative({ type: 'annotationClick', id: t.dataset.annotationId });
     if (t.classList.contains('image-marker')) postToNative({ type: 'imageMarkerClick', id: t.dataset.imageId });
 });

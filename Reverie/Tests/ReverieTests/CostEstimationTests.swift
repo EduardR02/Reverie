@@ -200,17 +200,6 @@ final class CostEstimationTests: XCTestCase {
         XCTAssertNil(pricingWithSpaces)
     }
 
-    func testLegacyModelAliasesResolveToCurrentPricing() {
-        XCTAssertEqual(
-            PricingCatalog.textPricing(for: SupportedModels.Google.legacyGemini3ProPreview)?.outputPerMToken,
-            PricingCatalog.textPricing(for: SupportedModels.Google.gemini31ProPreview)?.outputPerMToken
-        )
-        XCTAssertEqual(
-            PricingCatalog.textPricing(for: SupportedModels.OpenAI.legacyGPT52)?.outputPerMToken,
-            PricingCatalog.textPricing(for: SupportedModels.OpenAI.gpt54)?.outputPerMToken
-        )
-    }
-
     // MARK: - Images Per Chapter Tests
 
     func testImagesPerChapter_Minimal() {

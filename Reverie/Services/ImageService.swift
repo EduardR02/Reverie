@@ -59,6 +59,7 @@ final class ImageService {
         aspectRatio: String? = nil,
         imageResolution: String = "2K"
     ) async throws -> Data {
+        try Task.checkCancellation()
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw ImageError.missingAPIKey
@@ -514,7 +515,7 @@ final class ImageService {
 
         await withTaskGroup(of: (Int, U).self) { group in
             func enqueueNext() {
-                guard nextIndex < items.count else { return }
+                guard !Task.isCancelled, nextIndex < items.count else { return }
                 let index = nextIndex
                 nextIndex += 1
                 group.addTask {

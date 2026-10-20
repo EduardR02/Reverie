@@ -6,12 +6,27 @@ struct ReaderView: View {
     @Environment(\.theme) private var theme
     @State private var session = ReaderSession()
 
-    func handleSpaceBar() -> KeyPress.Result {
-        session.handleSpaceBar()
-    }
-    
-    func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
-        session.handleKeyPress(press)
+    private func handleReaderKeyDown(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+        let modifiers: EventModifiers = event.modifierFlags.contains(.shift) ? [.shift] : []
+        switch event.keyCode {
+        case 49:
+            return session.handleSpaceBar() == .handled
+        case 123:
+            return session.handleReaderKey(.leftArrow, modifiers: modifiers) == .handled
+        case 124:
+            return session.handleReaderKey(.rightArrow, modifiers: modifiers) == .handled
+        case 125:
+            return session.handleReaderKey(.downArrow, modifiers: modifiers) == .handled
+        case 126:
+            return session.handleReaderKey(.upArrow, modifiers: modifiers) == .handled
+        case 116, 121:
+            guard session.readingMode == .pages, !session.isRSVPMode else { return false }
+            session.turnPage(event.keyCode == 116 ? -1 : 1)
+            return true
+        default:
+            return false
+        }
     }
 
     var body: some View {
@@ -20,15 +35,21 @@ struct ReaderView: View {
                 splitRatio: appState.splitRatio,
                 minimumLeadingWidth: ReaderSplitLayout.readerMinimumWidth,
                 minimumTrailingWidth: ReaderSplitLayout.aiMinimumWidth,
-                onSplitRatioChange: { appState.splitRatio = $0 }
+                isTrailingVisible: session.isAIPanelVisible,
+                onSplitRatioChange: { appState.splitRatio = $0 },
+                isReaderFocusAllowed: !session.isChatInputFocused &&
+                    !session.showChapterList && session.expandedImage == nil,
+                onReaderKeyDown: handleReaderKeyDown
             ) {
                 ReaderBookPanel(session: session)
                     .environment(appState)
                     .environment(\.theme, theme)
             } trailing: {
-                ReaderAIPanel(session: session)
-                    .environment(appState)
-                    .environment(\.theme, theme)
+                if session.isAIPanelVisible {
+                    ReaderAIPanel(session: session)
+                        .environment(appState)
+                        .environment(\.theme, theme)
+                }
             }
             Color.clear
                 .onChange(of: appState.currentChapterIndex) { _, idx in 
@@ -41,19 +62,13 @@ struct ReaderView: View {
                     session.handleRSVPPauseContentChange(newValue)
                 }
         }
-        .focusable()
-        .focusEffectDisabled()
         .background(theme.base)
         .overlay {
             if let image = session.expandedImage {
                 ReaderImageOverlay(image: image, session: session)
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Text(appState.currentBook?.title ?? "").font(.system(size: 14, weight: .medium)).foregroundColor(theme.text)
-            }
-        }
+        .ignoresSafeArea(.container, edges: .top)
         .task {
             session.setup(with: appState)
             await session.loadChapters()
@@ -62,9 +77,8 @@ struct ReaderView: View {
         .onChange(of: appState.readingSpeedTracker.manualAutoScrollWPM) { _, newValue in
             session.rsvpEngine.setWPM(newValue)
         }
+        .onChange(of: appState.settings.readingMode) { _, _ in session.readingModeDidChange() }
         .onDisappear { session.cleanup() }
-        .onKeyPress(.space) { handleSpaceBar() }
-        .onKeyPress { handleKeyPress($0) }
     }
 }
 
@@ -105,7 +119,14 @@ private struct ReaderBookPanel: View {
                         scrollToQuote: Bindable(session).scrollToQuote,
                         pendingMarkerInjections: Bindable(session).pendingMarkerInjections,
                         pendingImageMarkerInjections: Bindable(session).pendingImageMarkerInjections,
-                        scrollByAmount: Bindable(session).scrollByAmount
+                        scrollByAmount: Bindable(session).scrollByAmount,
+                        pageTurnRequests: session.pageTurnRequests,
+                        onPageTurnsConsumed: { session.consumePageTurns($0) },
+                        scrollToLocation: session.scrollToLocation,
+                        onLocationNavigationConsumed: { location in
+                            if session.scrollToLocation == location { session.scrollToLocation = nil }
+                        },
+                        onTopTug: { session.turnPage(-1) }
                     )
                     
                     if session.isRSVPMode {
@@ -195,27 +216,22 @@ private struct ReaderAIPanel: View {
             pendingChatPrompt: Bindable(session).pendingChatPrompt,
             isChatInputFocused: Bindable(session).isChatInputFocused,
             isRSVPMode: session.isRSVPMode,
-            isRSVPPlaying: session.rsvpEngine.isPlaying,
+            isRSVPPlaying: session.isRSVPMode ? session.rsvpEngine.isPlaying : session.autoScroll.isActive,
             rsvpWPM: session.rsvpEngine.wpm,
             onRSVPModeToggle: { enabled in
                 session.setRSVPMode(enabled)
             },
             onRSVPTogglePlay: {
-                session.rsvpEngine.toggle()
+                if session.isRSVPMode { session.rsvpEngine.toggle() }
+                else { session.setAutoScrollEnabled(!session.autoScroll.isActive) }
             },
             isAtChapterBottom: session.isAtChapterBottom,
             onApplyAdjustment: { appState.readingSpeedTracker.applyAdjustment($0) },
-            onToggleAutoScroll: { enabled in
-                appState.settings.smartAutoScrollEnabled = enabled
-                appState.settings.save()
-                if enabled {
-                    session.isRSVPMode = false
-                    session.autoScroll.start()
-                } else {
-                    session.autoScroll.stop()
-                }
-            },
-            expandedImage: Bindable(session).expandedImage
+            onToggleAutoScroll: { session.setAutoScrollEnabled($0) },
+            expandedImage: Bindable(session).expandedImage,
+            visibleAnnotationIds: session.visibleAnnotationIds,
+            visibleImageIds: session.visibleImageIds,
+            isOnLastPage: session.isOnLastPage
         )
     }
 }
@@ -224,32 +240,124 @@ private struct ReaderChapterHeader: View {
     let session: ReaderSession
     @Environment(AppState.self) private var appState
     @Environment(\.theme) private var theme
+    @State private var isHovered = false
+    @State private var showsReadingLayout = false
+
+    private var showsControls: Bool {
+        isHovered || showsReadingLayout || session.showChapterList
+    }
 
     var body: some View {
-        HStack {
-            Button { appState.closeBook() } label: {
-                HStack(spacing: 6) { Image(systemName: "chevron.left"); Text("Library") }
-                    .font(.system(size: 13, weight: .medium)).foregroundColor(theme.subtle)
-                    .padding(.horizontal, 12).padding(.vertical, 8).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).padding(.horizontal, -12)
-            Spacer()
-            Button { session.showChapterList.toggle() } label: {
-                HStack(spacing: 6) {
-                    Text(session.currentChapter?.title ?? (session.isLoadingChapters ? "Loading..." : "No Chapter"))
-                        .font(.system(size: 14, weight: .medium)).foregroundColor(theme.text).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundColor(theme.muted)
+        ZStack {
+            ReaderWindowHeader()
+            Text(appState.currentBook?.title ?? "")
+                .font(.system(size: 11))
+                .foregroundColor(theme.subtle)
+                .lineLimit(1)
+                .padding(.horizontal, 176)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 8) {
+                Button { appState.closeBook() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                        Text("Library")
+                    }
+                    .padding(.horizontal, 5)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 8).padding(.horizontal, 12).contentShape(Rectangle())
+                .help("Back to Library")
+                .accessibilityLabel("Back to Library")
+                Spacer(minLength: 0)
+                Button { session.showChapterList.toggle() } label: {
+                    Image(systemName: "list.bullet")
+                        .frame(width: 26, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .help(session.currentChapter?.title ?? "Chapters")
+                .accessibilityLabel("Chapters")
+                .popover(isPresented: Bindable(session).showChapterList) {
+                    ReaderChapterListPopover(session: session)
+                }
+                Button { showsReadingLayout.toggle() } label: {
+                    Image(systemName: readingLayoutIcon)
+                        .frame(width: 26, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .help("Reading layout")
+                .accessibilityLabel("Reading layout")
+                .popover(isPresented: $showsReadingLayout, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("READING LAYOUT")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(1)
+                            .foregroundColor(theme.muted)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                        layoutOption("Scroll", icon: "scroll", mode: .scroll)
+                        layoutOption("One column", icon: "doc.text", mode: .pages, layout: .single)
+                        layoutOption("Two columns", icon: "book.pages", mode: .pages, layout: .spread)
+                    }
+                    .padding(8)
+                    .frame(width: 210)
+                    .background(theme.surface)
+                }
+                Button { session.setAIPanelVisible(!session.isAIPanelVisible) } label: {
+                    Image(systemName: "sidebar.right")
+                        .frame(width: 26, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .help(session.isAIPanelVisible ? "Hide AI sidebar and pause AI" : "Show AI sidebar and resume AI")
+                .accessibilityLabel(session.isAIPanelVisible ? "Hide AI sidebar" : "Show AI sidebar")
             }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(theme.subtle)
             .buttonStyle(.plain)
-            .popover(isPresented: Bindable(session).showChapterList) {
-                ReaderChapterListPopover(session: session)
-            }
-            Spacer()
+            .padding(.leading, 84)
+            .padding(.trailing, 12)
+            .opacity(showsControls ? 1 : 0)
         }
-        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
-        .frame(height: ReaderMetrics.headerHeight).background(theme.surface)
+        .frame(height: ReaderMetrics.readingHeaderHeight)
+        .background(theme.base)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: showsControls)
+    }
+
+    private var readingLayoutIcon: String {
+        guard appState.settings.readingMode == .pages else { return "scroll" }
+        return appState.settings.pageLayout == .spread ? "book.pages" : "doc.text"
+    }
+
+    private func layoutOption(_ title: String, icon: String, mode: ReaderReadingMode, layout: ReaderPageLayout? = nil) -> some View {
+        let selected = appState.settings.readingMode == mode &&
+            (layout == nil || appState.settings.pageLayout == layout)
+        return Button {
+            if let layout { session.setPageLayout(layout) }
+            session.setReadingMode(mode)
+            showsReadingLayout = false
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 18)
+                Text(title)
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(theme.rose)
+                }
+            }
+            .font(.system(size: 12, weight: selected ? .medium : .regular))
+            .foregroundColor(theme.text)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(selected ? theme.overlay : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 
@@ -296,33 +404,50 @@ private struct ReaderNavigationFooter: View {
     let session: ReaderSession
     @Environment(AppState.self) private var appState
     @Environment(\.theme) private var theme
+    @State private var isHovered = false
 
     var body: some View {
-        HStack {
-            Button { appState.previousChapter() } label: {
-                HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Previous") }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(appState.currentChapterIndex > 0 ? theme.text : theme.muted)
-                    .padding(.vertical, 8).padding(.horizontal, 12).contentShape(Rectangle())
+        ZStack {
+            HStack {
+                if isPaged {
+                    pageButton(direction: -1)
+                    Spacer()
+                    pageButton(direction: 1)
+                } else {
+                    chapterButton(direction: -1)
+                    Spacer()
+                    chapterButton(direction: 1)
+                }
             }
-            .buttonStyle(.plain).disabled(appState.currentChapterIndex <= 0)
-            Spacer()
-            Text("\(appState.currentChapterIndex + 1) / \(session.chapters.count)")
-                .font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundColor(theme.muted)
-            Spacer()
-            Button { appState.nextChapter() } label: {
-                HStack(spacing: 4) { Text("Next"); Image(systemName: "chevron.right") }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(appState.currentChapterIndex < session.chapters.count - 1 ? theme.text : theme.muted)
-                    .padding(.vertical, 8).padding(.horizontal, 12).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(appState.currentChapterIndex >= session.chapters.count - 1)
+            .opacity(isHovered ? 1 : 0)
+            Text(positionLabel)
+                .overlay {
+                    if isHovered, let total = positionTotal {
+                        GeometryReader { geometry in
+                            Text(" / \(total)")
+                                .fixedSize()
+                                .frame(height: geometry.size.height)
+                                .offset(x: geometry.size.width)
+                        }
+                        .transition(.opacity)
+                        .accessibilityHidden(true)
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .monospacedDigit()
+                .foregroundColor(theme.subtle)
+                .lineLimit(1)
+                .allowsHitTesting(false)
+                .accessibilityLabel(positionAccessibilityLabel)
         }
         .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
-        .frame(height: ReaderMetrics.footerHeight).background(theme.surface)
+        .frame(height: ReaderMetrics.readingFooterHeight)
+        .background(theme.base)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: isHovered)
         .overlay(alignment: .top) {
             ZStack {
-                Rectangle().fill(theme.overlay).frame(height: 1).opacity(session.autoScroll.showIndicator ? 0 : 1)
                 if session.autoScroll.showIndicator, let targetDate = session.autoScroll.countdownTargetDate {
                     AutoScrollFuse(
                         targetDate: targetDate, duration: session.autoScroll.countdownDuration, theme: theme
@@ -330,6 +455,73 @@ private struct ReaderNavigationFooter: View {
                 }
             }.animation(.easeInOut, value: session.autoScroll.showIndicator)
         }
+    }
+
+    private var isPaged: Bool {
+        appState.settings.readingMode == .pages && !session.isRSVPMode
+    }
+
+    private var positionLabel: String {
+        guard isPaged else { return "\(appState.currentChapterIndex + 1)" }
+        if session.bookPaginationFailed { return "Page count unavailable" }
+        guard let page = session.bookPageNumber, session.bookPageCount != nil else { return "Paginating…" }
+        return "\(page)"
+    }
+
+    private var positionTotal: Int? {
+        guard isPaged else { return session.chapters.count }
+        return session.bookPaginationFailed || session.bookPageNumber == nil ? nil : session.bookPageCount
+    }
+
+    private var positionAccessibilityLabel: String {
+        guard let total = positionTotal else { return positionLabel }
+        return "\(isPaged ? "Page" : "Chapter") \(positionLabel) of \(total)"
+    }
+
+    private func pageButton(direction: Int) -> some View {
+        let backward = direction < 0
+        let disabled = backward
+            ? session.pageIndex == nil || ((session.pageIndex ?? 0) == 0 && appState.currentChapterIndex == 0)
+            : !session.canAdvancePage
+        return Button { session.turnPage(direction) } label: {
+            HStack(spacing: 5) {
+                if backward { Image(systemName: "chevron.left") }
+                Text(backward ? "Previous" : "Next")
+                if !backward { Image(systemName: "chevron.right") }
+            }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(disabled ? theme.muted.opacity(0.4) : theme.subtle)
+                .frame(height: ReaderMetrics.readingFooterHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(backward ? "Previous page" : session.isOnLastPage ? "Continue after chapter" : "Next page")
+        .accessibilityLabel(backward ? "Previous page" : "Next page")
+    }
+
+    private func chapterButton(direction: Int) -> some View {
+        let backward = direction < 0
+        let disabled = backward
+            ? appState.currentChapterIndex == 0
+            : appState.currentChapterIndex >= session.chapters.count - 1
+        return Button {
+            if backward { appState.previousChapter() }
+            else { appState.nextChapter() }
+        } label: {
+            HStack(spacing: 5) {
+                if backward { Image(systemName: "chevron.left") }
+                Text(backward ? "Previous" : "Next")
+                if !backward { Image(systemName: "chevron.right") }
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(disabled ? theme.muted.opacity(0.4) : theme.subtle)
+            .frame(height: ReaderMetrics.readingFooterHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(backward ? "Previous chapter" : "Next chapter")
     }
 }
 

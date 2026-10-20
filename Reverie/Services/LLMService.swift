@@ -4,6 +4,13 @@ import Foundation
 final class LLMService {
     typealias StreamChunk = LLMStreamChunk
     private weak var appState: AppState?
+    private let sessionID = UUID().uuidString
+
+    private final class RejectRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
     
     enum RequestKind {
         case summary
@@ -57,16 +64,22 @@ final class LLMService {
     var recordMode: Bool = false
 
     private let session: ResilientSession
+    private let subscriptionAuth: OpenAISubscriptionAuth
 
-    init(appState: AppState? = nil, session: URLSession? = nil) {
+    init(
+        appState: AppState? = nil,
+        session: URLSession? = nil,
+        subscriptionAuth: OpenAISubscriptionAuth = .shared
+    ) {
         self.appState = appState
+        self.subscriptionAuth = subscriptionAuth
         
         if let session = session {
             self.session = ResilientSession(session: session)
         } else {
             let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 600 // 10 minutes
-            config.timeoutIntervalForResource = 600
+            config.timeoutIntervalForRequest = 1200
+            config.timeoutIntervalForResource = 1200
             self.session = ResilientSession(configuration: config)
         }
     }
@@ -103,6 +116,13 @@ final class LLMService {
 
         let role: Role
         let content: String
+        let providerState: LLMConversationState?
+
+        init(role: Role, content: String, providerState: LLMConversationState? = nil) {
+            self.role = role
+            self.content = content
+            self.providerState = providerState
+        }
     }
 
     struct ChapterAnalysis: Codable {
@@ -197,7 +217,8 @@ final class LLMService {
             reasoning: .off,
             webSearch: false,
             nameHint: "image_prompt_rewrite",
-            kind: .other
+            kind: .other,
+            authenticationMode: settings.openAIAuthenticationMode
         )
         return rewritten.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -209,7 +230,8 @@ final class LLMService {
         rollingSummary: String?,
         bookTitle: String?,
         author: String?,
-        settings: UserSettings
+        settings: UserSettings,
+        coveredIdeas: [String] = []
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         // Calculate word count for proportional guidance
         let wordCount = contentWithBlocks.split { $0.isWhitespace || $0.isNewline }.count
@@ -221,7 +243,8 @@ final class LLMService {
             author: author,
             insightDensity: settings.insightDensity,
             imageDensity: settings.imagesEnabled ? settings.imageDensity : nil,
-            wordCount: wordCount
+            wordCount: wordCount,
+            coveredIdeas: coveredIdeas
         )
 
         let stream = streamResponse(
@@ -234,18 +257,23 @@ final class LLMService {
             schema: SchemaLibrary.chapterAnalysis(imagesEnabled: settings.imagesEnabled),
             webSearch: settings.webSearchEnabled,
             nameHint: "chapter_analysis_stream",
-            kind: .insight
+            kind: .insight,
+            authenticationMode: settings.openAIAuthenticationMode
         )
 
         return streamChapterAnalysisEvents(
             from: stream,
-            nameHint: "chapter_analysis_stream"
+            nameHint: "chapter_analysis_stream",
+            requiresSummary: true,
+            allowsResponseCapture: settings.llmProvider != .openai || settings.openAIAuthenticationMode != .chatGPTSubscription
         )
     }
 
     internal func streamChapterAnalysisEvents(
         from stream: AsyncThrowingStream<LLMStreamChunk, Error>,
-        nameHint: String? = nil
+        nameHint: String? = nil,
+        requiresSummary: Bool = false,
+        allowsResponseCapture: Bool = true
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -267,11 +295,19 @@ final class LLMService {
                         }
                     }
 
-                    if recordMode, let data = fullText.data(using: .utf8), !fullText.isEmpty {
+                    if recordMode && allowsResponseCapture, let data = fullText.data(using: .utf8), !fullText.isEmpty {
                         recordResponse(data, name: nameHint ?? "chapter_analysis_stream")
                     }
 
-                    let finalAnalysis: ChapterAnalysis = try self.decodeStructured(ChapterAnalysis.self, from: fullText)
+                    let finalAnalysis: ChapterAnalysis
+                    do {
+                        finalAnalysis = try self.decodeStructured(ChapterAnalysis.self, from: fullText)
+                    } catch {
+                        throw LLMError.apiError("The provider completed, but its chapter analysis could not be decoded. Nothing was saved.")
+                    }
+                    if requiresSummary && finalAnalysis.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        throw ChapterAnalysisValidationError.emptyField("chapter summary")
+                    }
                     continuation.yield(.completed(finalAnalysis))
                     continuation.finish()
                 } catch {
@@ -322,9 +358,8 @@ final class LLMService {
         let summary: String
     }
 
-    /// Generates just the chapter summary using the cheapest available model.
-    /// This enables pipelining: summary for chapter N+1 can start as soon as
-    /// summary for chapter N completes, without waiting for insights.
+    /// Context-only chapters use the reader's selected model and reasoning level.
+    /// Classification preferences must not silently downgrade continuity.
     func generateSummary(
         contentWithBlocks: String,
         rollingSummary: String?,
@@ -335,22 +370,25 @@ final class LLMService {
             rollingSummary: rollingSummary
         )
 
-        // Always use cheapest model for summary generation
-        let (provider, model, key) = classificationModelSelection(settings: settings)
+        let provider = settings.llmProvider
+        let model = SupportedModels.canonicalLLMModelID(settings.llmModel)
 
         let (response, usage): (SummaryResponse, TokenUsage?) = try await requestStructuredWithUsage(
             prompt: prompt,
             schema: SchemaLibrary.summaryOnly,
             provider: provider,
             model: model,
-            apiKey: key,
-            temperature: 0.3,
-            reasoning: .off,
+            apiKey: apiKey(for: provider, settings: settings),
+            temperature: settings.temperature,
+            reasoning: settings.insightReasoningLevel,
             nameHint: "chapter_summary",
-            kind: .summary
+            kind: .summary,
+            authenticationMode: settings.openAIAuthenticationMode
         )
 
-        return (response.summary, usage)
+        let summary = response.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { throw ChapterAnalysisValidationError.emptyField("chapter summary") }
+        return (summary, usage)
     }
 
     // MARK: - Search Query Distillation
@@ -381,7 +419,8 @@ final class LLMService {
             reasoning: .off,
             webSearch: false, // Explicitly false
             nameHint: "distill_search",
-            kind: .other
+            kind: .other,
+            authenticationMode: settings.openAIAuthenticationMode
         )
     }
 
@@ -394,7 +433,8 @@ final class LLMService {
         referenceContent: String? = nil,
         contentWithBlocks: String,
         rollingSummary: String?,
-        settings: UserSettings
+        settings: UserSettings,
+        onProviderState: (@MainActor (LLMConversationState) -> Void)? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         let prompt = PromptLibrary.chatPrompt(
             message: message,
@@ -414,7 +454,9 @@ final class LLMService {
             reasoning: settings.chatReasoningLevel,
             webSearch: false, // Explicitly false
             nameHint: "chat_stream",
-            kind: .chat
+            kind: .chat,
+            authenticationMode: settings.openAIAuthenticationMode,
+            onProviderState: onProviderState
         )
     }
 
@@ -424,13 +466,15 @@ final class LLMService {
         contentWithBlocks: String,
         rollingSummary: String?,
         existingTitles: [String],
-        settings: UserSettings
+        settings: UserSettings,
+        coveredIdeas: [String] = []
     ) -> AsyncThrowingStream<ChapterAnalysisStreamEvent, Error> {
         let prompt = PromptLibrary.moreInsightsPrompt(
             contentWithBlocks: contentWithBlocks,
             rollingSummary: rollingSummary,
             existingTitles: existingTitles,
-            insightDensity: settings.insightDensity
+            insightDensity: settings.insightDensity,
+            coveredIdeas: coveredIdeas
         )
 
         let stream = streamResponse(
@@ -443,12 +487,14 @@ final class LLMService {
             schema: SchemaLibrary.annotationsOnly,
             webSearch: settings.webSearchEnabled,
             nameHint: "more_insights_stream",
-            kind: .insight
+            kind: .insight,
+            authenticationMode: settings.openAIAuthenticationMode
         )
 
         return streamChapterAnalysisEvents(
             from: stream,
-            nameHint: "more_insights_stream"
+            nameHint: "more_insights_stream",
+            allowsResponseCapture: settings.llmProvider != .openai || settings.openAIAuthenticationMode != .chatGPTSubscription
         )
     }
 
@@ -472,14 +518,16 @@ final class LLMService {
             temperature: settings.temperature,
             reasoning: settings.insightReasoningLevel,
             schema: SchemaLibrary.quizOnly,
-            webSearch: settings.webSearchEnabled, // Quiz generation also gets it
+            webSearch: false,
             nameHint: "more_questions_stream",
-            kind: .insight
+            kind: .insight,
+            authenticationMode: settings.openAIAuthenticationMode
         )
 
         return streamChapterAnalysisEvents(
             from: stream,
-            nameHint: "more_questions_stream"
+            nameHint: "more_questions_stream",
+            allowsResponseCapture: settings.llmProvider != .openai || settings.openAIAuthenticationMode != .chatGPTSubscription
         )
     }
 
@@ -492,10 +540,6 @@ final class LLMService {
         let prompt = PromptLibrary.chapterClassificationPrompt(chapters: chapters)
         let (provider, model, key) = classificationModelSelection(settings: settings)
 
-        guard !key.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
-            throw LLMError.noAPIKey(provider)
-        }
-
         let response: ClassificationResponse = try await requestStructured(
             prompt: prompt,
             schema: SchemaLibrary.chapterClassification,
@@ -505,18 +549,22 @@ final class LLMService {
             temperature: 0.3,
             reasoning: .off,
             nameHint: "chapter_classification",
-            kind: .other
+            kind: .other,
+            authenticationMode: settings.openAIAuthenticationMode
         )
 
+        let requestedIndices = Set(chapters.map(\.index))
         var result: [Int: Bool] = [:]
         for classification in response.classifications {
-            result[classification.index] = (classification.type == "garbage")
-        }
-
-        for i in 0..<chapters.count {
-            if result[i] == nil {
-                result[i] = false
+            guard requestedIndices.contains(classification.index),
+                  result[classification.index] == nil,
+                  ["content", "garbage"].contains(classification.type) else {
+                throw LLMError.invalidResponse
             }
+            result[classification.index] = classification.type == "garbage"
+        }
+        for chapter in chapters where result[chapter.index] == nil {
+            result[chapter.index] = false
         }
 
         return result
@@ -524,48 +572,22 @@ final class LLMService {
 
     /// Select the best model for classification (cheap and fast)
     func classificationModelSelection(settings: UserSettings) -> (LLMProvider, String, String) {
-        if settings.useCheapestModelForClassification {
-            // 1. If Google Key exists -> ALWAYS prefer Gemini Flash
-            let googleKey = settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !googleKey.isEmpty {
-                return (.google, SupportedModels.Google.gemini3FlashPreview, googleKey)
-            }
-            
-            // 2. Otherwise, use the cheapest model from the CURRENT provider
-            let provider = settings.llmProvider
-            let currentKey = apiKey(for: provider, settings: settings).trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            if !currentKey.isEmpty {
-                switch provider {
-                case .google: return (.google, SupportedModels.Google.gemini3FlashPreview, currentKey)
-                case .openai: return (.openai, SupportedModels.OpenAI.gpt54, currentKey)
-                case .anthropic: return (.anthropic, SupportedModels.Anthropic.haiku45, currentKey)
-                }
-            }
-            
-            // 3. Fallback to any other key in order of "cheapness"
-            if !settings.anthropicAPIKey.isEmpty {
-                return (.anthropic, SupportedModels.Anthropic.haiku45, settings.anthropicAPIKey)
-            }
-            if !settings.openAIAPIKey.isEmpty {
-                return (.openai, SupportedModels.OpenAI.gpt54, settings.openAIAPIKey)
-            }
+        let current = settings.llmProvider
+        if current == .openai, settings.openAIAuthenticationMode == .chatGPTSubscription {
+            let model = settings.useCheapestModelForClassification
+                ? SupportedModels.utilityModel(for: .openai)
+                : SupportedModels.canonicalLLMModelID(settings.llmModel)
+            return (.openai, model, "")
         }
-        
-        // If setting is OFF, use CURRENTLY SELECTED model
-        let currentProvider = settings.llmProvider
-        let currentKey = apiKey(for: currentProvider, settings: settings).trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        if !currentKey.isEmpty {
-            return (currentProvider, SupportedModels.canonicalLLMModelID(settings.llmModel), currentKey)
+        if !settings.useCheapestModelForClassification, settings.hasAuthentication(for: current) {
+            return (current, SupportedModels.canonicalLLMModelID(settings.llmModel), apiKey(for: current, settings: settings))
         }
-
-        // Final fallback
-        if !settings.googleAPIKey.isEmpty {
-            return (.google, SupportedModels.Google.gemini3FlashPreview, settings.googleAPIKey)
+        // Prefer the efficient Google utility model when available, otherwise stay with the selected provider.
+        let candidates: [LLMProvider] = [.google, current, .anthropic, .openai]
+        if let provider = candidates.first(where: { settings.hasAuthentication(for: $0) }) {
+            return (provider, SupportedModels.utilityModel(for: provider), apiKey(for: provider, settings: settings))
         }
-        
-        return (.google, SupportedModels.Google.gemini3FlashPreview, "")
+        return (current, SupportedModels.utilityModel(for: current), "")
     }
 
     // MARK: - Request Handling
@@ -579,41 +601,14 @@ final class LLMService {
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
         nameHint: String? = nil,
-        kind: RequestKind
+        kind: RequestKind,
+        authenticationMode: OpenAIAuthenticationMode = .apiKey
     ) async throws -> String {
-        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            throw LLMError.noAPIKey(provider)
-        }
-
-        let limit = appState?.settings.maxConcurrentRequests ?? 5
-        let currentLimiter = self.limiter
-        await currentLimiter.acquire(provider: provider, limit: limit)
-        defer { 
-            Task { await currentLimiter.release(provider: provider) }
-        }
-        
-        incrementInFlight(kind)
-        defer { decrementInFlight(kind) }
-
-        let client = providerClient(for: provider)
-        let request = try client.makeRequest(
-            prompt: prompt,
-            model: resolvedModel,
-            apiKey: trimmedKey,
-            temperature: temperature,
-            reasoning: reasoning,
-            schema: nil,
-            stream: false,
-            webSearch: webSearch
-        )
-
-        let data = try await performRequest(request)
-        if recordMode { recordResponse(data, name: nameHint ?? "text_response") }
-        
-        let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
+        let (text, _) = try await collectResponse(from: streamResponse(
+            prompt: prompt, provider: provider, model: model, apiKey: apiKey,
+            temperature: temperature, reasoning: reasoning, webSearch: webSearch,
+            nameHint: nameHint, kind: kind, authenticationMode: authenticationMode
+        ))
         return text
     }
 
@@ -627,42 +622,15 @@ final class LLMService {
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
         nameHint: String? = nil,
-        kind: RequestKind
+        kind: RequestKind,
+        authenticationMode: OpenAIAuthenticationMode = .apiKey
     ) async throws -> T {
-        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            throw LLMError.noAPIKey(provider)
-        }
-
-        let limit = appState?.settings.maxConcurrentRequests ?? 5
-        let currentLimiter = self.limiter
-        await currentLimiter.acquire(provider: provider, limit: limit)
-        defer { 
-            Task { await currentLimiter.release(provider: provider) }
-        }
-
-        incrementInFlight(kind)
-        defer { decrementInFlight(kind) }
-
-        let client = providerClient(for: provider)
-        let request = try client.makeRequest(
-            prompt: prompt,
-            model: resolvedModel,
-            apiKey: trimmedKey,
-            temperature: temperature,
-            reasoning: reasoning,
-            schema: schema,
-            stream: false,
-            webSearch: webSearch
+        let (value, _): (T, TokenUsage?) = try await requestStructuredWithUsage(
+            prompt: prompt, schema: schema, provider: provider, model: model, apiKey: apiKey,
+            temperature: temperature, reasoning: reasoning, webSearch: webSearch,
+            nameHint: nameHint, kind: kind, authenticationMode: authenticationMode
         )
-
-        let data = try await performRequest(request)
-        if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
-        
-        let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
-        return try decodeStructured(T.self, from: text)
+        return value
     }
 
     private func requestStructuredWithUsage<T: Decodable>(
@@ -675,71 +643,71 @@ final class LLMService {
         reasoning: ReasoningLevel,
         webSearch: Bool = false,
         nameHint: String? = nil,
-        kind: RequestKind
+        kind: RequestKind,
+        authenticationMode: OpenAIAuthenticationMode = .apiKey
     ) async throws -> (T, TokenUsage?) {
-        let resolvedModel = SupportedModels.canonicalLLMModelID(model)
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            throw LLMError.noAPIKey(provider)
-        }
-
-        let limit = appState?.settings.maxConcurrentRequests ?? 5
-        let currentLimiter = self.limiter
-        await currentLimiter.acquire(provider: provider, limit: limit)
-        defer { 
-            Task { await currentLimiter.release(provider: provider) }
-        }
-
-        incrementInFlight(kind)
-        defer { decrementInFlight(kind) }
-
-        let client = providerClient(for: provider)
-        let request = try client.makeRequest(
-            prompt: prompt,
-            model: resolvedModel,
-            apiKey: trimmedKey,
-            temperature: temperature,
-            reasoning: reasoning,
-            schema: schema,
-            stream: false,
-            webSearch: webSearch
-        )
-
-        let data = try await performRequest(request)
-        if recordMode { recordResponse(data, name: nameHint ?? "structured_response") }
-
-        let (text, usage) = try client.parseResponseText(from: data)
-        if let usage { recordUsage(usage, provider: provider, model: resolvedModel, kind: kind) }
-        let result: T = try decodeStructured(T.self, from: text)
-        return (result, usage)
+        let (text, usage) = try await collectResponse(from: streamResponse(
+            prompt: prompt, provider: provider, model: model, apiKey: apiKey,
+            temperature: temperature, reasoning: reasoning, schema: schema, webSearch: webSearch,
+            nameHint: nameHint, kind: kind, authenticationMode: authenticationMode
+        ))
+        return (try decodeStructured(T.self, from: text), usage)
     }
 
-    private func recordUsage(_ usage: TokenUsage, provider: LLMProvider, model: String, kind: RequestKind) {
+    private func collectResponse(from stream: AsyncThrowingStream<StreamChunk, Error>) async throws -> (String, TokenUsage?) {
+        var text = ""
+        var usage: TokenUsage?
+        for try await chunk in stream {
+            switch chunk {
+            case .content(let delta): text += delta
+            case .thinking: break
+            case .usage(let next):
+                if let previous = usage {
+                    usage = TokenUsage(
+                        input: previous.input + next.input,
+                        visibleOutput: previous.visibleOutput + next.visibleOutput,
+                        cached: previous.cached.flatMap { before in next.cached.map { before + $0 } },
+                        cacheWrite: previous.cacheWrite.flatMap { before in next.cacheWrite.map { before + $0 } },
+                        reasoning: previous.reasoning.flatMap { before in next.reasoning.map { before + $0 } }
+                    )
+                } else {
+                    usage = next
+                }
+            }
+        }
+        return (text, usage)
+    }
+
+    private func recordUsage(_ usage: TokenUsage, provider: LLMProvider, model: String, kind: RequestKind, subscription: Bool = false) {
         guard let appState = self.appState else { return }
         appState.addTokens(
             input: usage.input,
             reasoning: usage.reasoning ?? 0,
             output: usage.visibleOutput,
-            cached: usage.cached ?? 0
+            cached: usage.cached,
+            cacheWrite: usage.cacheWrite
         )
-        appState.updateProcessingCost(
-            inputTokens: usage.input,
-            outputTokens: usage.visibleOutput,
-            reasoningTokens: usage.reasoning ?? 0,
-            cachedTokens: usage.cached ?? 0,
-            cacheWriteTokens: usage.cacheWrite ?? 0,
-            model: model
-        )
+        if !subscription {
+            appState.updateProcessingCost(
+                inputTokens: usage.input,
+                outputTokens: usage.visibleOutput,
+                reasoningTokens: usage.reasoning ?? 0,
+                cachedTokens: usage.cached ?? 0,
+                cacheWriteTokens: usage.cacheWrite ?? 0,
+                model: model
+            )
+        }
 
         var callUsage = LLMCallUsage(
-            provider: provider.rawValue,
+            provider: subscription ? "OpenAI (ChatGPT)" : provider.rawValue,
             model: model,
             task: kind.ledgerTask,
             inputTokens: usage.input,
             outputTokens: usage.visibleOutput,
             reasoningTokens: usage.reasoning,
             cachedTokens: usage.cached,
-            cost: LLMCallUsage.calculatedCost(for: usage, model: model)
+            cacheWriteTokens: usage.cacheWrite,
+            cost: subscription ? nil : LLMCallUsage.calculatedCost(for: usage, model: model)
         )
         do {
             try appState.database.saveLLMCallUsage(&callUsage)
@@ -862,36 +830,17 @@ final class LLMService {
         throw LLMError.invalidResponse
     }
 
-    private func providerClient(for provider: LLMProvider) -> any LLMProviderClient {
+    private func providerClient(for provider: LLMProvider, structuredOutputTool: Bool = false) -> any LLMProviderClient {
         switch provider {
         case .google:
             return GeminiProvider()
         case .openai:
             return OpenAIProvider()
         case .anthropic:
-            return AnthropicProvider()
+            return AnthropicProvider(structuredOutputTool: structuredOutputTool)
         }
     }
 
-    private func performRequest(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LLMError.invalidResponse
-        }
-
-        if httpResponse.statusCode != 200 {
-            if let message = parseErrorMessage(from: data) {
-                throw LLMError.apiError(message)
-            }
-            throw LLMError.httpError(httpResponse.statusCode)
-        }
-
-        return data
-    }
-
-    private func performRequestStreaming(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
-        try await session.bytes(for: request)
-    }
 
     private func parseErrorMessage(from data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -916,126 +865,237 @@ final class LLMService {
         schema: LLMStructuredSchema? = nil,
         webSearch: Bool = false,
         nameHint: String? = nil,
-        kind: RequestKind
+        kind: RequestKind,
+        authenticationMode: OpenAIAuthenticationMode = .apiKey,
+        onProviderState: (@MainActor (LLMConversationState) -> Void)? = nil
     ) -> AsyncThrowingStream<StreamChunk, Error> {
-        AsyncThrowingStream { continuation in
+        let usesSubscription = provider == .openai && authenticationMode == .chatGPTSubscription
+        let authRevision = subscriptionAuth.sessionRevision
+        let admissionSettings = appState?.settings
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let resolvedModel = SupportedModels.canonicalLLMModelID(model)
-                    let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmedKey.isEmpty else {
-                        continuation.finish(throwing: LLMError.noAPIKey(provider))
-                        return
-                    }
-
-                    let limit = appState?.settings.maxConcurrentRequests ?? 5
+                    let model = SupportedModels.canonicalLLMModelID(model)
                     let currentLimiter = self.limiter
-                    await currentLimiter.acquire(provider: provider, limit: limit)
-                    defer { 
-                        Task { await currentLimiter.release(provider: provider) }
-                    }
-                    
+                    await currentLimiter.acquire(provider: provider, limit: appState?.settings.maxConcurrentRequests ?? 5)
+                    defer { Task { await currentLimiter.release(provider: provider) } }
+                    try Task.checkCancellation()
+                    try validateAdmission(provider: provider, kind: kind, authenticationMode: authenticationMode, previous: admissionSettings)
+                    if usesSubscription && authRevision != subscriptionAuth.sessionRevision { throw CancellationError() }
+                    var credential = usesSubscription ? try await subscriptionAuth.credential() : nil
+                    let key = credential?.accessToken ?? apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !key.isEmpty else { throw LLMError.noAPIKey(provider) }
                     incrementInFlight(kind)
                     defer { decrementInFlight(kind) }
 
-                    let client = providerClient(for: provider)
-                    let request = try client.makeRequest(
-                        prompt: prompt,
-                        model: resolvedModel,
-                        apiKey: trimmedKey,
-                        temperature: temperature,
-                        reasoning: reasoning,
-                        schema: schema,
-                        stream: true,
-                        webSearch: webSearch
+                    var client: any LLMProviderClient = provider == .openai
+                        ? OpenAIProvider(subscriptionCredential: credential, sessionID: sessionID, apiKey: key)
+                        : providerClient(for: provider, structuredOutputTool: provider == .anthropic && schema != nil && webSearch)
+                    var request = try client.makeRequest(
+                        prompt: prompt, model: model, apiKey: key, temperature: temperature,
+                        reasoning: reasoning, schema: schema, stream: true, webSearch: webSearch
                     )
-
-                    let (bytes, response) = try await self.session.bytes(for: request)
-                    guard let httpResponse = response as? HTTPURLResponse else {
-                        throw LLMError.invalidResponse
-                    }
-
-                    if httpResponse.statusCode != 200 {
-                        var errorData = Data()
-                        for try await byte in bytes {
-                            errorData.append(byte)
+                    var nativeItems: [[String: Any]] = []
+                    var continuations = 0
+                    var refreshedCredential = false
+                    while true {
+                        try Task.checkCancellation()
+                        let accumulator: LLMStreamAccumulator
+                        do {
+                            accumulator = try await consumeStream(
+                                request, provider: provider, client: client, model: model, kind: kind,
+                                nameHint: nameHint, subscription: usesSubscription,
+                                buffersStructuredText: provider == .openai && schema != nil, continuation: continuation
+                            )
+                        } catch LLMError.httpError(401) {
+                            guard let rejected = credential, !refreshedCredential else { throw LLMError.httpError(401) }
+                            let renewed = try await subscriptionAuth.refreshCredential(rejectedAccessToken: rejected.accessToken)
+                            try Task.checkCancellation()
+                            try validateAdmission(provider: provider, kind: kind, authenticationMode: authenticationMode, previous: admissionSettings)
+                            if authRevision != subscriptionAuth.sessionRevision { throw CancellationError() }
+                            credential = renewed
+                            refreshedCredential = true
+                            client = OpenAIProvider(subscriptionCredential: renewed, sessionID: sessionID, apiKey: renewed.accessToken)
+                            request.setValue("Bearer \(renewed.accessToken)", forHTTPHeaderField: "Authorization")
+                            request.setValue(renewed.accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+                            request.setValue(renewed.residency, forHTTPHeaderField: "x-openai-internal-codex-residency")
+                            continue
                         }
-                        if let message = self.parseErrorMessage(from: errorData) {
-                            throw LLMError.apiError(message)
-                        }
-                        throw LLMError.httpError(httpResponse.statusCode)
-                    }
-
-                    // A temporary continuation to intercept usage chunks
-                    let isRecordMode = self.recordMode
-                    let streamRecorder = isRecordMode ? StreamingRecorder(name: nameHint ?? "stream") : nil
-                    
-                    var lineParser = SSELineParser()
-                    var rawData = Data()
-                    var sawPayload = false
-                    var streamingUsage: TokenUsage?
-                    var lastObservedUsage: TokenUsage?
-
-                    func handleLine(_ line: String) throws {
-                        guard let payload = ssePayload(from: line) else { return }
-                        sawPayload = true
-                        if payload == "[DONE]" { return }
-
-                        // Record each streaming chunk for test fixture generation
-                        streamRecorder?.recordChunk(payload)
-
-                        guard let data = payload.data(using: .utf8),
-                                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            return
-                        }
-
-                        if provider == .google, let usage = client.observedUsage(fromStreamEvent: json) {
-                            lastObservedUsage = usage
-                        }
-
-                        if let usage = client.usage(fromStreamEvent: json) {
-                            if streamingUsage == nil {
-                                streamingUsage = usage
-                            } else {
-                                streamingUsage?.mergeStreamingUsage(usage)
+                        let state = try accumulator.conversationState(model: model, scope: client.conversationScope)
+                        let items = try state.items(for: provider, model: model) ?? []
+                        nativeItems.append(contentsOf: items)
+                        if accumulator.needsContinuation {
+                            guard webSearch, continuations < 4 else {
+                                throw LLMError.apiError("Claude web search did not finish within the continuation limit.")
                             }
+                            guard let data = request.httpBody,
+                                  var body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                  var messages = body["messages"] as? [[String: Any]] else { throw LLMError.invalidResponse }
+                            messages.append(contentsOf: items)
+                            body["messages"] = messages
+                            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                            continuations += 1
+                            continue
                         }
-                        try client.handleStreamEvent(json, continuation: continuation)
+                        try Task.checkCancellation()
+                        onProviderState?(LLMConversationState(
+                            provider: provider, model: model, payload: try JSONSerialization.data(withJSONObject: nativeItems),
+                            scope: client.conversationScope
+                        ))
+                        continuation.finish()
+                        return
                     }
-
-                    for try await byte in bytes {
-                        if !sawPayload {
-                            rawData.append(byte)
-                        }
-                        try lineParser.append(byte: byte, onLine: handleLine)
-                    }
-                    try lineParser.finalize(onLine: handleLine)
-
-                    if !sawPayload {
-                        let (text, usage) = try client.parseResponseText(from: rawData)
-                        if let usage {
-                            self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
-                            continuation.yield(.usage(usage))
-                        }
-                        continuation.yield(.content(text))
-                    } else {
-                        let usage = streamingUsage ?? lastObservedUsage
-                        if let usage {
-                            if streamingUsage == nil {
-                                continuation.yield(.usage(usage))
-                            }
-                            self.recordUsage(usage, provider: provider, model: resolvedModel, kind: kind)
-                        }
-                    }
-                    streamRecorder?.save()
-                    
-                    continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: usesSubscription ? subscriptionError(error) : error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private func consumeStream(
+        _ request: URLRequest,
+        provider: LLMProvider,
+        client: any LLMProviderClient,
+        model: String,
+        kind: RequestKind,
+        nameHint: String?,
+        subscription: Bool,
+        buffersStructuredText: Bool,
+        continuation: AsyncThrowingStream<StreamChunk, Error>.Continuation
+    ) async throws -> LLMStreamAccumulator {
+        let (bytes, response) = try await session.bytes(for: request, delegate: RejectRedirects())
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse else { throw LLMError.invalidResponse }
+        if http.statusCode != 200 {
+            if subscription { throw LLMError.httpError(http.statusCode) }
+            var data = Data()
+            for try await byte in bytes { data.append(byte) }
+            throw parseErrorMessage(from: data).map(LLMError.apiError) ?? LLMError.httpError(http.statusCode)
+        }
+
+        let recorder = recordMode && !subscription ? StreamingRecorder(name: nameHint ?? "stream") : nil
+        var lines = SSELineParser()
+        var events = SSEEventParser()
+        var rawData = Data()
+        var sawPayload = false
+        var accumulator = LLMStreamAccumulator(provider: provider, structuredOutputTool: client.structuredOutputTool)
+        var usage: TokenUsage?
+        var emittedText = ""
+        defer {
+            // Incomplete, refused, and cancelled generations can still be billed.
+            // Unknown counters stay unknown; each HTTP attempt is recorded once.
+            if let usage = client.usage(fromResponse: accumulator.response) ?? usage {
+                recordUsage(usage, provider: provider, model: model, kind: kind, subscription: subscription)
+                continuation.yield(.usage(usage))
+            }
+            recorder?.save()
+        }
+
+        func handleEvent(_ payload: String) throws {
+            sawPayload = true
+            if payload == "[DONE]" { return }
+            recorder?.recordChunk(payload)
+            guard let data = payload.data(using: .utf8),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw LLMError.invalidResponse }
+            if let next = client.observedUsage(fromStreamEvent: json) {
+                if usage == nil { usage = next } else { usage?.mergeStreamingUsage(next) }
+            }
+            try accumulator.consume(json)
+            if provider == .openai {
+                for text in accumulator.openAIReasoningUpdates(json) { continuation.yield(.thinking(text)) }
+                if accumulator.isComplete { return }
+            }
+            try client.handleStreamEvent(json) { chunk in
+                if provider == .openai && chunk.isThinking { return }
+                if case .content(let text) = chunk {
+                    guard !client.structuredOutputTool, !buffersStructuredText else { return }
+                    if provider == .openai && !accumulator.includesOpenAITextDelta(json) { return }
+                    emittedText += text
+                }
+                continuation.yield(chunk)
+            }
+        }
+        func handleLine(_ line: String) throws {
+            try events.append(line: line, onEvent: handleEvent)
+        }
+        var iterator = bytes.makeAsyncIterator()
+        while true {
+            let next: UInt8?
+            do {
+                next = try await iterator.next()
+            } catch {
+                try Task.checkCancellation()
+                // Gemini may send usage after STOP. A subsequent socket failure must
+                // not invalidate that completed candidate, but explicit API errors do.
+                if provider == .google && accumulator.isComplete { break }
+                throw error
+            }
+            guard let byte = next else { break }
+            try Task.checkCancellation()
+            if !sawPayload { rawData.append(byte) }
+            try lines.append(byte: byte, onLine: handleLine)
+            // OpenAI response.completed and Claude message_stop are terminal.
+            // Gemini stays open for its optional trailing usage-only event.
+            if provider != .google && accumulator.isComplete { break }
+        }
+        try lines.finalize(onLine: handleLine)
+        try events.finalize(onEvent: handleEvent)
+        if !sawPayload {
+            guard let json = try JSONSerialization.jsonObject(with: rawData) as? [String: Any] else {
+                throw LLMError.invalidResponse
+            }
+            usage = client.usage(fromResponse: json)
+            try accumulator.consumeResponse(json)
+            if provider == .openai {
+                for text in accumulator.openAIReasoningUpdates(["type": "response.completed"]) {
+                    continuation.yield(.thinking(text))
+                }
+            }
+        }
+        try accumulator.finish()
+        let finalText = accumulator.visibleText
+        if !accumulator.needsContinuation && finalText.isEmpty { throw LLMError.invalidResponse }
+        guard finalText.utf8.starts(with: emittedText.utf8) else { throw LLMError.invalidResponse }
+        let remainder = finalText.utf8.dropFirst(emittedText.utf8.count)
+        if !remainder.isEmpty { continuation.yield(.content(String(decoding: remainder, as: UTF8.self))) }
+        try Task.checkCancellation()
+        return accumulator
+    }
+
+    private func validateAdmission(
+        provider: LLMProvider, kind: RequestKind, authenticationMode: OpenAIAuthenticationMode,
+        previous: UserSettings?
+    ) throws {
+        guard let previous, let settings = appState?.settings else { return }
+        if provider == .openai && previous.openAIAuthenticationMode != settings.openAIAuthenticationMode { throw CancellationError() }
+        if !(provider == .openai && authenticationMode == .chatGPTSubscription),
+           apiKey(for: provider, settings: previous) != apiKey(for: provider, settings: settings) {
+            throw CancellationError()
+        }
+        switch kind {
+        case .summary, .insight, .chat:
+            guard previous.llmProvider == settings.llmProvider,
+                  previous.llmModel == settings.llmModel else { throw CancellationError() }
+        case .other: break
+        }
+    }
+
+    private func subscriptionError(_ error: Error) -> Error {
+        if error is CancellationError || Task.isCancelled { return CancellationError() }
+        if error is OpenAISubscriptionAuthError { return error }
+        if let failure = error as? LLMError, case .httpError(let status) = failure {
+            switch status {
+            case 401: return LLMError.apiError("ChatGPT rejected this session. Sign in again in Settings.")
+            case 403: return LLMError.apiError("This ChatGPT account or workspace cannot access the requested model.")
+            case 429: return LLMError.apiError("ChatGPT subscription usage or rate limit reached. No paid API fallback was used.")
+            default: return LLMError.apiError("ChatGPT subscription request failed (HTTP \(status)).")
+            }
+        }
+        if let failure = error as? LLMError, case .invalidResponse = failure {
+            return LLMError.apiError("ChatGPT returned an invalid completion. No analysis was saved. No paid API fallback was used.")
+        }
+        return LLMError.apiError("ChatGPT generation did not complete. No analysis was saved. No paid API fallback was used.")
     }
 
     private func incrementInFlight(_ kind: RequestKind) {

@@ -73,6 +73,28 @@ final class BookContentPipelineTests: XCTestCase {
         XCTAssertEqual(decorations.inlineImages.count, 1)
     }
 
+    func testMarkerGeometryIdentityIsStableAcrossStreamAndDatabaseOrdering() {
+        let annotations = [
+            Annotation(id: 11, chapterId: 1, type: .science, title: "Later", content: "A", sourceBlockId: 5),
+            Annotation(id: 12, chapterId: 1, type: .history, title: "Earlier", content: "B", sourceBlockId: 2)
+        ]
+        let images = [
+            GeneratedImage(id: 21, chapterId: 1, prompt: "Later", imagePath: "", sourceBlockId: 6, status: .failed),
+            GeneratedImage(id: 22, chapterId: 1, prompt: "Earlier", imagePath: "", sourceBlockId: 1, status: .failed)
+        ]
+        let streamed = BookContentDecorationState(
+            annotations: annotations, images: images, inlineAIImagesEnabled: false,
+            pendingMarkers: [], pendingImageMarkers: []
+        )
+        let reloaded = BookContentDecorationState(
+            annotations: Array(annotations.reversed()), images: Array(images.reversed()), inlineAIImagesEnabled: false,
+            pendingMarkers: [], pendingImageMarkers: []
+        )
+        XCTAssertEqual(streamed, reloaded)
+        XCTAssertEqual(streamed.annotationMarkers.map(\.annotationId), [12, 11])
+        XCTAssertEqual(streamed.imageMarkers.map(\.imageId), [22, 21])
+    }
+
     func testDocumentRenderSignatureChangesOnlyWhenDocumentChanges() {
         let document = makeDocumentState()
         let matchingDocument = makeDocumentState()

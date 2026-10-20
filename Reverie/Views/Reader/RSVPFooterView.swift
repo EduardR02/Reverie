@@ -19,20 +19,18 @@ struct RSVPFooterView: View {
     private let defaultWPM = 300.0
     
     var body: some View {
-        HStack(spacing: 0) {
-            // Left section - RSVP Toggle
-            leftSection
-                .frame(maxWidth: .infinity, alignment: .leading)
-            
-            // Center section - WPM Controls
-            centerSection
-                .frame(maxWidth: .infinity, alignment: .center)
-            
-            // Right section - Play/Pause
-            rightSection
-                .frame(maxWidth: .infinity, alignment: .trailing)
+        GeometryReader { geometry in
+            let compact = geometry.size.width < 440
+            HStack(spacing: 8) {
+                leftSection(compact: compact)
+                Spacer(minLength: 0)
+                centerSection
+                Spacer(minLength: 0)
+                rightSection(compact: compact)
+            }
+            .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
         .frame(height: ReaderMetrics.footerHeight)
         // Use a material-like background for the footer to give it depth
         .background(theme.surface.opacity(0.95))
@@ -43,11 +41,11 @@ struct RSVPFooterView: View {
         }
     }
     
-    private var leftSection: some View {
+    private func leftSection(compact: Bool) -> some View {
         HStack(spacing: 0) {
             // Mode Toggle - styled like a segmented control
             HStack(spacing: 0) {
-                modeButton(title: "Scroll", icon: "scroll", isActive: !isRSVPMode) {
+                modeButton(title: "Scroll", icon: "scroll", isActive: !isRSVPMode, compact: compact) {
                     withAnimation(.spring(response: 0.3)) { isRSVPMode = false }
                 }
                 
@@ -55,7 +53,7 @@ struct RSVPFooterView: View {
                     .frame(height: 16)
                     .background(theme.highlightLow)
                 
-                modeButton(title: "RSVP", icon: "text.alignleft", isActive: isRSVPMode) {
+                modeButton(title: "RSVP", icon: "text.alignleft", isActive: isRSVPMode, compact: compact) {
                     withAnimation(.spring(response: 0.3)) { isRSVPMode = true }
                 }
             }
@@ -71,21 +69,16 @@ struct RSVPFooterView: View {
         }
     }
     
-    private func modeButton(title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+    private func modeButton(title: String, icon: String, isActive: Bool, compact: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                // Fix for Issue 1: Avoid using non-existent text.alignleft.fill
-                // Differentiate by color and weight instead of .fill for this specific symbol
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: isActive ? .bold : .regular))
                 
-                ViewThatFits(in: .horizontal) {
+                if !compact {
                     Text(title)
                         .font(.system(size: 11, weight: isActive ? .semibold : .medium))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                    
-                    EmptyView()
                 }
             }
             .padding(.horizontal, 10)
@@ -98,6 +91,8 @@ struct RSVPFooterView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .help(title)
     }
     
     private var centerSection: some View {
@@ -199,10 +194,14 @@ struct RSVPFooterView: View {
         .buttonStyle(PlainButtonStyle()) // Simple press effect
     }
     
-    private var rightSection: some View {
+    private func rightSection(compact: Bool) -> some View {
         Button(action: onTogglePlay) {
-            ViewThatFits(in: .horizontal) {
-                // Full version
+            Group {
+                if compact {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 32)
+                } else {
                 HStack(spacing: 8) {
                     Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 12, weight: .bold))
@@ -213,11 +212,7 @@ struct RSVPFooterView: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
                 .padding(.horizontal, 16)
-                
-                // Icon only version for small sizes
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 32)
+                }
             }
             .foregroundColor(isPlaying ? theme.base : theme.text)
             .frame(height: 32)
@@ -228,6 +223,7 @@ struct RSVPFooterView: View {
             .shadow(color: (isPlaying ? theme.rose : theme.highlightMed).opacity(0.3), radius: 4, x: 0, y: 2)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(isPlaying ? "Pause reading" : "Start reading")
     }
 }
 

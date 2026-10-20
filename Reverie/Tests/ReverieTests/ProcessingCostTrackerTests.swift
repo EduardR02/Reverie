@@ -12,8 +12,8 @@ final class ProcessingCostTrackerTests: XCTestCase {
             outputTokens: 0,
             model: SupportedModels.OpenAI.gpt54
         )
-        // Input: 1M tokens * $2.50/MTok = $2.50
-        XCTAssertEqual(tracker.processingCostEstimate, 2.50, accuracy: 0.000001)
+        // A prompt above 272k uses the $5/MTok long-context input rate for the whole request.
+        XCTAssertEqual(tracker.processingCostEstimate, 5, accuracy: 0.000001)
     }
 
     func testAccumulatesMultipleCalls() {
@@ -23,8 +23,8 @@ final class ProcessingCostTrackerTests: XCTestCase {
             outputTokens: 500_000,
             model: SupportedModels.OpenAI.gpt54
         )
-        // Input: 0.5M * $2.50 = $1.25, Output: 0.5M * $15.00 = $7.50, Total: $8.75
-        XCTAssertEqual(tracker.processingCostEstimate, 8.75, accuracy: 0.000001)
+        // Long-context request: 0.5M * $5 input + 0.5M * $22.50 output = $13.75.
+        XCTAssertEqual(tracker.processingCostEstimate, 13.75, accuracy: 0.000001)
 
         tracker.updateProcessingCost(
             inputTokens: 200_000,
@@ -32,8 +32,8 @@ final class ProcessingCostTrackerTests: XCTestCase {
             model: SupportedModels.OpenAI.gpt54
         )
         // Additional: Input: 0.2M * $2.50 = $0.50, Output: 0.1M * $15.00 = $1.50
-        // Cumulative: $8.75 + $2.00 = $10.75
-        XCTAssertEqual(tracker.processingCostEstimate, 10.75, accuracy: 0.000001)
+        // This second request is below the threshold, adding $2.00 at base rates.
+        XCTAssertEqual(tracker.processingCostEstimate, 15.75, accuracy: 0.000001)
     }
 
     func testAccumulatesAcrossDifferentModels() {
@@ -84,8 +84,8 @@ final class ProcessingCostTrackerTests: XCTestCase {
             cachedTokens: 1_000_000,
             model: SupportedModels.OpenAI.gpt54
         )
-        // 1M cached tokens * ($2.50 * 0.1) = $0.25
-        XCTAssertEqual(tracker.processingCostEstimate, 0.25, accuracy: 0.000001)
+        // The prompt-length tier still applies to cached input: 1M * ($5 * 0.1) = $0.50.
+        XCTAssertEqual(tracker.processingCostEstimate, 0.5, accuracy: 0.000001)
     }
 
     func testCacheWriteTokensUseCacheWriteMultiplierForAnthropic() {
@@ -200,7 +200,7 @@ final class ProcessingCostTrackerTests: XCTestCase {
             outputTokens: 10_000_000,
             model: SupportedModels.OpenAI.gpt54
         )
-        // (10M/1M) * $2.50 + (10M/1M) * $15.00 = $25.00 + $150.00 = $175.00
-        XCTAssertEqual(tracker.processingCostEstimate, 175.00, accuracy: 0.000001)
+        // Long-context rates apply to both sides: 10M * $5 input + 10M * $22.50 output = $275.
+        XCTAssertEqual(tracker.processingCostEstimate, 275, accuracy: 0.000001)
     }
 }

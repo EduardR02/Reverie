@@ -24,7 +24,7 @@ struct ProcessingCostTracker {
         cacheWriteTokens: Int = 0,
         model: String
     ) {
-        guard let pricing = PricingCatalog.textPricing(for: model) else { return }
+        guard let pricing = PricingCatalog.textPricing(for: model, inputTokens: inputTokens) else { return }
 
         let uncachedTokens = max(0, inputTokens - cachedTokens - cacheWriteTokens)
         let uncachedCost = (Double(uncachedTokens) / 1_000_000) * pricing.inputPerMToken

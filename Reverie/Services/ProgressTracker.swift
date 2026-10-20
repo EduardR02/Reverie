@@ -11,6 +11,7 @@ final class ProgressTracker {
         let currentPercent: Double
         let furthestPercent: Double
         let scrollOffset: Double
+        let location: BlockLocation?
     }
 
     private struct BookProgressCache {
@@ -46,7 +47,7 @@ final class ProgressTracker {
             let wordCount = max(0, chapter.wordCount)
             totalWords += wordCount
 
-            let maxPercent = min(max(chapter.maxScrollReached, 0), 1)
+            let maxPercent = min(max(chapter.maxScrollReached, maxScrollCache[chapterId] ?? 0, 0), 1)
             let readWords = Int((Double(wordCount) * maxPercent).rounded())
             wordsRead += readWords
             wordCounts[chapterId] = wordCount
@@ -79,16 +80,27 @@ final class ProgressTracker {
         furthestPercent: Double,
         scrollOffset: Double,
         bookId: Int64,
+        location: BlockLocation? = nil,
         whenReadyToFlush: @escaping @MainActor () -> Void
     ) {
         guard chapter.id != nil else { return }
+
+        var pendingFurthest = max(currentPercent, furthestPercent)
+        if let pending = pendingProgress {
+            if pending.bookId == bookId, pending.chapter.id == chapter.id {
+                pendingFurthest = max(pendingFurthest, pending.currentPercent, pending.furthestPercent)
+            } else {
+                _ = flushPendingProgress(currentBook: nil)
+            }
+        }
 
         pendingProgress = PendingProgress(
             bookId: bookId,
             chapter: chapter,
             currentPercent: currentPercent,
-            furthestPercent: furthestPercent,
-            scrollOffset: scrollOffset
+            furthestPercent: pendingFurthest,
+            scrollOffset: scrollOffset,
+            location: location
         )
 
         pendingProgressSaveTask?.cancel()
@@ -146,9 +158,7 @@ final class ProgressTracker {
                 }
             }
 
-            var updatedChapter = pending.chapter
-            updatedChapter.maxScrollReached = effectiveFurthest
-            try? database.saveChapter(&updatedChapter)
+            try? database.updateChapterMaxScrollReached(id: chapterId, maxScrollReached: effectiveFurthest)
             maxScrollCache[chapterId] = effectiveFurthest
         }
 
@@ -163,6 +173,8 @@ final class ProgressTracker {
         updatedBook.currentChapter = chapterIndex
         updatedBook.currentScrollPercent = currentPercent
         updatedBook.currentScrollOffset = pending.scrollOffset
+        updatedBook.currentBlockId = pending.location?.blockId
+        updatedBook.currentBlockOffset = pending.location?.offset
         updatedBook.progressPercent = overallProgress
         updatedBook.lastReadAt = Date()
 

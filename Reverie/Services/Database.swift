@@ -18,6 +18,7 @@ struct LLMCallUsage: Identifiable, Codable, FetchableRecord, MutablePersistableR
     var outputTokens: Int
     var reasoningTokens: Int?
     var cachedTokens: Int?
+    var cacheWriteTokens: Int?
     var cost: Double?
 
     static let databaseTableName = "llm_call_usage"
@@ -32,6 +33,7 @@ struct LLMCallUsage: Identifiable, Codable, FetchableRecord, MutablePersistableR
         outputTokens: Int,
         reasoningTokens: Int? = nil,
         cachedTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
         cost: Double? = nil
     ) {
         self.id = id
@@ -44,6 +46,7 @@ struct LLMCallUsage: Identifiable, Codable, FetchableRecord, MutablePersistableR
         self.outputTokens = outputTokens
         self.reasoningTokens = reasoningTokens
         self.cachedTokens = cachedTokens
+        self.cacheWriteTokens = cacheWriteTokens
         self.cost = cost
     }
 
@@ -52,7 +55,7 @@ struct LLMCallUsage: Identifiable, Codable, FetchableRecord, MutablePersistableR
     }
 
     static func calculatedCost(for usage: LLMService.TokenUsage, model: String) -> Double? {
-        guard let pricing = PricingCatalog.textPricing(for: model) else {
+        guard let pricing = PricingCatalog.textPricing(for: model, inputTokens: usage.input) else {
             guard let imageModel = ImageModel.fromAPIModel(model) else { return nil }
             return calculatedImageCost(for: imageModel)
         }
@@ -281,6 +284,35 @@ final class DatabaseService: @unchecked Sendable {
             try db.create(index: "idx_llm_call_usage_task", on: "llm_call_usage", columns: ["task"])
         }
 
+        migrator.registerMigration("v6_cached_input_stats") { db in
+            try db.alter(table: "llm_call_usage") { t in
+                t.add(column: "cacheWriteTokens", .integer)
+            }
+            try db.alter(table: "lifetime_stats") { t in
+                t.add(column: "tokensCached", .integer)
+                t.add(column: "tokensCacheWrite", .integer)
+                t.add(column: "tokensCacheReportedInput", .integer).notNull().defaults(to: 0)
+            }
+            // The ledger overlaps existing lifetime input/output totals. Backfill only
+            // the previously unpersisted cache subset, once, without replaying usage.
+            try db.execute(sql: """
+                UPDATE lifetime_stats SET
+                    tokensCached = (SELECT SUM(cachedTokens) FROM llm_call_usage),
+                    tokensCacheReportedInput = (
+                        SELECT COALESCE(SUM(inputTokens), 0) FROM llm_call_usage
+                        WHERE cachedTokens IS NOT NULL
+                    )
+                WHERE id = 1
+                """)
+        }
+
+        migrator.registerMigration("v7_semantic_reading_position") { db in
+            try db.alter(table: "books") { t in
+                t.add(column: "currentBlockId", .integer)
+                t.add(column: "currentBlockOffset", .double)
+            }
+        }
+
         return migrator
     }
 
@@ -311,6 +343,9 @@ final class DatabaseService: @unchecked Sendable {
             stats.tokensInput = row["tokensInput"]
             stats.tokensReasoning = row["tokensReasoning"]
             stats.tokensOutput = row["tokensOutput"]
+            stats.tokensCached = row["tokensCached"]
+            stats.tokensCacheWrite = row["tokensCacheWrite"]
+            stats.tokensCacheReportedInput = row["tokensCacheReportedInput"]
             stats.currentStreak = row["currentStreak"]
             stats.lastReadDate = row["lastReadDate"]
             
@@ -332,6 +367,7 @@ final class DatabaseService: @unchecked Sendable {
                     totalSeconds = ?, totalWords = ?, insightsSeen = ?, 
                     followupsAsked = ?, imagesGenerated = ?, totalBooksFinished = ?, 
                     tokensInput = ?, tokensReasoning = ?, tokensOutput = ?, 
+                    tokensCached = ?, tokensCacheWrite = ?, tokensCacheReportedInput = ?,
                     currentStreak = ?, lastReadDate = ?
                 WHERE id = 1
                 """,
@@ -339,6 +375,7 @@ final class DatabaseService: @unchecked Sendable {
                     stats.totalSeconds, stats.totalWords, stats.insightsSeen,
                     stats.followupsAsked, stats.imagesGenerated, stats.totalBooks,
                     stats.tokensInput, stats.tokensReasoning, stats.tokensOutput,
+                    stats.tokensCached, stats.tokensCacheWrite, stats.tokensCacheReportedInput,
                     stats.currentStreak, stats.lastReadDate
                 ]
             )
@@ -474,6 +511,24 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
 
+    func updateChapterSummary(id: Int64, summary: String, rollingSummary: String?) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE chapters SET summary = ?, rollingSummary = ? WHERE id = ?",
+                arguments: [summary, rollingSummary, id]
+            )
+        }
+    }
+
+    func updateChapterMaxScrollReached(id: Int64, maxScrollReached: Double) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE chapters SET maxScrollReached = MAX(maxScrollReached, ?) WHERE id = ?",
+                arguments: [maxScrollReached, id]
+            )
+        }
+    }
+
     func updateChapterGarbageStatus(bookId: Int64, classifications: [Int: Bool]) throws {
         try dbQueue.write { db in
             for (index, isGarbage) in classifications {
@@ -507,9 +562,28 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
 
+    func fetchAnnotationsBeforeChapter(bookId: Int64, chapterIndex: Int) throws -> [Annotation] {
+        try dbQueue.read { db in
+            try Annotation.fetchAll(db, sql: """
+                SELECT annotations.* FROM annotations
+                JOIN chapters ON chapters.id = annotations.chapterId
+                WHERE chapters.bookId = ? AND chapters."index" < ?
+                ORDER BY chapters."index", annotations.sourceBlockId, annotations.id
+                """, arguments: [bookId, chapterIndex])
+        }
+    }
+
     func saveAnnotation(_ annotation: inout Annotation) throws {
         try dbQueue.write { db in
             try annotation.save(db)
+        }
+    }
+
+    func saveAnnotations(_ annotations: inout [Annotation]) throws {
+        try dbQueue.write { db in
+            for index in annotations.indices {
+                try annotations[index].save(db)
+            }
         }
     }
 
@@ -551,34 +625,58 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
     
-    func saveAnalysis(_ analysis: LLMService.ChapterAnalysis, chapterId: Int64, blockCount: Int) throws {
+    func saveQuizzes(_ quizzes: inout [Quiz]) throws {
         try dbQueue.write { db in
-            for data in analysis.annotations {
-                let type = AnnotationType(rawValue: data.type) ?? .science
-                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount
-                    ? data.sourceBlockId : 1
-                var annotation = Annotation(
-                    chapterId: chapterId,
-                    type: type,
-                    title: data.title,
-                    content: data.content,
-                    sourceBlockId: validBlockId
-                )
-                try annotation.save(db)
-            }
-
-            for data in analysis.quizQuestions {
-                let validBlockId = data.sourceBlockId > 0 && data.sourceBlockId <= blockCount
-                    ? data.sourceBlockId : 1
-                var quiz = Quiz(
-                    chapterId: chapterId,
-                    question: data.question,
-                    answer: data.answer,
-                    sourceBlockId: validBlockId
-                )
-                try quiz.save(db)
+            for index in quizzes.indices {
+                try quizzes[index].save(db)
             }
         }
+    }
+
+    func saveChapterAnalysis(
+        _ analysis: LLMService.ChapterAnalysis,
+        chapter: inout Chapter,
+        blockCount: Int
+    ) throws -> (annotations: [Annotation], quizzes: [Quiz]) {
+        guard let chapterID = chapter.id else {
+            throw DatabaseError.connectionFailed("Cannot save analysis for an unsaved chapter.")
+        }
+        var annotations = try analysis.annotations.map { data in
+            guard let type = AnnotationType(rawValue: data.type) else {
+                throw ChapterAnalysisValidationError.unknownCategory(data.type)
+            }
+            guard data.sourceBlockId > 0 && data.sourceBlockId <= blockCount else {
+                throw ChapterAnalysisValidationError.invalidAnchor(kind: "insight", blockID: data.sourceBlockId)
+            }
+            return Annotation(
+                chapterId: chapterID,
+                type: type,
+                title: data.title,
+                content: data.content,
+                sourceBlockId: data.sourceBlockId
+            )
+        }
+        var quizzes = try analysis.quizQuestions.map { data in
+            guard data.sourceBlockId > 0 && data.sourceBlockId <= blockCount else {
+                throw ChapterAnalysisValidationError.invalidAnchor(kind: "quiz question", blockID: data.sourceBlockId)
+            }
+            return Quiz(
+                chapterId: chapterID,
+                question: data.question,
+                answer: data.answer,
+                sourceBlockId: data.sourceBlockId
+            )
+        }
+        try dbQueue.write { db in
+            for index in annotations.indices {
+                try annotations[index].save(db)
+            }
+            for index in quizzes.indices {
+                try quizzes[index].save(db)
+            }
+            try chapter.update(db, columns: ["processed", "summary", "rollingSummary", "contentText", "blockCount"])
+        }
+        return (annotations, quizzes)
     }
 
     func fetchQuizzes(for chapter: Chapter) throws -> [Quiz] {

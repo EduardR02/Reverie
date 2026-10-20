@@ -65,7 +65,7 @@ final class AppState {
     let progressTracker: ProgressTracker
 
     @MainActor
-    init(database: DatabaseService? = nil) {
+    init(database: DatabaseService? = nil, settings initialSettings: UserSettings? = nil) {
         let db = database ?? DatabaseService.shared
         self.database = db
         // Initialize progressTracker early (it's a let property), then set up
@@ -73,7 +73,7 @@ final class AppState {
         self.progressTracker = ProgressTracker(database: db)
         self.imageService = ImageService()
         self.readingSpeedTracker = ReadingSpeedTracker()
-        self.settings = UserSettings.load()
+        self.settings = initialSettings ?? UserSettings.load()
         
         // Load stats from Database instead of UserDefaults
         self.readingStats = (try? db.fetchLifetimeStats()) ?? ReadingStats()
@@ -240,8 +240,8 @@ final class AppState {
         saveStats()
     }
 
-    func addTokens(input: Int, reasoning: Int, output: Int, cached: Int) {
-        readingStats.addTokens(input: input, reasoning: reasoning, output: output, cached: cached)
+    func addTokens(input: Int, reasoning: Int, output: Int, cached: Int?, cacheWrite: Int? = nil) {
+        readingStats.addTokens(input: input, reasoning: reasoning, output: output, cached: cached, cacheWrite: cacheWrite)
         saveStats()
     }
 
@@ -303,7 +303,8 @@ final class AppState {
         chapter: Chapter,
         currentPercent: Double,
         furthestPercent: Double,
-        scrollOffset: Double
+        scrollOffset: Double,
+        location: BlockLocation? = nil
     ) {
         guard let bookId = currentBook?.id, chapter.id != nil else { return }
         progressTracker.recordReadingProgress(
@@ -312,6 +313,7 @@ final class AppState {
             furthestPercent: furthestPercent,
             scrollOffset: scrollOffset,
             bookId: bookId,
+            location: location,
             whenReadyToFlush: { [weak self] in
                 self?.flushPendingProgress()
             }

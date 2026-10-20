@@ -60,6 +60,7 @@ struct ThemedToggle: View {
 struct ThemedPicker<T: Hashable>: View {
     @Binding var selection: T
     let options: [(id: T, name: String)]
+    var selectionName: String? = nil
     
     @Environment(\.theme) private var theme
     @State private var isHovering = false
@@ -80,7 +81,7 @@ struct ThemedPicker<T: Hashable>: View {
             }
         } label: {
             HStack {
-                Text(options.first(where: { $0.id == selection })?.name ?? "")
+                Text(options.first(where: { $0.id == selection })?.name ?? selectionName ?? "")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(theme.text)
                 

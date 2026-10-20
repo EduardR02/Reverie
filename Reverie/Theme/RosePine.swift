@@ -29,6 +29,34 @@ struct RosePineTheme: Theme {
     let highlightHigh = Color(hex: "#524f67")
 }
 
+// MARK: - Rose Pine Black (Reverie Neutral Variant)
+
+// App-specific adaptation, not an official Rosé Pine palette:
+// neutral structural colors, white emphasis, and warm Rosé Pine accents.
+struct RosePineBlackTheme: Theme {
+    let name = "Rose Pine Black"
+
+    let base = Color(hex: "#000000")
+    let surface = Color(hex: "#121212")
+    let overlay = Color(hex: "#202020")
+
+    let text = Color(hex: "#e0e0e0")
+    let readingText = Color(hex: "#ffffff")
+    let subtle = Color(hex: "#a0a0a0")
+    let muted = Color(hex: "#808080")
+
+    let rose = Color(hex: "#ebbcba")
+    let love = Color(hex: "#eb6f92")
+    let gold = Color(hex: "#f6c177")
+    let pine = Color(hex: "#31748f")
+    let foam = Color(hex: "#9ccfd8")
+    let iris = Color(hex: "#ffffff")
+
+    let highlightLow = Color(hex: "#161616")
+    let highlightMed = Color(hex: "#303030")
+    let highlightHigh = Color(hex: "#484848")
+}
+
 // MARK: - Rose Pine Moon (Darker Variant)
 
 struct RosePineMoonTheme: Theme {

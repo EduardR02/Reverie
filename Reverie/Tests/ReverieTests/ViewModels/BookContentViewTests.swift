@@ -9,20 +9,6 @@ private let noAnnotationId: Int64? = nil
 private let noQuote: String? = nil
 private let noBlockNavigation: (Int, Int64?, String?)? = nil
 
-private final class MarkerQueueManager<T: Equatable> {
-    var queue: [T] = []
-
-    func add(_ item: T) {
-        queue.append(item)
-    }
-
-    func process(injection: ([T]) -> Void) {
-        let snapshots = queue
-        injection(snapshots)
-        queue.removeAll { item in snapshots.contains(where: { $0 == item }) }
-    }
-}
-
 @MainActor
 private final class RecordingWebView: WKWebView {
     private let completionErrors: [Error?]
@@ -55,40 +41,229 @@ private final class RecordingWebView: WKWebView {
 }
 
 final class BookContentViewTests: XCTestCase {
-    func testMarkerQueueRaceConditionFix() {
-        let manager = MarkerQueueManager<String>()
-        manager.add("A")
-        manager.add("B")
-        manager.add("C")
+    @MainActor
+    func testDocumentBootstrapAcknowledgementSkipsRepeatedInitialConfigurationAndRestoration() throws {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        var state = makeViewState(chapterId: 1, html: "<p>Content</p>")
+        state.readingMode = .pages
+        state.pageLayout = .single
+        coordinator.setDesiredState(state)
+        coordinator.prepareForDocumentLoad(
+            state: state, requestedScrollOffset: nil, requestedScrollPercent: 1,
+            hasContentNavigationRequest: false
+        )
+        coordinator.consumeExplicitScrollRequest(requestedScrollOffset: nil, requestedScrollPercent: 1)
+        let webView = RecordingWebView(completionErrors: [])
+        coordinator.installDocumentBootstrap(on: webView)
+        let script = try XCTUnwrap(webView.configuration.userContentController.userScripts.first)
+        XCTAssertEqual(script.injectionTime, .atDocumentEnd)
+        XCTAssertTrue(script.isForMainFrameOnly)
+        XCTAssertTrue(script.source.contains("initializeReader("))
+        XCTAssertTrue(script.source.contains("scrollToPercent(1.0);"))
+        let generation = coordinator.currentDocumentGenerationForTesting
+        let loadID = coordinator.registerNavigationLoadForTesting()
+        XCTAssertTrue(coordinator.completeDocumentLoadIfCurrent(navigationLoadID: loadID, documentGeneration: generation))
+        XCTAssertFalse(coordinator.shouldAcceptBridgeMessage(documentToken: state.document.bridgeToken))
+        coordinator.flush(on: webView)
+        XCTAssertTrue(webView.evaluatedScripts.isEmpty, "Do not race didFinish against the document-end acknowledgement")
 
-        manager.process { snapshots in
-            XCTAssertEqual(snapshots, ["A", "B", "C"])
-            manager.add("D")
+        XCTAssertTrue(coordinator.completeDocumentBootstrap(
+            documentToken: state.document.bridgeToken, generation: generation, success: true
+        ))
+        XCTAssertEqual(coordinator.appliedStyleForTesting, state.style)
+        XCTAssertNil(coordinator.pendingScroll)
+        XCTAssertTrue(coordinator.shouldAcceptBridgeMessage(documentToken: state.document.bridgeToken))
+        coordinator.flush(on: webView)
+        XCTAssertTrue(webView.evaluatedScripts.isEmpty, "Bootstrap already applied style, layout, mode, decorations and restoration")
+
+        state.readingMode = .scroll
+        coordinator.setDesiredState(state)
+        coordinator.flush(on: webView)
+        XCTAssertEqual(webView.evaluatedScripts, ["window.setReadingMode('scroll');"])
+    }
+
+    @MainActor
+    func testStaleBootstrapCannotConfigureNextChapterOrConsumeItsNavigation() {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        let first = makeViewState(chapterId: 1, html: "<p>First</p>")
+        let second = makeViewState(chapterId: 2, html: "<p>Second</p>")
+        let webView = RecordingWebView(completionErrors: [])
+        coordinator.setDesiredState(first)
+        coordinator.prepareForDocumentLoad(state: first, requestedScrollOffset: nil, requestedScrollPercent: nil, hasContentNavigationRequest: false)
+        coordinator.installDocumentBootstrap(on: webView)
+        let firstGeneration = coordinator.currentDocumentGenerationForTesting
+        coordinator.setDesiredState(second)
+        coordinator.prepareForDocumentLoad(state: second, requestedScrollOffset: nil, requestedScrollPercent: 1, hasContentNavigationRequest: false)
+        coordinator.consumeExplicitScrollRequest(requestedScrollOffset: nil, requestedScrollPercent: 1)
+        coordinator.installDocumentBootstrap(on: webView)
+        XCTAssertEqual(webView.configuration.userContentController.userScripts.count, 1)
+        XCTAssertFalse(coordinator.completeDocumentBootstrap(
+            documentToken: first.document.bridgeToken, generation: firstGeneration, success: true
+        ))
+        XCTAssertNil(coordinator.appliedStyleForTesting)
+        XCTAssertEqual(coordinator.pendingScroll, .percent(1))
+        XCTAssertTrue(coordinator.completeDocumentBootstrap(
+            documentToken: second.document.bridgeToken,
+            generation: coordinator.currentDocumentGenerationForTesting, success: true
+        ))
+        XCTAssertNil(coordinator.pendingScroll)
+        XCTAssertEqual(coordinator.appliedStyleForTesting, second.style)
+    }
+
+    @MainActor
+    func testRealDocumentEndBootstrapHasPagedGeometryAndBoundaryRestorationBeforeFirstFrame() async throws {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(coordinator, name: "readerBridge")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700), configuration: config)
+        webView.navigationDelegate = coordinator
+        defer {
+            webView.stopLoading()
+            config.userContentController.removeAllScriptMessageHandlers()
         }
-
-        XCTAssertEqual(manager.queue, ["D"])
+        let longHTML = (0..<30).map {
+            "<p>Paragraph \($0). " + String(repeating: "This chapter must start in its real page geometry. ", count: 20) + "</p>"
+        }.joined()
+        var first = makeViewState(chapterId: 1, html: longHTML)
+        first.readingMode = .pages
+        var second = makeViewState(chapterId: 2, html: "<h1>Next chapter</h1>" + longHTML)
+        second.readingMode = .pages
+        let bridge = ReaderBridgeScriptLoader.load()
+        let documents = [
+            first.document: BookContentHTMLBuilder.buildHTML(from: first.htmlRenderInput(readerBridgeJS: bridge)),
+            second.document: BookContentHTMLBuilder.buildHTML(from: second.htmlRenderInput(readerBridgeJS: bridge))
+        ]
+        for (state, percent) in [(first, 0.0), (second, 0.0), (first, 1.0)] {
+            coordinator.setDesiredState(state)
+            coordinator.prepareForDocumentLoad(
+                state: state, requestedScrollOffset: nil, requestedScrollPercent: percent,
+                hasContentNavigationRequest: false
+            )
+            coordinator.consumeExplicitScrollRequest(requestedScrollOffset: nil, requestedScrollPercent: percent)
+            coordinator.installDocumentBootstrap(on: webView)
+            config.userContentController.addUserScript(WKUserScript(source: """
+                window.__bootstrapProbe = {
+                    ...pageMetadata(),
+                    pages: document.documentElement.classList.contains('reader-pages'),
+                    fontSize: getComputedStyle(document.body).fontSize
+                };
+                """, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            // The backward visit uses exactly the same cached, style-independent HTML.
+            let navigation = webView.loadHTMLString(
+                try XCTUnwrap(documents[state.document]),
+                baseURL: LibraryPaths.publicationDirectory(for: coordinator.parent.chapter.bookId)
+            )
+            coordinator.registerNavigation(navigation, documentGeneration: coordinator.currentDocumentGenerationForTesting)
+            let deadline = Date().addingTimeInterval(10)
+            while !coordinator.isContentLoaded, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertTrue(coordinator.isContentLoaded)
+            let value = try await webView.evaluateJavaScript("window.__bootstrapProbe")
+            let probe = try XCTUnwrap(value as? [String: Any])
+            XCTAssertEqual(probe["pages"] as? Bool, true)
+            XCTAssertEqual(probe["pageCapacity"] as? Int, 2)
+            XCTAssertEqual(probe["fontSize"] as? String, "\(Int(state.style.fontSize))px")
+            let count = try XCTUnwrap(probe["pageCount"] as? Int)
+            XCTAssertGreaterThan(count, 2)
+            let expectedIndex = percent == 0 ? 0 : ((count - 1) / 2) * 2
+            XCTAssertEqual(probe["pageIndex"] as? Int, expectedIndex)
+        }
     }
 
-    func testMarkerInjectionEquality() {
-        XCTAssertEqual(
-            MarkerInjection(annotationId: 1, sourceBlockId: 10),
-            MarkerInjection(annotationId: 1, sourceBlockId: 10)
-        )
-        XCTAssertNotEqual(
-            MarkerInjection(annotationId: 1, sourceBlockId: 10),
-            MarkerInjection(annotationId: 2, sourceBlockId: 10)
-        )
-    }
+    @MainActor
+    func testSavedSemanticBootstrapIsSilentButExplicitSourceJumpsRemainHighlighted() async throws {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(coordinator, name: "readerBridge")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1500, height: 700), configuration: config)
+        webView.navigationDelegate = coordinator
+        defer {
+            webView.stopLoading()
+            config.userContentController.removeAllScriptMessageHandlers()
+        }
+        let text = String(repeating: "Saved reading positions do not ask for source emphasis. ", count: 600)
+        let html = "<p data-reader-block-id=\"1\">\(text)</p>"
+        let location = BlockLocation(blockId: 1, offset: 0.62)
+        let probe = """
+            (() => {
+                const block = document.querySelector('[data-reader-block-id="1"]');
+                const pageWindow = document.getElementById('readerPageWindow')?.getBoundingClientRect();
+                const contentStyle = getComputedStyle(document.getElementById('readerContent'));
+                return {
+                    emphasized: !!block.style.backgroundColor || !!block.style.color ||
+                        block.classList.contains('highlight-active'),
+                    transitioning: !!block.style.transition,
+                    windowLeft: pageWindow?.left,
+                    windowRight: pageWindow?.right,
+                    renderedColumnWidth: parseFloat(contentStyle.columnWidth) || 0,
+                    renderedColumnGap: parseFloat(contentStyle.columnGap) || 0,
+                    ...pageMetadata()
+                };
+            })()
+            """
+        for (mode, layout) in [
+            (ReaderReadingMode.scroll, ReaderPageLayout.single),
+            (.pages, .single), (.pages, .spread)
+        ] {
+            var state = makeViewState(chapterId: 1, html: html)
+            state.readingMode = mode
+            state.pageLayout = layout
+            coordinator.setDesiredState(state)
+            coordinator.prepareForDocumentLoad(
+                state: state, requestedScrollOffset: nil, requestedScrollPercent: nil,
+                hasContentNavigationRequest: true
+            )
+            coordinator.consumeContentNavigationRequest(annotationId: nil, quote: nil, block: nil, location: location)
+            coordinator.installDocumentBootstrap(on: webView)
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.__restorationProbe = \(probe);",
+                injectionTime: .atDocumentEnd, forMainFrameOnly: true
+            ))
+            let navigation = webView.loadHTMLString(
+                BookContentHTMLBuilder.buildHTML(from: state.htmlRenderInput(readerBridgeJS: ReaderBridgeScriptLoader.load())),
+                baseURL: LibraryPaths.publicationDirectory(for: coordinator.parent.chapter.bookId)
+            )
+            coordinator.registerNavigation(navigation, documentGeneration: coordinator.currentDocumentGenerationForTesting)
+            let deadline = Date().addingTimeInterval(10)
+            while (!coordinator.isContentLoaded || !coordinator.shouldAcceptBridgeMessage(documentToken: state.document.bridgeToken)),
+                  Date() < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertTrue(coordinator.isContentLoaded)
+            XCTAssertTrue(coordinator.shouldAcceptBridgeMessage(documentToken: state.document.bridgeToken))
+            let bootstrapValue = try await webView.evaluateJavaScript("window.__restorationProbe")
+            let bootstrap = try XCTUnwrap(bootstrapValue as? [String: Any])
+            XCTAssertEqual(bootstrap["emphasized"] as? Bool, false, "\(mode)/\(layout)")
+            XCTAssertEqual(bootstrap["transitioning"] as? Bool, false, "\(mode)/\(layout)")
+            XCTAssertNil(coordinator.pendingContentNavigationRequest)
+            if mode == .pages {
+                XCTAssertGreaterThan(try XCTUnwrap(bootstrap["pageIndex"] as? Int), 0)
+                XCTAssertEqual(bootstrap["pageCapacity"] as? Int, layout == .spread ? 2 : 1)
+                let viewportWidth = try XCTUnwrap(bootstrap["viewportWidth"] as? Double)
+                let outerPadding = floor(min(60, max(24, viewportWidth * 0.055)))
+                XCTAssertEqual(try XCTUnwrap(bootstrap["windowLeft"] as? Double), outerPadding)
+                XCTAssertEqual(viewportWidth - (try XCTUnwrap(bootstrap["windowRight"] as? Double)),
+                               outerPadding, accuracy: 1)
+                let columnWidth = try XCTUnwrap(bootstrap["renderedColumnWidth"] as? Double)
+                let columnGap = try XCTUnwrap(bootstrap["renderedColumnGap"] as? Double)
+                XCTAssertEqual(columnWidth, columnWidth.rounded(.down))
+                XCTAssertEqual(columnWidth + columnGap, (columnWidth + columnGap).rounded(.down))
+            }
 
-    func testImageMarkerInjectionEquality() {
-        XCTAssertEqual(
-            ImageMarkerInjection(imageId: 1, sourceBlockId: 10),
-            ImageMarkerInjection(imageId: 1, sourceBlockId: 10)
-        )
-        XCTAssertNotEqual(
-            ImageMarkerInjection(imageId: 1, sourceBlockId: 10),
-            ImageMarkerInjection(imageId: 2, sourceBlockId: 10)
-        )
+            let explicit = try XCTUnwrap(coordinator.consumeContentNavigationRequest(
+                annotationId: nil, quote: nil, block: (1, nil, nil)
+            ))
+            let restoration = BookContentView.Coordinator.ContentNavigationRequest.location(location)
+            let highlightedValue = try await webView.evaluateJavaScript("""
+                \(explicit.javaScript)
+                \(restoration.javaScript)
+                \(probe)
+                """)
+            let highlighted = try XCTUnwrap(highlightedValue as? [String: Any])
+            XCTAssertEqual(highlighted["emphasized"] as? Bool, true,
+                           "An explicit source jump highlights; a subsequent silent restoration must not erase it")
+        }
     }
 
     @MainActor
@@ -855,6 +1030,88 @@ final class BookContentViewTests: XCTestCase {
         XCTAssertTrue(html.contains("<p id=\"block-1\">Alpha<span class=\"annotation-marker\" data-annotation-id=\"7\" data-block-id=\"1\"></span></p><img src=\"example.png\" class=\"generated-image\" data-block-id=\"1\" alt=\"AI Image\">"))
         XCTAssertTrue(html.contains("window.__readerDocumentToken = 'token-1';"))
         XCTAssertTrue(html.contains("window.__readerBridgeLoaded = true;"))
+    }
+
+    @MainActor
+    func testPagedFlushAppliesLayoutThenModeBeforeRestorationAndConsumesRepeatedTurnsOnce() {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        var state = makeViewState(chapterId: 1, html: "<p>Content</p>")
+        state.readingMode = .pages
+        state.pageLayout = .single
+        coordinator.setDesiredState(state)
+        coordinator.isContentLoaded = true
+        coordinator.completeStyleSync(state.style, documentGeneration: coordinator.currentDocumentGenerationForTesting, error: nil)
+        coordinator.consumeExplicitScrollRequest(requestedScrollOffset: 600, requestedScrollPercent: nil)
+        let requests = [ReaderPageTurnRequest(id: 1, delta: 1), ReaderPageTurnRequest(id: 2, delta: 1)]
+        coordinator.consumePageTurnRequests(requests)
+        coordinator.consumePageTurnRequests(requests)
+        XCTAssertEqual(coordinator.pendingPageTurns, requests)
+        let webView = RecordingWebView(completionErrors: [nil, nil, nil, nil, nil])
+        coordinator.flush(on: webView)
+        XCTAssertEqual(webView.evaluatedScripts, [
+            "window.setPageLayout('single');",
+            "window.setReadingMode('pages');", "scrollToOffset(600.0);",
+            "window.turnPage(1);", "window.turnPage(1);"
+        ])
+        XCTAssertNil(coordinator.pendingScroll)
+        XCTAssertTrue(coordinator.pendingPageTurns.isEmpty)
+        coordinator.consumePageTurnRequests(requests)
+        coordinator.flush(on: webView)
+        XCTAssertEqual(webView.evaluatedScripts.count, 5)
+    }
+
+    @MainActor
+    func testPagedModeFailureDoesNotRunQueuedNavigationOrPageTurns() {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        var state = makeViewState(chapterId: 1, html: "<p>Content</p>")
+        state.readingMode = .pages
+        coordinator.setDesiredState(state)
+        coordinator.isContentLoaded = true
+        coordinator.completeStyleSync(state.style, documentGeneration: coordinator.currentDocumentGenerationForTesting, error: nil)
+        coordinator.consumeContentNavigationRequest(annotationId: 7, quote: nil, block: nil)
+        coordinator.consumePageTurnRequests([.init(id: 1, delta: 1)])
+        let webView = RecordingWebView(completionErrors: [NSError(domain: "Mode", code: 1)])
+        coordinator.flush(on: webView)
+        XCTAssertEqual(webView.evaluatedScripts, ["window.setReadingMode('pages');"])
+        XCTAssertEqual(coordinator.pendingContentNavigationRequest, .annotation(7))
+        XCTAssertEqual(coordinator.pendingPageTurns.count, 1)
+    }
+
+    @MainActor
+    func testReloadDropsConsumedPageCommandsRatherThanReplayingIntoNewChapter() {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        var first = makeViewState(chapterId: 1, html: "<p>First</p>")
+        first.readingMode = .pages
+        coordinator.setDesiredState(first)
+        let requests = [ReaderPageTurnRequest(id: 1, delta: 1), ReaderPageTurnRequest(id: 2, delta: -1)]
+        coordinator.consumePageTurnRequests(requests)
+        XCTAssertEqual(coordinator.pendingPageTurns.count, 2)
+        var next = makeViewState(chapterId: 2, html: "<p>Next</p>")
+        next.readingMode = .pages
+        coordinator.setDesiredState(next)
+        coordinator.prepareForDocumentLoad(state: next, requestedScrollOffset: nil, requestedScrollPercent: 0, hasContentNavigationRequest: false)
+        coordinator.consumePageTurnRequests(requests)
+        XCTAssertTrue(coordinator.pendingPageTurns.isEmpty)
+        coordinator.consumePageTurnRequests([.init(id: 3, delta: 1)])
+        XCTAssertEqual(coordinator.pendingPageTurns, [.init(id: 3, delta: 1)])
+    }
+
+    @MainActor
+    func testSemanticBackNavigationTakesPrecedenceOverPreservedOffset() {
+        let coordinator = BookContentView.Coordinator(parent: makeBookContentView())
+        coordinator.consumeExplicitScrollRequest(requestedScrollOffset: 600, requestedScrollPercent: nil)
+        let location = BlockLocation(blockId: 4, offset: 0.6)
+        let request = coordinator.consumeContentNavigationRequest(annotationId: nil, quote: nil, block: nil, location: location)
+        XCTAssertEqual(request, .location(location))
+        XCTAssertNil(coordinator.pendingScroll)
+        coordinator.isContentLoaded = true
+        let state = makeViewState(chapterId: 1, html: "<p>Content</p>")
+        coordinator.setDesiredState(state)
+        coordinator.completeStyleSync(state.style, documentGeneration: coordinator.currentDocumentGenerationForTesting, error: nil)
+        let webView = RecordingWebView(completionErrors: [nil])
+        coordinator.flush(on: webView)
+        XCTAssertEqual(webView.evaluatedScripts.count, 1)
+        XCTAssertNil(coordinator.pendingContentNavigationRequest)
     }
 
     @MainActor

@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 struct AIPanel: View {
@@ -56,14 +57,15 @@ struct AIPanel: View {
     @State private var highlightedFootnoteId: String?
     @State private var showedSpeedPromptForChapter: Int64?  // Track which chapter we showed prompt for
     @Binding var expandedImage: GeneratedImage?  // Image shown in fullscreen overlay (shown at ReaderView level)
+    var visibleAnnotationIds: Set<Int64> = []
+    var visibleImageIds: Set<Int64> = []
+    var isOnLastPage = false
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
 
     @State private var chatInput = ""
-    @State private var chatMessages: [ChatMessage] = []
-    @State private var isLoading = false
-    @State private var chatSessionToken = UUID()
+    @State private var chatSession = ReaderChatSession()
     @State private var expandedAnnotationId: Int64?
     @State private var chatScrollViewHeight: CGFloat = 0
     @State private var chatContentMetrics = ChatContentMetrics(height: 0, minY: 0)
@@ -103,7 +105,8 @@ struct AIPanel: View {
             // Content with safe area inset for reading speed footer only
             tabContent
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if showsSharedPanels && appState.settings.showReadingSpeedFooter {
+                    if showsSharedPanels && appState.settings.showReadingSpeedFooter &&
+                        (appState.settings.readingMode == .scroll || isRSVPMode) {
                         RSVPFooterView(
                             isRSVPMode: Binding(
                                 get: { isRSVPMode },
@@ -138,6 +141,9 @@ struct AIPanel: View {
         .onChange(of: selectedTab) { _, newTab in
             handleTabChange(newTab)
         }
+        .onChange(of: isQuizAvailable) { _, available in
+            if !available && selectedTab == .quiz { selectedTab = .insights }
+        }
         .onChange(of: isChatFocused) { _, newValue in
             if isChatInputFocused != newValue {
                 isChatInputFocused = newValue
@@ -146,9 +152,48 @@ struct AIPanel: View {
         .onChange(of: appState.chatContextReference) { _, newValue in
             handleChatContextChange(newValue)
         }
+        .onChange(of: chatConfiguration) { old, new in
+            chatSession.configure(new)
+            chatInput = ""
+            if old.chapterID != new.chapterID { appState.chatContextReference = nil }
+        }
+        .onChange(of: chatSession.updateCount) { _, _ in
+            chatScrollTick += 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: OpenAISubscriptionAuth.sessionDidChange, object: OpenAISubscriptionAuth.shared).receive(on: RunLoop.main)) { _ in
+            guard appState.settings.llmProvider == .openai,
+                  appState.settings.openAIAuthenticationMode == .chatGPTSubscription else { return }
+            chatSession.configure(chatConfiguration)
+        }
+        .onAppear {
+            chatSession.configure(chatConfiguration)
+        }
+        .onDisappear {
+            chatSession.cancel()
+        }
+    }
+
+    private var isPageMode: Bool {
+        appState.settings.readingMode == .pages && !isRSVPMode
+    }
+
+    private var isQuizAvailable: Bool { !isPageMode || isOnLastPage }
+
+    static func contextualImages(_ images: [GeneratedImage], visibleIds: Set<Int64>, isPageMode: Bool) -> [GeneratedImage] {
+        guard isPageMode else { return images }
+        return images.filter { image in image.id.map(visibleIds.contains) ?? false }
+    }
+
+    private var displayedImages: [GeneratedImage] {
+        Self.contextualImages(sortedImages, visibleIds: visibleImageIds, isPageMode: isPageMode)
+    }
+
+    private var displayedInsightCount: Int {
+        isPageMode ? visibleAnnotationIds.count : annotations.count
     }
 
     private func handleAnnotationChange(_ newId: Int64?) {
+        guard !isPageMode else { return }
         // Auto-expand the current annotation when scrolling through text
         if let newId = newId, selectedTab == .insights {
             withAnimation(.easeOut(duration: 0.2)) {
@@ -165,7 +210,7 @@ struct AIPanel: View {
     private func handleExternalTabChange(_ newTab: Tab?) {
         // External tab control (e.g., auto-switch to quiz at chapter end)
         if let tab = newTab {
-            if selectedTab != tab {
+            if selectedTab != tab && (tab != .quiz || isQuizAvailable) {
                 withAnimation(.easeOut(duration: 0.2)) {
                     selectedTab = tab
                 }
@@ -190,6 +235,10 @@ struct AIPanel: View {
     }
 
     private func handleTabChange(_ newTab: Tab) {
+        guard newTab != .quiz || isQuizAvailable else {
+            selectedTab = .insights
+            return
+        }
         if newTab != .chat {
             if isChatFocused {
                 isChatFocused = false
@@ -224,7 +273,7 @@ struct AIPanel: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        switch selectedTab {
+        switch selectedTab == .quiz && !isQuizAvailable ? .insights : selectedTab {
         case .insights:
             insightsTab
         case .images:
@@ -241,67 +290,59 @@ struct AIPanel: View {
     // MARK: - Tab Bar
 
     private var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(Tab.allCases, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    ViewThatFits(in: .horizontal) {
-                        tabLabelRow(for: tab)
-                            .fixedSize(horizontal: true, vertical: false)
-                        tabLabelStacked(for: tab)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 8)
-                    .foregroundColor(selectedTab == tab ? theme.rose : theme.muted)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(selectedTab == tab ? theme.overlay : Color.clear)
+        ViewThatFits(in: .horizontal) {
+            tabRow(showsLabels: true)
+            tabRow(showsLabels: false)
+            ScrollView(.horizontal) {
+                tabRow(showsLabels: false)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
         .frame(height: ReaderMetrics.headerHeight)
         .background(theme.surface)
     }
 
-    private func tabLabelRow(for tab: Tab) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: tab.icon)
-                .font(.system(size: 12, weight: .medium))
-
-            tabLabelText(tab)
-
-            tabBadge(for: tab)
-        }
-    }
-
-    private func tabLabelStacked(for tab: Tab) -> some View {
-        VStack(spacing: 4) {
-            tabLabelText(tab)
-
-            HStack(spacing: 6) {
-                Image(systemName: tab.icon)
-                    .font(.system(size: 11, weight: .medium))
-
-                tabBadge(for: tab)
+    private func tabRow(showsLabels: Bool) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Tab.allCases.filter { $0 != .quiz || isQuizAvailable }, id: \.self) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    HStack(spacing: showsLabels ? 6 : 3) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: showsLabels ? 13 : 12, weight: .medium))
+                        if showsLabels {
+                            Text(tab.rawValue)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        tabBadge(for: tab)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, showsLabels ? 8 : 4)
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundColor(selectedTab == tab ? theme.rose : theme.muted)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(tab.rawValue)
+                .accessibilityLabel(tab.rawValue)
+                .background(
+                    selectedTab == tab ? theme.overlay : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
             }
         }
     }
 
-    private func tabLabelText(_ tab: Tab) -> some View {
-        Text(tab.rawValue)
-            .font(.system(size: 12, weight: .medium))
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
-    }
-
     @ViewBuilder
     private func tabBadge(for tab: Tab) -> some View {
-        if tab == .insights && !annotations.isEmpty {
-            badge(text: "\(annotations.count)", color: theme.rose, isSelected: selectedTab == tab)
+        if tab == .insights && displayedInsightCount > 0 {
+            badge(text: "\(displayedInsightCount)", color: theme.rose, isSelected: selectedTab == tab)
         } else if tab == .images {
-            if isProcessingImages {
+            if isProcessingImages && !isPageMode {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(selectedTab == tab ? theme.base : theme.iris)
@@ -309,10 +350,10 @@ struct AIPanel: View {
                     .padding(.vertical, 2)
                     .background(selectedTab == tab ? theme.iris : theme.iris.opacity(0.2))
                     .clipShape(Capsule())
-            } else if !images.isEmpty {
-                badge(text: "\(images.count)", color: theme.iris, isSelected: selectedTab == tab)
+            } else if !displayedImages.isEmpty {
+                badge(text: "\(displayedImages.count)", color: theme.iris, isSelected: selectedTab == tab)
             }
-        } else if tab == .quiz && !quizzes.isEmpty {
+        } else if tab == .quiz && isQuizAvailable && !quizzes.isEmpty {
             badge(text: "\(quizzes.count)", color: theme.rose, isSelected: selectedTab == tab)
         } else if tab == .footnotes && !footnotes.isEmpty {
             badge(text: "\(footnotes.count)", color: theme.foam, isSelected: selectedTab == tab)
@@ -324,6 +365,9 @@ struct AIPanel: View {
     private func badge(text: String, color: Color, isSelected: Bool) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .bold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundColor(isSelected ? theme.base : color)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
@@ -337,6 +381,7 @@ struct AIPanel: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
+                    Color.clear.frame(height: 0).id("page-insights-start")
                     // Classification in progress
                     if isClassifying {
                         classifyingBanner
@@ -373,12 +418,18 @@ struct AIPanel: View {
                                 subtitle: "Insights will appear as you read"
                             )
                         }
+                    } else if isPageMode && visibleAnnotationIds.isEmpty {
+                        emptyState(
+                            icon: "lightbulb",
+                            title: "No insights here",
+                            subtitle: "None are anchored to the visible text"
+                        )
                     } else if !annotations.isEmpty {
                         annotationList
                     }
 
                     // More insights button
-                    if !annotations.isEmpty && !isProcessingInsights {
+                    if !isPageMode && !annotations.isEmpty && !isProcessingInsights {
                         Button {
                             onGenerateMoreInsights()
                         } label: {
@@ -403,6 +454,10 @@ struct AIPanel: View {
                 }
                 .padding(16)
             }
+            .onChange(of: visibleAnnotationIds) { _, _ in
+                guard isPageMode else { return }
+                proxy.scrollTo("page-insights-start", anchor: .top)
+            }
             .onChange(of: scrollRequestCount) { _, _ in
                 guard let req = externalScrollRequest, req.tab == .insights else { return }
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -417,6 +472,7 @@ struct AIPanel: View {
                 }
             }
             .onChange(of: currentAnnotationId) { oldValue, newValue in
+                guard !isPageMode else { return }
                 // Auto-scroll to current insight and expand it
                 // Use .top anchor so insights near top of list can still be scrolled to
                 if let id = newValue {
@@ -427,7 +483,7 @@ struct AIPanel: View {
                 }
             }
             .onAppear {
-                guard let id = currentAnnotationId else { return }
+                guard !isPageMode, let id = currentAnnotationId else { return }
                 DispatchQueue.main.async {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.2))
@@ -441,39 +497,46 @@ struct AIPanel: View {
     @ViewBuilder
     private var annotationList: some View {
         ForEach(orderedAnnotationItems) { item in
-            AnnotationCard(
-                annotation: $annotations[item.index],
-                isExpanded: expandedAnnotationId == item.id,
-                isCurrent: currentAnnotationId == item.id,
-                isAutoScroll: !isProgrammaticScroll,
-                onToggle: {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        if expandedAnnotationId == item.id {
-                            expandedAnnotationId = nil
-                        } else {
-                            expandedAnnotationId = item.id
-                            // Auto-scroll to passage when expanding
-                            onScrollTo(item.id)
-                            externalScrollRequest = (item.id, .insights)
-                            scrollRequestCount += 1
+            if !isPageMode || visibleAnnotationIds.contains(item.id) {
+                AnnotationCard(
+                    annotation: $annotations[item.index],
+                    isExpanded: isPageMode || expandedAnnotationId == item.id,
+                    isCurrent: currentAnnotationId == item.id,
+                    isAutoScroll: !isProgrammaticScroll,
+                    onToggle: {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            if expandedAnnotationId == item.id {
+                                expandedAnnotationId = nil
+                            } else {
+                                expandedAnnotationId = item.id
+                                onScrollTo(item.id)
+                                externalScrollRequest = (item.id, .insights)
+                                scrollRequestCount += 1
+                            }
                         }
+                    },
+                    onScrollTo: {
+                        onScrollTo(item.id)
+                        externalScrollRequest = (item.id, .insights)
+                        scrollRequestCount += 1
+                    },
+                    selectedTab: $selectedTab,
+                    onAsk: { reference in
+                        resetChatSession(context: reference)
+                        selectedTab = .chat
+                    },
+                    onUpdateAnnotation: { updated in
+                        appState.updateAnnotation(updated)
+                    },
+                    allowsCollapse: !isPageMode
+                )
+                .id(item.id)
+                .onAppear {
+                    if isPageMode && !annotations[item.index].isSeen {
+                        appState.recordAnnotationSeen(annotations[item.index])
                     }
-                },
-                onScrollTo: {
-                    onScrollTo(item.id)
-                    externalScrollRequest = (item.id, .insights)
-                    scrollRequestCount += 1
-                },
-                selectedTab: $selectedTab,
-                onAsk: { reference in
-                    resetChatSession(context: reference)
-                    selectedTab = .chat
-                },
-                onUpdateAnnotation: { updated in
-                    appState.updateAnnotation(updated)
                 }
-            )
-            .id(item.id)
+            }
         }
     }
 
@@ -484,18 +547,18 @@ struct AIPanel: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    if isProcessingImages {
+                    if isProcessingImages && !isPageMode {
                         processingSkeleton(text: "Generating illustrations...", isImages: true)
                     }
 
-                    if images.isEmpty && !isProcessingImages {
+                    if displayedImages.isEmpty && (isPageMode || !isProcessingImages) {
                         emptyState(
                             icon: "photo",
-                            title: "No images yet",
-                            subtitle: "Images will appear as they're generated"
+                            title: isPageMode ? "No images on this page" : "No images yet",
+                            subtitle: isPageMode ? "Images appear beside the text they illustrate" : "Images will appear as they're generated"
                         )
                     } else {
-                        ForEach(sortedImages) { image in
+                        ForEach(displayedImages) { image in
                             imageCard(for: image)
                             .id(image.id ?? Int64(image.sourceBlockId))
                         }
@@ -504,19 +567,20 @@ struct AIPanel: View {
                 .padding(16)
             }
             .onChange(of: scrollRequestCount) { _, _ in
-                guard let req = externalScrollRequest, req.tab == .images else { return }
+                guard let req = externalScrollRequest, req.tab == .images,
+                      !isPageMode || displayedImages.contains(where: { $0.id.map(AnyHashable.init) == req.id }) else { return }
                 withAnimation(.easeOut(duration: 0.3)) {
                     proxy.scrollTo(req.id, anchor: autoScrollAnchor)
                 }
             }
             .onChange(of: currentImageId) { _, newId in
-                guard let id = newId else { return }
+                guard let id = newId, !isPageMode || visibleImageIds.contains(id) else { return }
                 withAnimation(.easeOut(duration: 0.3)) {
                     proxy.scrollTo(id, anchor: autoScrollAnchor)
                 }
             }
             .onAppear {
-                if let id = currentImageId {
+                if let id = currentImageId, !isPageMode || visibleImageIds.contains(id) {
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(id, anchor: autoScrollAnchor)
@@ -681,7 +745,7 @@ struct AIPanel: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         let contextReference = appState.chatContextReference
-                        if chatMessages.isEmpty && contextReference == nil {
+                        if chatSession.messages.isEmpty && contextReference == nil {
                             emptyState(
                                 icon: "bubble.left.and.bubble.right",
                                 title: "Ask anything",
@@ -691,7 +755,7 @@ struct AIPanel: View {
                             if let reference = contextReference {
                                 ChatBubble(message: ChatMessage(role: .reference, content: "", reference: reference))
                             }
-                            ForEach(chatMessages) { message in
+                            ForEach(chatSession.messages) { message in
                                 ChatBubble(message: message)
                             }
                         }
@@ -771,14 +835,14 @@ struct AIPanel: View {
             Button {
                 sendMessage()
             } label: {
-                Image(systemName: isLoading ? "hourglass" : "arrow.up.circle.fill")
+                Image(systemName: chatSession.isLoading ? "hourglass" : "arrow.up.circle.fill")
                     .font(.system(size: 24))
                     .foregroundColor(chatInput.isEmpty ? theme.muted : theme.rose)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(chatInput.isEmpty || isLoading)
+            .disabled(chatInput.isEmpty || chatSession.isLoading)
         }
         .padding(.horizontal, ReaderMetrics.footerHorizontalPadding)
         .frame(height: ReaderMetrics.footerHeight)
@@ -921,7 +985,6 @@ struct AIPanel: View {
         let onCancel: () -> Void
 
         @Environment(\.theme) private var theme
-        @State private var displayedThinking: String = ""
 
         var body: some View {
             VStack(alignment: .leading, spacing: 0) {
@@ -972,7 +1035,7 @@ struct AIPanel: View {
                     ))
                 }
 
-                // Thinking Stream (Masked & Expandable)
+                // Provider updates are intermittent summaries, not a live reasoning trace.
                 if !liveThinking.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         Divider().background(theme.overlay.opacity(0.5))
@@ -987,24 +1050,16 @@ struct AIPanel: View {
                                     .font(.system(size: 12))
                                     .symbolEffect(.pulse, options: .repeating)
                                 
-                                if isThinkingExpanded {
-                                    Text("Reasoning")
-                                        .font(.system(size: 11, weight: .bold))
-                                } else {
-                                    Text(displayedSentence)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .italic()
-                                        .lineLimit(1)
-                                        .mask(
-                                            LinearGradient(
-                                                gradient: Gradient(stops: [
-                                                    .init(color: .black, location: 0.92),
-                                                    .init(color: .clear, location: 1.0)
-                                                ]),
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Model updates")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    if !isThinkingExpanded {
+                                        Text(latestUpdate)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(theme.subtle)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                    }
                                 }
                                 
                                 Spacer()
@@ -1022,13 +1077,24 @@ struct AIPanel: View {
                         .buttonStyle(.plain)
 
                         if isThinkingExpanded {
-                            Text(liveThinking)
-                                .font(.system(size: 11))
-                                .foregroundColor(theme.text.opacity(0.8))
-                                .lineSpacing(4)
-                                .padding(.horizontal, 16)
-                                .padding(.bottom, 16)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Provider summaries—not the full reasoning trace. Updates may arrive several seconds apart.")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(theme.muted)
+                                ScrollView {
+                                    Text(liveThinking)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(theme.text)
+                                        .lineSpacing(4)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                }
+                                .defaultScrollAnchor(.bottom)
+                                .frame(maxHeight: 220)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                            .transition(.opacity)
                         }
                     }
                     .background(theme.overlay.opacity(0.2))
@@ -1047,23 +1113,12 @@ struct AIPanel: View {
             .padding(.bottom, 8)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveInsightCount)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: liveQuizCount)
-            .onChange(of: liveThinking) { _, newValue in
-                if newValue.isEmpty || displayedThinking.isEmpty {
-                    displayedThinking = newValue
-                    return
-                }
-                let delta = newValue.count - displayedThinking.count
-                if delta >= 80 || (delta > 0 && newValue.suffix(delta).contains { ".!?\n".contains($0) }) {
-                    displayedThinking = newValue
-                }
-            }
         }
 
-        private var displayedSentence: String {
-            let sentences = displayedThinking.components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            return sentences.last ?? "Processing..."
+        private var latestUpdate: String {
+            let text = liveThinking.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let lineBreak = text.lastIndex(of: "\n") else { return text }
+            return String(text[text.index(after: lineBreak)...])
         }
 
         private func refinedMetric(icon: String, count: Int, color: Color) -> some View {
@@ -1261,18 +1316,36 @@ struct AIPanel: View {
 
     // MARK: - Actions
 
+    private var chatConfiguration: ReaderChatConfiguration {
+        let settings = appState.settings
+        let apiKey: String
+        switch settings.llmProvider {
+        case .google: apiKey = settings.googleAPIKey
+        case .anthropic: apiKey = settings.anthropicAPIKey
+        case .openai: apiKey = settings.openAIAuthenticationMode == .apiKey ? settings.openAIAPIKey : ""
+        }
+        return ReaderChatConfiguration(
+            chapterID: chapter?.id, chapterContent: chapter?.contentText ?? chapter?.contentHTML,
+            rollingSummary: chapter?.rollingSummary, provider: settings.llmProvider,
+            model: settings.llmModel,
+            authenticationMode: settings.llmProvider == .openai ? settings.openAIAuthenticationMode : .apiKey,
+            apiKey: apiKey, reference: appState.chatContextReference,
+            subscriptionRevision: settings.llmProvider == .openai && settings.openAIAuthenticationMode == .chatGPTSubscription
+                ? OpenAISubscriptionAuth.shared.sessionRevision : 0
+        )
+    }
+
     private var hasChatContent: Bool {
-        !chatMessages.isEmpty || appState.chatContextReference != nil
+        !chatSession.messages.isEmpty || appState.chatContextReference != nil
     }
 
     @MainActor
     private func resetChatSession(context: AppState.ChatReference?) {
-        chatSessionToken = UUID()
-        isLoading = false
+        chatSession.reset()
         chatInput = ""
-        chatMessages.removeAll()
         chatAutoScrollEnabled = true
         appState.chatContextReference = context
+        chatSession.configure(chatConfiguration)
         chatScrollTick += 1
     }
 
@@ -1280,124 +1353,29 @@ struct AIPanel: View {
     private func sendMessage(_ text: String? = nil) {
         let rawInput = text ?? chatInput
         let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let chapter = chapter else { return }
-        let sessionToken = chatSessionToken
-
+        chatSession.configure(chatConfiguration)
+        guard !chatSession.isLoading, !trimmed.isEmpty, let chapter else { return }
         let referenceContext = appState.chatContextReference
-        let previousTurns = chatMessages.compactMap { message -> LLMService.ChatTurn? in
-            let trimmedContent = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedContent.isEmpty else { return nil }
-            switch message.role {
-            case .user:
-                return LLMService.ChatTurn(role: .user, content: trimmedContent)
-            case .assistant:
-                return LLMService.ChatTurn(role: .assistant, content: trimmedContent)
-            case .reference:
-                return nil
-            }
-        }
-
-        let userMessage = ChatMessage(role: .user, content: trimmed)
-        chatMessages.append(userMessage)
-        chatScrollTick += 1
+        let settings = appState.settings
+        let service = appState.llmService
+        let (contentWithBlocks, _) = chapter.getContentText()
         appState.readingStats.recordFollowup()
-        let query = trimmed
+        chatSession.send(trimmed) { previousTurns, onProviderState in
+            service.chatStreaming(
+                message: trimmed,
+                previousTurns: previousTurns,
+                referenceTitle: referenceContext?.title,
+                referenceContent: referenceContext?.content,
+                contentWithBlocks: contentWithBlocks,
+                rollingSummary: chapter.rollingSummary,
+                settings: settings,
+                onProviderState: onProviderState
+            )
+        }
         if text == nil {
             chatInput = ""
         }
 
-        let assistantMessage = ChatMessage(role: .assistant, content: "", thinking: nil, isStreaming: true)
-        chatMessages.append(assistantMessage)
-        chatScrollTick += 1
-        let messageIndex = chatMessages.count - 1
-
-        isLoading = true
-
-        Task {
-            do {
-                var contentBuffer = ""
-                var thinkingBuffer = ""
-
-                let (contentWithBlocks, _) = chapter.getContentText()
-
-                let stream = appState.llmService.chatStreaming(
-                    message: query,
-                    previousTurns: previousTurns,
-                    referenceTitle: referenceContext?.title,
-                    referenceContent: referenceContext?.content,
-                    contentWithBlocks: contentWithBlocks,
-                    rollingSummary: chapter.rollingSummary,
-                    settings: appState.settings
-                )
-
-                for try await chunk in stream {
-                    if sessionToken != chatSessionToken { return }
-                    switch chunk {
-                    case .usage:
-                        continue
-                    case .thinking:
-                        thinkingBuffer += chunk.text
-                        await MainActor.run {
-                            guard sessionToken == chatSessionToken,
-                                  chatMessages.indices.contains(messageIndex) else { return }
-                            chatMessages[messageIndex].thinking = thinkingBuffer
-                            chatScrollTick += 1
-                        }
-                    case .content:
-                        contentBuffer += chunk.text
-                        await MainActor.run {
-                            guard sessionToken == chatSessionToken,
-                                  chatMessages.indices.contains(messageIndex) else { return }
-                            chatMessages[messageIndex].content = contentBuffer
-                            chatScrollTick += 1
-                        }
-                    }
-                }
-
-                // Finalize message — mark streaming as complete in all cases
-                if sessionToken != chatSessionToken { return }
-                if contentBuffer.isEmpty && !thinkingBuffer.isEmpty {
-                    await MainActor.run {
-                        guard sessionToken == chatSessionToken,
-                              chatMessages.indices.contains(messageIndex) else { return }
-                        chatMessages[messageIndex].content = "(Reasoning only - no response)"
-                        chatMessages[messageIndex].isStreaming = false
-                        chatScrollTick += 1
-                    }
-                } else if contentBuffer.isEmpty && thinkingBuffer.isEmpty {
-                    await MainActor.run {
-                        guard sessionToken == chatSessionToken,
-                              chatMessages.indices.contains(messageIndex) else { return }
-                        chatMessages[messageIndex].content = "No response returned. Try again."
-                        chatMessages[messageIndex].isStreaming = false
-                        chatScrollTick += 1
-                    }
-                } else {
-                    // Normal case: content was streamed incrementally, just mark done
-                    await MainActor.run {
-                        guard sessionToken == chatSessionToken,
-                              chatMessages.indices.contains(messageIndex) else { return }
-                        chatMessages[messageIndex].isStreaming = false
-                        chatScrollTick += 1
-                    }
-                }
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                await MainActor.run {
-                    guard sessionToken == chatSessionToken,
-                          chatMessages.indices.contains(messageIndex) else { return }
-                    chatMessages[messageIndex].content = message
-                    chatMessages[messageIndex].isStreaming = false
-                    chatScrollTick += 1
-                }
-            }
-
-            await MainActor.run {
-                if sessionToken == chatSessionToken {
-                    isLoading = false
-                }
-            }
-        }
     }
 
     private func normalizedChapterText(_ html: String) -> String {
@@ -1424,6 +1402,129 @@ struct AIPanel: View {
     }
 }
 
+struct ReaderChatConfiguration: Equatable {
+    let chapterID: Int64?
+    let chapterContent: String?
+    let rollingSummary: String?
+    let provider: LLMProvider
+    let model: String
+    let authenticationMode: OpenAIAuthenticationMode
+    let apiKey: String
+    let reference: AppState.ChatReference?
+    let subscriptionRevision: UInt64
+}
+
+/// Owns the request lifetime independently of SwiftUI view refreshes.
+@MainActor
+@Observable
+final class ReaderChatSession {
+    private(set) var messages: [ChatMessage] = []
+    private(set) var isLoading = false
+    private(set) var updateCount = 0
+    @ObservationIgnored private(set) var task: Task<Void, Never>?
+    @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var configuration: ReaderChatConfiguration?
+
+    func configure(_ configuration: ReaderChatConfiguration) {
+        guard self.configuration != configuration else { return }
+        self.configuration = configuration
+        reset()
+    }
+
+    private var previousTurns: [LLMService.ChatTurn] {
+        messages.compactMap { message in
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isStreaming, !message.isError, !content.isEmpty else { return nil }
+            switch message.role {
+            case .user: return LLMService.ChatTurn(role: .user, content: content)
+            case .assistant: return LLMService.ChatTurn(role: .assistant, content: content, providerState: message.providerState)
+            case .reference: return nil
+            }
+        }
+    }
+
+    func send(
+        _ message: String,
+        makeStream: @escaping @MainActor (
+            [LLMService.ChatTurn],
+            @escaping @MainActor (LLMConversationState) -> Void
+        ) -> AsyncThrowingStream<LLMStreamChunk, Error>
+    ) {
+        guard !isLoading else { return }
+        let previousTurns = previousTurns
+        let expected = generation
+        messages.append(ChatMessage(role: .user, content: message))
+        messages.append(ChatMessage(role: .assistant, content: "", isStreaming: true))
+        let index = messages.count - 1
+        isLoading = true
+        updateCount += 1
+        task = Task { @MainActor in
+            defer {
+                if generation == expected {
+                    isLoading = false
+                    task = nil
+                    updateCount += 1
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                let stream = makeStream(previousTurns) { [weak self] state in
+                    guard let self, self.generation == expected, !Task.isCancelled,
+                          self.messages[index].isStreaming else { return }
+                    self.messages[index].providerState = state
+                }
+                for try await chunk in stream {
+                    try Task.checkCancellation()
+                    guard generation == expected else { return }
+                    switch chunk {
+                    case .usage: continue
+                    case .thinking(let text):
+                        if messages[index].thinking == nil { messages[index].thinking = "" }
+                        messages[index].thinking?.append(contentsOf: text)
+                    case .content(let text): messages[index].content += text
+                    }
+                    updateCount += 1
+                }
+                try Task.checkCancellation()
+                guard generation == expected else { return }
+                if messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    messages[index].content = "No response returned. Try again."
+                    messages[index].isError = true
+                    messages[index].providerState = nil
+                }
+                messages[index].isStreaming = false
+            } catch is CancellationError {
+                if generation == expected { cancel() }
+            } catch {
+                guard generation == expected else { return }
+                messages[index].content = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                messages[index].isStreaming = false
+                messages[index].isError = true
+                messages[index].providerState = nil
+            }
+        }
+    }
+
+    func cancel() {
+        generation = UUID()
+        task?.cancel()
+        task = nil
+        isLoading = false
+        for index in messages.indices where messages[index].isStreaming {
+            messages[index].isStreaming = false
+            messages[index].isError = true
+            messages[index].providerState = nil
+            if messages[index].content.isEmpty { messages[index].content = "Response stopped." }
+        }
+        updateCount += 1
+    }
+
+    func reset() {
+        cancel()
+        messages.removeAll()
+    }
+}
+
 // MARK: - Chat Message
 
 struct ChatMessage: Identifiable {
@@ -1433,6 +1534,8 @@ struct ChatMessage: Identifiable {
     var thinking: String?
     var reference: AppState.ChatReference?
     var isStreaming: Bool = false
+    var providerState: LLMConversationState?
+    var isError = false
 
     enum Role {
         case user
@@ -1584,6 +1687,7 @@ struct AnnotationCard: View {
     @Binding var selectedTab: AIPanel.Tab
     let onAsk: (AppState.ChatReference) -> Void
     let onUpdateAnnotation: (Annotation) -> Void
+    var allowsCollapse: Bool = true
 
     @Environment(\.theme) private var theme
     @Environment(AppState.self) private var appState
@@ -1601,43 +1705,17 @@ struct AnnotationCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header (always visible)
-            Button {
-                onToggle()
-                if !isExpanded {
-                    appState.recordAnnotationSeen(annotation)
+            if allowsCollapse {
+                Button {
+                    onToggle()
+                    if !isExpanded { appState.recordAnnotationSeen(annotation) }
+                } label: {
+                    cardHeader
                 }
-            } label: {
-                HStack(spacing: 10) {
-                    // Type icon
-                    Image(systemName: annotation.type.icon)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(theme.rose)
-                        .frame(width: 24, height: 24)
-                        .background(theme.rose.opacity(0.15))
-                        .clipShape(Circle())
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(annotation.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(theme.text)
-                            .lineLimit(isExpanded ? nil : 1)
-
-                        Text(annotation.type.label)
-                            .font(.system(size: 11))
-                            .foregroundColor(theme.muted)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(theme.muted)
-                }
-                .padding(12)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+            } else {
+                cardHeader
             }
-            .buttonStyle(.plain)
 
             // Expanded content
             if isExpanded {
@@ -1705,6 +1783,34 @@ struct AnnotationCard: View {
                 .stroke(showBorder ? theme.rose : theme.overlay, lineWidth: showBorder ? 2 : 1)
         }
         .animation(.easeOut(duration: 0.2), value: showHighlight)
+    }
+
+    private var cardHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: annotation.type.icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(theme.rose)
+                .frame(width: 24, height: 24)
+                .background(theme.rose.opacity(0.15))
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(annotation.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.text)
+                    .lineLimit(isExpanded ? nil : 1)
+                Text(annotation.type.label)
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.muted)
+            }
+            Spacer()
+            if allowsCollapse {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(theme.muted)
+            }
+        }
+        .padding(12)
+        .contentShape(Rectangle())
     }
 
     private var cachedSearchQuery: String? {

@@ -22,6 +22,17 @@ final class ResilientSessionTests: XCTestCase {
     }
 
     @MainActor
+    override func tearDown() async throws {
+        mockSession.invalidateAndCancel()
+        MockURLProtocol.stubResponseData = nil
+        MockURLProtocol.stubResponse = nil
+        MockURLProtocol.stubError = nil
+        MockURLProtocol.requestHandler = nil
+        MockURLProtocol.requestCount = 0
+        try await super.tearDown()
+    }
+
+    @MainActor
     func testNormalRequestSuccess() async throws {
         let expectedData = "Success".data(using: .utf8)!
         MockURLProtocol.stubResponseData = expectedData
@@ -77,5 +88,30 @@ final class ResilientSessionTests: XCTestCase {
         
         XCTAssertEqual(data, expectedData)
         XCTAssertEqual(MockURLProtocol.requestCount, 1)
+    }
+
+    @MainActor
+    func testPrivateRequestsDoNotSendOrPersistAmbientSessionCookies() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let cookies = try XCTUnwrap(configuration.httpCookieStorage)
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [
+            .domain: "subscription-fixture.invalid", .path: "/", .name: "ambient", .value: "fixture-only"
+        ]))
+        cookies.setCookie(cookie)
+        let client = ResilientSession(configuration: configuration)
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Set-Cookie": "returned=fixture-only; Path=/"]
+            )!
+            return (response, Data("Private answer".utf8))
+        }
+        let request = URLRequest(url: URL(string: "https://subscription-fixture.invalid/responses")!)
+        _ = try await client.data(for: request)
+        _ = try await client.data(for: request)
+        XCTAssertEqual(cookies.cookies?.map(\.name), ["ambient"])
+        XCTAssertEqual(MockURLProtocol.requestCount, 2)
     }
 }

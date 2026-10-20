@@ -9,14 +9,12 @@ enum CostEstimates {
 
     /// Model-specific output token ranges based on real chapter analysis data
     static func analysisOutputTokensPerChapterRange(for modelId: String) -> ClosedRange<Int> {
-        if modelId.hasPrefix("gemini") {
-            return 2_000...4_000
-        } else if modelId.hasPrefix("gpt") {
-            return 4_000...6_000
-        } else if modelId.hasPrefix("claude") {
-            return 5_000...7_000
+        switch SupportedModels.model(for: modelId)?.provider {
+        case .google: return 2_000...4_000
+        case .openai: return 4_000...6_000
+        case .anthropic: return 5_000...7_000
+        case nil: return 3_000...5_000
         }
-        return 3_000...5_000  // fallback
     }
 
     static func imagesPerChapter(for density: DensityLevel) -> Double {
@@ -30,19 +28,32 @@ enum CostEstimates {
     }
 }
 
-struct ModelPricing {
+struct ModelPriceChange: Sendable {
+    let effectiveDate: Date
+    let inputPerMToken: Double
+    let outputPerMToken: Double
+}
+
+/// Standard synchronous text-token rates in USD; search/tool fees and cache storage are separate.
+struct ModelPricing: Sendable {
     let inputPerMToken: Double
     let outputPerMToken: Double
     let cachedInputMultiplier: Double
+    var cacheWriteInputMultiplier: Double = 1
+    var inputTokenThreshold: Int? = nil
+    var longContextInputMultiplier: Double = 1
+    var longContextOutputMultiplier: Double = 1
+    var scheduledChange: ModelPriceChange? = nil
 
-    /// Multiplier for tokens written to a prompt cache. Defaults to base input pricing.
-    let cacheWriteInputMultiplier: Double
-
-    init(inputPerMToken: Double, outputPerMToken: Double, cachedInputMultiplier: Double, cacheWriteInputMultiplier: Double = 1.0) {
-        self.inputPerMToken = inputPerMToken
-        self.outputPerMToken = outputPerMToken
-        self.cachedInputMultiplier = cachedInputMultiplier
-        self.cacheWriteInputMultiplier = cacheWriteInputMultiplier
+    func rates(inputTokens: Int, at date: Date) -> ModelPricing {
+        let change = scheduledChange.flatMap { date >= $0.effectiveDate ? $0 : nil }
+        let longContext = inputTokenThreshold.map { inputTokens > $0 } ?? false
+        return ModelPricing(
+            inputPerMToken: (change?.inputPerMToken ?? inputPerMToken) * (longContext ? longContextInputMultiplier : 1),
+            outputPerMToken: (change?.outputPerMToken ?? outputPerMToken) * (longContext ? longContextOutputMultiplier : 1),
+            cachedInputMultiplier: cachedInputMultiplier,
+            cacheWriteInputMultiplier: cacheWriteInputMultiplier
+        )
     }
 }
 
@@ -54,25 +65,9 @@ struct ImagePricing {
 
 enum PricingCatalog {
     static let cachedInputMultiplier: Double = 0.1
-    static let anthropicCacheWriteInputMultiplier: Double = 1.25
 
-    static func textPricing(for modelId: String) -> ModelPricing? {
-        switch SupportedModels.canonicalLLMModelID(modelId) {
-        case SupportedModels.Google.gemini31ProPreview:
-            return ModelPricing(inputPerMToken: 2, outputPerMToken: 12, cachedInputMultiplier: cachedInputMultiplier)
-        case SupportedModels.Google.gemini3FlashPreview:
-            return ModelPricing(inputPerMToken: 0.5, outputPerMToken: 3, cachedInputMultiplier: cachedInputMultiplier)
-        case SupportedModels.OpenAI.gpt54:
-            return ModelPricing(inputPerMToken: 2.5, outputPerMToken: 15, cachedInputMultiplier: cachedInputMultiplier)
-        case SupportedModels.Anthropic.opus45, SupportedModels.Anthropic.opus46:
-            return ModelPricing(inputPerMToken: 5, outputPerMToken: 25, cachedInputMultiplier: cachedInputMultiplier, cacheWriteInputMultiplier: anthropicCacheWriteInputMultiplier)
-        case SupportedModels.Anthropic.sonnet45:
-            return ModelPricing(inputPerMToken: 3, outputPerMToken: 15, cachedInputMultiplier: cachedInputMultiplier, cacheWriteInputMultiplier: anthropicCacheWriteInputMultiplier)
-        case SupportedModels.Anthropic.haiku45:
-            return ModelPricing(inputPerMToken: 1, outputPerMToken: 5, cachedInputMultiplier: cachedInputMultiplier, cacheWriteInputMultiplier: anthropicCacheWriteInputMultiplier)
-        default:
-            return nil
-        }
+    static func textPricing(for modelId: String, inputTokens: Int = 0, at date: Date = Date()) -> ModelPricing? {
+        SupportedModels.model(for: modelId)?.pricing.rates(inputTokens: inputTokens, at: date)
     }
 
     static func imagePricing(for model: ImageModel) -> ImagePricing {

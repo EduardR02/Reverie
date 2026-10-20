@@ -343,7 +343,7 @@ struct ProcessBookView: View {
         VStack(spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ESTIMATED TOTAL")
+                    Text(usesSubscription ? "ESTIMATED API EQUIVALENT" : "ESTIMATED TOTAL")
                         .font(.system(size: 11, weight: .black))
                         .foregroundColor(theme.subtle)
                     
@@ -365,6 +365,21 @@ struct ProcessBookView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            if usesSubscription {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Using ChatGPT plan · usage limits apply")
+                        .foregroundColor(theme.text)
+                    Text("The text estimate is API-equivalent, not an additional charge.")
+                        .foregroundColor(theme.subtle)
+                    if appState.settings.imagesEnabled {
+                        Text("Images: \(formatCost(estimatedImageCost)) in separate API charges.")
+                            .foregroundColor(theme.subtle)
+                    }
+                }
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             
             if showBreakdown {
                 VStack(spacing: 8) {
@@ -377,7 +392,7 @@ struct ProcessBookView: View {
                         .opacity(0.3)
                     costDetailRow("Tokens (In)", Formatters.formatTokenCount(Int(estimatedInputTokens)))
                     costDetailRow("Tokens (Out)", formatTokenRange(estimatedOutputTokensRange))
-                    costDetailRow("Text Analysis", formatCostRange(textCostRange))
+                    costDetailRow(usesSubscription ? "Text Analysis (API equivalent)" : "Text Analysis", formatCostRange(textCostRange))
                     if appState.settings.imagesEnabled {
                         costDetailRow("Visual Generation", formatCost(estimatedImageCost))
                     }
@@ -480,7 +495,7 @@ struct ProcessBookView: View {
                             Image(systemName: "wand.and.stars")
                         }
                         
-                        Text(isClassifying ? "Scanning..." : "Run Quick Scan (\(formatCost(classificationCostEstimate)))")
+                        Text(isClassifying ? "Scanning..." : "Run Quick Scan (\(formatCost(classificationCostEstimate))\(classificationUsesSubscription ? " API equivalent · ChatGPT plan" : ""))")
                     }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(theme.iris)
@@ -660,6 +675,10 @@ struct ProcessBookView: View {
         return minTokens...maxTokens
     }
 
+    private var usesSubscription: Bool {
+        appState.settings.llmProvider == .openai && appState.settings.openAIAuthenticationMode == .chatGPTSubscription
+    }
+
     private var textCostRange: ClosedRange<Double>? {
         guard let pricing = PricingCatalog.textPricing(for: appState.settings.llmModel) else { return nil }
         let inputCost = (estimatedInputTokens / 1_000_000) * pricing.inputPerMToken
@@ -715,7 +734,12 @@ struct ProcessBookView: View {
 
     private var classificationKeyMissing: Bool {
         let selection = appState.llmService.classificationModelSelection(settings: appState.settings)
-        return selection.2.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
+        return !appState.settings.hasAuthentication(for: selection.0)
+    }
+
+    private var classificationUsesSubscription: Bool {
+        appState.settings.openAIAuthenticationMode == .chatGPTSubscription
+            && appState.llmService.classificationModelSelection(settings: appState.settings).0 == .openai
     }
 
     private var classificationCostEstimate: Double? {
@@ -902,11 +926,7 @@ struct ProcessBookView: View {
     }
 
     private var apiKeyMissing: Bool {
-        switch appState.settings.llmProvider {
-        case .google: return appState.settings.googleAPIKey.isEmpty
-        case .openai: return appState.settings.openAIAPIKey.isEmpty
-        case .anthropic: return appState.settings.anthropicAPIKey.isEmpty
-        }
+        !appState.settings.hasAuthentication(for: appState.settings.llmProvider)
     }
 }
 

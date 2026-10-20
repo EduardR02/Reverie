@@ -29,9 +29,6 @@ final class BookProcessor {
     private var summaryPhase = ""
     private var insightPhase = ""
     
-    private var runningInsightCount = 0
-    private var lastInsightTitle: String?
-    private var runningInsightTasks: [Task<Void, Never>] = []
     
     init(appState: AppState, book: Book, range: ClosedRange<Int>? = nil, includeContext: Bool = false, isSimulation: Bool = false) {
         self.appState = appState
@@ -52,7 +49,7 @@ final class BookProcessor {
         appState.processingInFlightSummaries = 0
         appState.processingInFlightInsights = 0
         appState.processingInFlightImages = 0
-        
+
         defer {
             appState.isProcessingBook = false
             appState.processingBookId = nil
@@ -62,239 +59,122 @@ final class BookProcessor {
             appState.processingInFlightImages = 0
             onPhaseUpdate?("", "")
         }
-        
+
         do {
             guard let bookId = book.id else { return }
             let allChapters = try appState.database.fetchChapters(for: book)
-            
-            // Filter by range if provided
-            let effectiveRange = range ?? 0...(allChapters.count - 1)
-            let chaptersInRange = allChapters.filter { effectiveRange.contains($0.index) }
-            
-            // Only count chapters that actually require processing for the total
-            let chaptersToProcess = chaptersInRange.filter { !$0.shouldSkipAutoProcessing && !$0.processed }
-            appState.processingTotalChapters = chaptersToProcess.count
-            
-            if chaptersToProcess.isEmpty {
-                appState.processingProgress = 1.0
-                onPhaseUpdate?("Complete!", "")
-                appState.processingChapter = "Complete!"
+            let rangeStart = range?.lowerBound ?? 0
+            let chaptersInRange = allChapters.filter { range?.contains($0.index) ?? true }
+            appState.processingTotalChapters = chaptersInRange.filter { !$0.shouldSkipAutoProcessing && !$0.processed }.count
+            guard appState.processingTotalChapters > 0 else {
+                appState.processingProgress = 1
                 return
             }
-            
+
             let blockParser = ContentBlockParser()
             var rollingSummary: String?
-            
-            // Phase 1: Context building
-            if includeContext && effectiveRange.lowerBound > 0 {
-                appState.processingChapter = "Building context..."
-                let contextChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
-                
-                for chapter in contextChapters {
-                    if Task.isCancelled { return }
-                    
-                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !existingSummary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
-                    } else if !chapter.shouldSkipAutoProcessing {
-                        onPhaseUpdate?("Context: \(chapter.title)", "")
-                        let (_, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
-                        
-                        let summary: String
-                        if isSimulation {
-                            appState.processingInFlightSummaries += 1
-                            defer { appState.processingInFlightSummaries = max(0, appState.processingInFlightSummaries - 1) }
-                            summary = "Simulated context summary."
-                        } else {
-                            let (generatedSummary, usage) = try await appState.llmService.generateSummary(
-                                contentWithBlocks: contentWithBlocks,
-                                rollingSummary: rollingSummary,
-                                settings: appState.settings
-                            )
-                            summary = generatedSummary
-                            if let usage {
-                                updateUsage(input: usage.input, output: usage.visibleOutput + (usage.reasoning ?? 0))
-                            }
+            var coveredIdeas: [String] = []
+            for chapter in allChapters where chapter.index < rangeStart {
+                try Task.checkCancellation()
+                if let summary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                    rollingSummary = appendRollingSummary(rollingSummary, summary: summary, chapter: chapter)
+                } else if includeContext && !chapter.shouldSkipAutoProcessing {
+                    summaryPhase = "Context: \(chapter.title)"
+                    onPhaseUpdate?(summaryPhase, "")
+                    appState.processingChapter = summaryPhase
+                    let (_, text) = blockParser.parse(html: chapter.contentHTML)
+                    let summary: String
+                    if isSimulation {
+                        summary = "Simulated context summary."
+                    } else {
+                        let result = try await appState.llmService.generateSummary(
+                            contentWithBlocks: text, rollingSummary: rollingSummary, settings: appState.settings
+                        )
+                        summary = result.summary
+                        if let usage = result.usage {
+                            updateUsage(input: usage.input, output: usage.visibleOutput + (usage.reasoning ?? 0))
                         }
-                        
-                        var updatedChapter = chapter
-                        updatedChapter.summary = summary
-                        updatedChapter.rollingSummary = rollingSummary
-                        try appState.database.saveChapter(&updatedChapter)
-                        
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
+                        try Task.checkCancellation()
+                        try appState.database.updateChapterSummary(
+                            id: chapter.id!, summary: summary, rollingSummary: rollingSummary
+                        )
                     }
+                    rollingSummary = appendRollingSummary(rollingSummary, summary: summary, chapter: chapter)
                 }
-            } else if effectiveRange.lowerBound > 0 {
-                let previousChapters = allChapters.filter { $0.index < effectiveRange.lowerBound }
-                for chapter in previousChapters {
-                    if let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !existingSummary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: existingSummary)
-                    }
-                }
+                coveredIdeas.append(contentsOf: try appState.database.fetchAnnotations(for: chapter).map(PromptLibrary.coverageHint))
             }
-            
-            // Phase 2: Processing range
+
+            summaryPhase = ""
             for chapter in chaptersInRange {
-                if Task.isCancelled {
-                    await cancelAllInsightTasks()
-                    return
-                }
-                
+                try Task.checkCancellation()
                 if chapter.shouldSkipAutoProcessing { continue }
                 if chapter.processed {
-                    if let summary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
-                        rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
+                    if let summary = chapter.summary {
+                        rollingSummary = appendRollingSummary(rollingSummary, summary: summary, chapter: chapter)
                     }
+                    coveredIdeas.append(contentsOf: try appState.database.fetchAnnotations(for: chapter).map(PromptLibrary.coverageHint))
                     continue
                 }
-                
-                // Update UI
-                summaryPhase = chapter.title
-                onPhaseUpdate?(summaryPhase, insightPhase)
-                appState.processingChapter = "Summarizing: \(chapter.title)"
-                updateProgress()
-                
-                let (blocks, contentWithBlocks) = blockParser.parse(html: chapter.contentHTML)
-                let chapterRollingSummary = rollingSummary
-                
-                // Track words for words-per-insight metric
+
+                insightPhase = chapter.title
+                onPhaseUpdate?("", insightPhase)
+                appState.processingChapter = "Analyzing: \(chapter.title)"
+                let (blocks, text) = blockParser.parse(html: chapter.contentHTML)
                 liveTotalWords += chapter.wordCount
                 updateWordsPerInsight()
-                
-                let existingSummary = chapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let reuseSummary = (existingSummary?.isEmpty == false) && chapter.rollingSummary == chapterRollingSummary
-                let summary: String
-                
-                if reuseSummary {
-                    summary = existingSummary ?? ""
-                } else if isSimulation {
-                    appState.processingInFlightSummaries += 1
-                    defer { appState.processingInFlightSummaries = max(0, appState.processingInFlightSummaries - 1) }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    summary = "Simulated summary for chapter \(chapter.index + 1)."
-                    updateUsage(input: 1000, output: 500)
-                    updateCost(0.02)
-                } else {
-                    let (generatedSummary, usage) = try await appState.llmService.generateSummary(
-                        contentWithBlocks: contentWithBlocks,
-                        rollingSummary: chapterRollingSummary,
-                        settings: appState.settings
-                    )
-                    summary = generatedSummary
-                    if let usage {
-                        updateUsage(input: usage.input, output: usage.visibleOutput + (usage.reasoning ?? 0))
-                    }
+                let workItem = InsightWorkItem(
+                    chapter: chapter, blocks: blocks, contentWithBlocks: text,
+                    rollingSummary: rollingSummary, coveredIdeas: coveredIdeas
+                )
+                let generated = try await processInsights(for: workItem)
+                try Task.checkCancellation()
+                let analysis = try generated.validated(blocks: blocks)
+                guard !analysis.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ChapterAnalysisValidationError.emptyField("chapter summary")
                 }
-                
-                var updatedChapter = chapter
-                updatedChapter.summary = summary
-                updatedChapter.rollingSummary = chapterRollingSummary
-                updatedChapter.contentText = contentWithBlocks
-                updatedChapter.blockCount = blocks.count
                 if !isSimulation {
-                    try appState.database.saveChapter(&updatedChapter)
+                    var updatedChapter = chapter
+                    updatedChapter.processed = true
+                    updatedChapter.summary = analysis.summary
+                    updatedChapter.rollingSummary = rollingSummary
+                    updatedChapter.contentText = text
+                    updatedChapter.blockCount = blocks.count
+                    let saved = try appState.database.saveChapterAnalysis(
+                        analysis, chapter: &updatedChapter, blockCount: blocks.count
+                    )
+                    coveredIdeas.append(contentsOf: saved.annotations.map(PromptLibrary.coverageHint))
+                    await generateSuggestedImages(analysis.imageSuggestions, bookId: bookId, chapterId: chapter.id!)
+                    try Task.checkCancellation()
                 }
-                
+
+                // Only an accepted analysis becomes context for the following chapter.
+                rollingSummary = appendRollingSummary(rollingSummary, summary: analysis.summary, chapter: chapter)
                 liveSummaryCount += 1
                 onSummaryCountUpdate?(liveSummaryCount)
-                rollingSummary = appendRollingSummary(rollingSummary, summary: summary)
-                
-                if Task.isCancelled {
-                    await cancelAllInsightTasks()
-                    return
-                }
-                
-                // Fire insight task
-                let workItem = InsightWorkItem(
-                    chapter: updatedChapter,
-                    blocks: blocks,
-                    contentWithBlocks: contentWithBlocks,
-                    rollingSummary: chapterRollingSummary
-                )
-                startInsightTask(workItem: workItem, bookId: bookId)
+                appState.processingCompletedChapters += 1
+                updateProgress()
             }
-            
-            // Wait for insights
-            summaryPhase = ""
-            onPhaseUpdate?(summaryPhase, insightPhase)
-            if insightPhase.isEmpty {
-                appState.processingChapter = "Finalizing..."
-            }
-            
-            for task in runningInsightTasks {
-                await task.value
-            }
-            
+
             if !isSimulation {
-                let freshChapters = (try? appState.database.fetchChapters(for: book)) ?? []
-                let allEligibleDone = freshChapters.filter { !$0.shouldSkipAutoProcessing }.allSatisfy { $0.processed }
-                if allEligibleDone {
-                    if var updatedBook = try? appState.database.fetchAllBooks().first(where: { $0.id == book.id }) {
-                        updatedBook.processedFully = true
-                        try appState.database.saveBook(&updatedBook)
-                    }
+                let freshChapters = try appState.database.fetchChapters(for: book)
+                if freshChapters.filter({ !$0.shouldSkipAutoProcessing }).allSatisfy(\.processed),
+                   var updatedBook = try appState.database.fetchBook(id: bookId) {
+                    updatedBook.processedFully = true
+                    try appState.database.saveBook(&updatedBook)
                 }
             }
-            
-            appState.processingProgress = 1.0
-            onPhaseUpdate?("", "")
-            appState.processingChapter = "Complete!"
+            appState.processingProgress = 1
             appState.triggerLibraryRefresh()
-            
         } catch {
-            await cancelAllInsightTasks()
             if !(error is CancellationError) {
                 print("Failed to process book: \(error)")
             }
+            appState.triggerLibraryRefresh()
         }
     }
     
-    private func startInsightTask(workItem: InsightWorkItem, bookId: Int64) {
-        lastInsightTitle = workItem.chapter.title
-        runningInsightCount += 1
-        updateInsightPhaseUI()
-        
-        let task = Task {
-            defer {
-                runningInsightCount -= 1
-                updateInsightPhaseUI()
-            }
-            
-            do {
-                let analysis = try await processInsights(for: workItem, bookId: bookId)
-                
-                if !isSimulation, let analysis, let chapterId = workItem.chapter.id {
-                    try appState.database.saveAnalysis(analysis, chapterId: chapterId, blockCount: workItem.blocks.count)
-                    
-                    await generateSuggestedImages(
-                        analysis.imageSuggestions,
-                        blockCount: workItem.blocks.count,
-                        bookId: bookId,
-                        chapterId: chapterId
-                    )
-                    
-                    var updatedChapter = workItem.chapter
-                    updatedChapter.processed = true
-                    if updatedChapter.summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
-                        updatedChapter.summary = analysis.summary
-                    }
-                    updatedChapter.contentText = workItem.contentWithBlocks
-                    updatedChapter.blockCount = workItem.blocks.count
-                    try appState.database.saveChapter(&updatedChapter)
-                }
-                
-                appState.processingCompletedChapters += 1
-                updateProgress()
-            } catch {
-                print("Insight task failed: \(error)")
-            }
-        }
-        runningInsightTasks.append(task)
-    }
     
-    private func processInsights(for workItem: InsightWorkItem, bookId: Int64) async throws -> LLMService.ChapterAnalysis? {
+    private func processInsights(for workItem: InsightWorkItem) async throws -> LLMService.ChapterAnalysis {
         if isSimulation {
             appState.processingInFlightInsights += 1
             defer { appState.processingInFlightInsights = max(0, appState.processingInFlightInsights - 1) }
@@ -329,15 +209,9 @@ final class BookProcessor {
             }
             
             return LLMService.ChapterAnalysis(
-                annotations: [
-                    LLMService.AnnotationData(type: "science", title: "Simulated Insight", content: "Simulated content", sourceBlockId: 1)
-                ],
-                quizQuestions: [
-                    LLMService.QuizData(question: "Simulated question?", answer: "Simulated answer", sourceBlockId: 1)
-                ],
-                imageSuggestions: [
-                    LLMService.ImageSuggestion(excerpt: "Simulated image excerpt", sourceBlockId: 1)
-                ],
+                annotations: [],
+                quizQuestions: [],
+                imageSuggestions: [],
                 summary: "Simulated summary"
             )
         } else {
@@ -346,7 +220,8 @@ final class BookProcessor {
                 rollingSummary: workItem.rollingSummary,
                 bookTitle: book.title,
                 author: book.author,
-                settings: appState.settings
+                settings: appState.settings,
+                coveredIdeas: workItem.coveredIdeas
             )
             
             var finalAnalysis: LLMService.ChapterAnalysis?
@@ -367,22 +242,24 @@ final class BookProcessor {
                 case .thinking: break
                 }
             }
+            guard let finalAnalysis else {
+                throw ChapterAnalysisValidationError.missingCompletion
+            }
             return finalAnalysis
         }
     }
     
-    private func generateSuggestedImages(_ suggestions: [LLMService.ImageSuggestion], blockCount: Int, bookId: Int64, chapterId: Int64) async {
-        guard appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
+    private func generateSuggestedImages(_ suggestions: [LLMService.ImageSuggestion], bookId: Int64, chapterId: Int64) async {
+        guard !Task.isCancelled, appState.settings.imagesEnabled, !suggestions.isEmpty else { return }
         let trimmedKey = appState.settings.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { return }
         
         let inputs = suggestions.map { suggestion -> ImageService.ImageSuggestionInput in
-            let validBlockId = suggestion.sourceBlockId > 0 && suggestion.sourceBlockId <= blockCount ? suggestion.sourceBlockId : 1
             let prompt = appState.llmService.imagePromptFromExcerpt(suggestion.excerpt, rewrite: appState.settings.rewriteImageExcerpts)
             return ImageService.ImageSuggestionInput(
                 excerpt: suggestion.excerpt,
                 prompt: prompt,
-                sourceBlockId: validBlockId,
+                sourceBlockId: suggestion.sourceBlockId,
                 aspectRatio: suggestion.aspectRatio
             )
         }
@@ -462,22 +339,6 @@ final class BookProcessor {
         }
     }
     
-    private func updateInsightPhaseUI() {
-        guard runningInsightCount > 0 else {
-            insightPhase = ""
-            if summaryPhase.isEmpty { appState.processingChapter = "" }
-            onPhaseUpdate?(summaryPhase, insightPhase)
-            return
-        }
-        
-        let title = lastInsightTitle ?? "Insights"
-        let suffix = runningInsightCount > 1 ? " (+\(runningInsightCount - 1) more)" : ""
-        insightPhase = "\(title)\(suffix)"
-        if summaryPhase.isEmpty {
-            appState.processingChapter = "Insights: \(insightPhase)"
-        }
-        onPhaseUpdate?(summaryPhase, insightPhase)
-    }
     
     private func updateProgress() {
         appState.processingProgress = Double(appState.processingCompletedChapters) / Double(max(1, appState.processingTotalChapters))
@@ -498,22 +359,20 @@ final class BookProcessor {
         onWordsPerInsightUpdate?(ratio)
     }
     
-    private func cancelAllInsightTasks() async {
-        for task in runningInsightTasks { task.cancel() }
-        runningInsightTasks.removeAll()
-    }
     
-    private func appendRollingSummary(_ existing: String?, summary: String) -> String? {
+    private func appendRollingSummary(_ existing: String?, summary: String, chapter: Chapter) -> String? {
         let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return existing }
-        if let existing, !existing.isEmpty { return existing + "\n\n" + trimmed }
-        return trimmed
+        let entry = "Chapter \(chapter.index + 1): \(chapter.title)\n\(trimmed)"
+        if let existing, !existing.isEmpty { return existing + "\n\n" + entry }
+        return entry
     }
-    
+
     private struct InsightWorkItem {
         let chapter: Chapter
         let blocks: [ContentBlock]
         let contentWithBlocks: String
         let rollingSummary: String?
+        let coveredIdeas: [String]
     }
 }

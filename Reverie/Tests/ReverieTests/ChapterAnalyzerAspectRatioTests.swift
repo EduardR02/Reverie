@@ -122,7 +122,7 @@ final class ChapterAnalyzerAspectRatioTests: XCTestCase {
 
             if requestCount == 1 {
                 let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-                let data = #"{"candidates":[{"content":{"parts":[{"text":"Rewritten prompt"}]}}]}"#.data(using: .utf8)!
+                let data = #"{"candidates":[{"content":{"parts":[{"text":"Rewritten prompt"}]},"finishReason":"STOP"}]}"#.data(using: .utf8)!
                 return (response, data)
             }
 

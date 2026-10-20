@@ -21,7 +21,7 @@ struct SettingsView: View {
         case reading = "Reading"
         case media = "Media"
         case appearance = "Appearance"
-        case apiKeys = "API Keys"
+        case apiKeys = "Accounts & Keys"
 
         var icon: String {
             switch self {
@@ -111,12 +111,14 @@ struct SettingsView: View {
                 .foregroundColor(theme.text)
                 .frame(maxWidth: .infinity)
                 .padding(.trailing, 100) // Visual centering compensation
+                .allowsHitTesting(false)
 
             Spacer()
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
         .frame(height: 64)
+        .background { ReaderWindowHeader(mode: .standard) }
         .background(theme.base.opacity(0.8)) // Glass-like effect base
         .overlay(
             Rectangle()
@@ -218,10 +220,16 @@ struct SettingsView: View {
 
                             ThemedPicker(
                                 selection: $state.settings.llmModel,
-                                options: state.settings.llmProvider.models.map { ($0.id, $0.name) }
+                                options: state.settings.llmProvider.models.map { ($0.id, $0.name) },
+                                selectionName: state.settings.llmProvider.modelName(for: state.settings.llmModel)
                             )
                         }
                         .frame(maxWidth: .infinity)
+                    }
+                    if SupportedModels.model(for: state.settings.llmModel)?.requiresPaidTier == true {
+                        Text("This model requires a paid API tier.")
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.gold)
                     }
                 }
             }
@@ -274,7 +282,7 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.muted)
                         
-                        Text("Higher levels produce deeper analysis but are slower")
+                        Text("Higher levels can improve analysis but take longer. Unsupported depths use the next supported level, capped at the model’s maximum.")
                             .font(.system(size: 12))
                             .foregroundColor(theme.subtle)
                     }
@@ -286,10 +294,18 @@ struct SettingsView: View {
                                 .foregroundColor(theme.text)
                                 .frame(width: 70, alignment: .leading)
 
-                            ThemedSegmentedPicker(
-                                selection: $state.settings.insightReasoningLevel,
-                                options: ReasoningLevel.allCases
-                            )
+                            ViewThatFits(in: .horizontal) {
+                                ThemedSegmentedPicker(
+                                    selection: $state.settings.insightReasoningLevel,
+                                    options: ReasoningLevel.allCases
+                                )
+                                .fixedSize(horizontal: true, vertical: false)
+
+                                ThemedPicker(
+                                    selection: $state.settings.insightReasoningLevel,
+                                    options: ReasoningLevel.allCases.map { ($0, $0.rawValue) }
+                                )
+                            }
                         }
 
                         HStack {
@@ -298,10 +314,18 @@ struct SettingsView: View {
                                 .foregroundColor(theme.text)
                                 .frame(width: 70, alignment: .leading)
 
-                            ThemedSegmentedPicker(
-                                selection: $state.settings.chatReasoningLevel,
-                                options: ReasoningLevel.allCases
-                            )
+                            ViewThatFits(in: .horizontal) {
+                                ThemedSegmentedPicker(
+                                    selection: $state.settings.chatReasoningLevel,
+                                    options: ReasoningLevel.allCases
+                                )
+                                .fixedSize(horizontal: true, vertical: false)
+
+                                ThemedPicker(
+                                    selection: $state.settings.chatReasoningLevel,
+                                    options: ReasoningLevel.allCases.map { ($0, $0.rawValue) }
+                                )
+                            }
                         }
                     }
 
@@ -388,7 +412,7 @@ struct SettingsView: View {
             }
         }
         .onChange(of: state.settings.llmProvider) { _, _ in
-            state.settings.llmModel = state.settings.llmProvider.models.first?.id ?? ""
+            state.settings.llmModel = state.settings.llmProvider.defaultModel.id
             state.settings.save()
         }
         .onChange(of: state.settings) { _, _ in
@@ -402,7 +426,25 @@ struct SettingsView: View {
         @Bindable var state = appState
 
         return VStack(alignment: .leading, spacing: 24) {
-            sectionHeader("Automation", icon: "wand.and.stars", isFirst: true)
+            sectionHeader("Text Layout", icon: "book.pages", isFirst: true)
+
+            settingsCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Columns")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.text)
+                    ThemedPicker(
+                        selection: $state.settings.pageLayout,
+                        options: [(ReaderPageLayout.single, "One column"), (ReaderPageLayout.spread, "Two columns")]
+                    )
+                    Text("Two columns adapt to one in narrow windows. Each screen counts as one page in either layout. You can also change layout while reading.")
+                        .font(.system(size: 12))
+                        .foregroundColor(theme.subtle)
+                }
+                .padding(.vertical, 12)
+            }
+
+            sectionHeader("Automation", icon: "wand.and.stars")
 
             settingsCard {
                 VStack(alignment: .leading, spacing: 0) {
@@ -674,34 +716,39 @@ struct SettingsView: View {
         @Bindable var state = appState
 
         return VStack(alignment: .leading, spacing: 24) {
-            sectionHeader("API Keys", icon: "key.fill", isFirst: true)
+            sectionHeader("Accounts & API Keys", icon: "key.fill", isFirst: true)
 
             Text("Your API keys are stored locally and never sent anywhere except to the respective AI providers.")
                 .font(.system(size: 13))
                 .foregroundColor(theme.muted)
 
+            settingsCard {
+                OpenAISubscriptionSection(authenticationMode: $state.settings.openAIAuthenticationMode)
+            }
+
             // Google
             apiKeyCard(
                 title: "Gemini",
-                subtitle: "For Gemini 3 and image generation",
+                subtitle: "Text and image generation",
                 key: $state.settings.googleAPIKey,
                 linkURL: "https://aistudio.google.com/apikey",
                 linkText: "Get API Key"
             )
 
-            // OpenAI
-            apiKeyCard(
-                title: "OpenAI",
-                subtitle: "For GPT 5.2",
-                key: $state.settings.openAIAPIKey,
-                linkURL: "https://platform.openai.com/api-keys",
-                linkText: "Get API Key"
-            )
+            if state.settings.openAIAuthenticationMode == .apiKey {
+                apiKeyCard(
+                    title: "OpenAI",
+                    subtitle: "Usage-based API billing",
+                    key: $state.settings.openAIAPIKey,
+                    linkURL: "https://platform.openai.com/api-keys",
+                    linkText: "Get API Key"
+                )
+            }
 
             // Anthropic
             apiKeyCard(
                 title: "Claude",
-                subtitle: "For Claude 4.5",
+                subtitle: "Text generation",
                 key: $state.settings.anthropicAPIKey,
                 linkURL: "https://console.anthropic.com/settings/keys",
                 linkText: "Get API Key"
