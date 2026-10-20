@@ -38,7 +38,7 @@ final class ContentBlockParser {
 
         // Find all block-level elements and their positions
         // Use a more refined pattern that captures the common block elements
-        let blockPattern = #"<(p|h[1-6]|blockquote|li)(\s[^>]*)?>([\s\S]*?)</\1>"#
+        let blockPattern = #"<(p|h[1-6]|blockquote|li)\b((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)</\1\s*>"#
 
         guard let regex = try? NSRegularExpression(pattern: blockPattern, options: [.caseInsensitive]) else {
             // Fallback: treat entire content as one block
@@ -62,7 +62,8 @@ final class ContentBlockParser {
         let matches = regex.matches(in: html, options: [], range: nsRange)
 
         for match in matches {
-            guard let range = Range(match.range, in: html) else { continue }
+            guard let range = Range(match.range, in: html),
+                  let contentRange = Range(match.range(at: 3), in: html) else { continue }
 
             let blockHTML = String(html[range])
             let attributeRange = match.range(at: 2)
@@ -70,22 +71,10 @@ final class ContentBlockParser {
                 ? ""
                 : Range(attributeRange, in: html).map { String(html[$0]) } ?? ""
             
-            // Find the end of the opening tag (first '>')
             let startOffset = html.distance(from: html.startIndex, to: range.lowerBound)
             let endOffset = html.distance(from: html.startIndex, to: range.upperBound)
-            
-            var contentStartOffset = startOffset
-            if let tagEndIndex = blockHTML.firstIndex(of: ">") {
-                let tagEndOffset = blockHTML.distance(from: blockHTML.startIndex, to: tagEndIndex) + 1
-                contentStartOffset = startOffset + tagEndOffset
-            }
-
-            // Find the start of the closing tag (last '</' before the end)
-            var contentEndOffset = endOffset
-            if let closingTagRange = blockHTML.range(of: "</", options: .backwards) {
-                let closingTagOffset = blockHTML.distance(from: blockHTML.startIndex, to: closingTagRange.lowerBound)
-                contentEndOffset = startOffset + closingTagOffset
-            }
+            let contentStartOffset = html.distance(from: html.startIndex, to: contentRange.lowerBound)
+            let contentEndOffset = html.distance(from: html.startIndex, to: contentRange.upperBound)
 
             let strippedText = stripHTML(blockHTML)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,27 +109,30 @@ final class ContentBlockParser {
 
     /// Fallback parser that splits by double newlines
     private func parseByParagraphs(html: String) -> (blocks: [ContentBlock], cleanText: String) {
-        let stripped = stripHTML(html)
-        let paragraphs = stripped.components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count > 3 }
+        // Splitting markup at newlines can bisect an element. Only plain-text
+        // fallback content has independently wrappable paragraph boundaries.
+        let paragraphs = html.contains("<") ? [html] : html.components(separatedBy: "\n\n")
 
         var blocks: [ContentBlock] = []
         var cleanLines: [String] = []
+        var sourceOffset = 0
 
-        for (index, para) in paragraphs.enumerated() {
-            let blockId = index + 1
-            // For fallback, we estimate offsets (less precise but functional)
+        for paragraph in paragraphs {
+            let startOffset = sourceOffset
+            sourceOffset += paragraph.count + 2
+            let text = stripHTML(paragraph)
+            guard !text.isEmpty, text.count > 3 else { continue }
+            let blockId = blocks.count + 1
             blocks.append(ContentBlock(
                 id: blockId,
-                text: para,
-                htmlStartOffset: 0,
-                contentStartOffset: 0,
-                contentEndOffset: html.count,
-                htmlEndOffset: html.count,
+                text: text,
+                htmlStartOffset: startOffset,
+                contentStartOffset: startOffset,
+                contentEndOffset: startOffset + paragraph.count,
+                htmlEndOffset: startOffset + paragraph.count,
                 hasExistingIdAttribute: false
             ))
-            cleanLines.append("[\(blockId)] \(para)")
+            cleanLines.append("[\(blockId)] \(text)")
         }
 
         return (blocks, cleanLines.joined(separator: "\n\n"))
@@ -198,6 +190,13 @@ final class ContentBlockParser {
                 content.insert(contentsOf: htmlInjections, at: insertIdx)
             }
             
+            // Fallback blocks have no opening tag to receive a reader anchor.
+            let needsWrapper = block.contentStartOffset == block.htmlStartOffset
+            if needsWrapper {
+                let endIndex = content.index(content.startIndex, offsetBy: block.htmlEndOffset)
+                content.insert(contentsOf: "</div>", at: endIndex)
+            }
+
             // 2. Markers (End of content)
             let blockMarkers = injections.filter {
                 switch $0.kind {
@@ -221,7 +220,10 @@ final class ContentBlockParser {
             }
             
             // 3. Block ID Attribute (Opening tag)
-            if block.contentStartOffset > 0 {
+            if needsWrapper {
+                let startIndex = content.index(content.startIndex, offsetBy: block.htmlStartOffset)
+                content.insert(contentsOf: "<div id=\"block-\(bId)\">", at: startIndex)
+            } else {
                 let idAttr = block.hasExistingIdAttribute
                     ? " data-reader-block-id=\"\(bId)\""
                     : " id=\"block-\(bId)\""
@@ -237,9 +239,6 @@ final class ContentBlockParser {
 
     private func stripHTML(_ html: String) -> String {
         var result = html
-
-        // Decode common HTML entities first
-        result = decodeHTMLEntities(result)
 
         // Remove script and style content entirely
         result = result.replacingOccurrences(
@@ -262,10 +261,14 @@ final class ContentBlockParser {
 
         // Remove all other HTML tags
         result = result.replacingOccurrences(
-            of: #"<[^>]+>"#,
+            of: #"<(?:[^"'<>]|"[^"]*"|'[^']*')*>"#,
             with: "",
             options: .regularExpression
         )
+
+        // Decode after stripping tags: escaped literal text such as
+        // &lt;vector&gt; must not become markup and disappear.
+        result = decodeHTMLEntities(result)
 
         // Collapse multiple horizontal whitespace, but preserve vertical ones
         result = result.replacingOccurrences(

@@ -93,13 +93,14 @@ final class EPUBParser {
         let cover = extractCover(package: package, opfDir: opfDir)
 
         var chapters: [ChapterSkeleton] = []
-        for (index, spineItem) in package.spine.enumerated() {
+        for spineItem in package.spine {
             guard spineItem.linear else { continue }
             guard let item = package.manifest[spineItem.idref] else {
                 print("Warning: Spine item \(spineItem.idref) not found in manifest")
                 continue
             }
             guard isHTMLMediaType(item.mediaType) else { continue }
+            let index = chapters.count
 
             let key = stripFragment(from: item.href)
             let title = tocTitles[key] ?? "Chapter \(index + 1)"
@@ -754,6 +755,7 @@ final class EPUBParser {
         let (blocks, _) = blockParser.parse(html: html)
 
         // Find references and match with content
+        var seenReferences: Set<Int> = []
         for pattern in refPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
                 let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
@@ -771,6 +773,7 @@ final class EPUBParser {
                         let offset = html.distance(from: html.startIndex, to: matchRange.lowerBound)
                         let blockId = blocks.first { offset >= $0.htmlStartOffset && offset < $0.htmlEndOffset }?.id ?? 1
 
+                        guard seenReferences.insert(match.range(at: 2).location).inserted else { continue }
                         if let content = footnoteContents[refId], !marker.isEmpty {
                             footnotes.append(ParsedFootnote(
                                 marker: marker,
